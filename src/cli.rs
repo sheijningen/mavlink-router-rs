@@ -7,6 +7,8 @@ use tracing::Level;
 use crate::endpoint::spec::EndpointSpec;
 use crate::error::Error;
 
+/// Parsed command-line arguments. Built from argv via clap derive; `cli.rs`'s
+/// own parsers turn `endpoints: Vec<String>` into `EndpointSpec`s.
 #[derive(Parser, Debug)]
 #[command(name = "rmr", version, about = "Rust MAVLink Router")]
 pub struct Cli {

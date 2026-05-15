@@ -1,5 +1,8 @@
 use super::crc_extra::{CRC_INIT, crc16_update};
 
+/// Streaming CRC-16-MCRF4XX accumulator (the MAVLink frame CRC). Wraps the
+/// single-byte update step from `crc_extra.rs` so the framer can feed bytes
+/// incrementally as it validates a frame.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Crc16(u16);
 

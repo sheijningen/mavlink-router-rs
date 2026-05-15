@@ -30,6 +30,8 @@ pub(crate) fn crc16_mcrf4xx(bytes: &[u8]) -> u16 {
     crc
 }
 
+/// Field description passed to `crc_extra_for_message`. Borrowed strings keep
+/// the caller (build.rs) in charge of XML lifetime; the algorithm only reads.
 #[derive(Debug, Clone)]
 pub(crate) struct CrcExtraField<'a> {
     pub name: &'a str,

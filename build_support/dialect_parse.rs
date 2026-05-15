@@ -6,6 +6,8 @@
 // Must remain self-contained (no `use crate::*`, no sibling `mod`) so
 // the include! works in both contexts.
 
+/// One MAVLink `<field>` parsed from a dialect XML. Array suffix (`uint8_t[16]`)
+/// has been split into `type_name = "uint8_t"` + `array_length = 16`.
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedField {
     pub name: String,
@@ -14,6 +16,8 @@ pub(crate) struct ParsedField {
     pub is_extension: bool,
 }
 
+/// One MAVLink `<message>` parsed from a dialect XML. `fields` is in
+/// declaration order; size-sorting for wire layout happens downstream.
 #[derive(Debug)]
 pub(crate) struct ParsedMessage {
     pub id: u32,
@@ -21,6 +25,9 @@ pub(crate) struct ParsedMessage {
     pub fields: Vec<ParsedField>,
 }
 
+/// Staging form of a msgid-table row used while build.rs is walking dialects.
+/// Owned `String` names (vs. the `&'static str` in the runtime `MsgEntry`)
+/// because the generated table is materialised by writing string literals.
 #[derive(Debug, Clone)]
 pub(crate) struct MsgEntryGen {
     pub name: String,

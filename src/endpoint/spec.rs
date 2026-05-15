@@ -2,6 +2,10 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
+/// A single endpoint declaration after parsing a CLI string or TOML entry.
+/// `kind` carries the scheme-specific address; `name` is either the explicit
+/// `#name` fragment or an auto-name derived from the scheme + address.
+/// `query` holds the post-`?` key/value overrides (filters, timeouts, etc.).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EndpointSpec {
     pub kind: EndpointKind,

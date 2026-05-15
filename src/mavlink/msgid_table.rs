@@ -1,5 +1,10 @@
 use super::generated::SORTED;
 
+/// A single row of the build-time `SORTED` msgid table. Holds everything the
+/// router needs to validate and route a frame of this msgid without parsing
+/// the payload: CRC seed, the v1 wire size (used as the v2 zero-trim ceiling),
+/// and the offsets at which `target_system` / `target_component` would sit
+/// when the msgid carries them.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MsgEntry {
     pub name: &'static str,

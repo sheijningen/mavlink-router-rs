@@ -14,6 +14,9 @@ pub(crate) const V1_HEADER_LEN: usize = 6;
 pub(crate) const V2_HEADER_LEN: usize = 10;
 pub(crate) const CRC_LEN: usize = 2;
 
+/// Routing-relevant fields extracted from a MAVLink frame header in the reader
+/// task, so the router never re-parses. Bytes the header was decoded from stay
+/// in the `Bytes` payload returned alongside this struct.
 #[derive(Debug, Clone, Copy)]
 pub struct ParsedHeader {
     pub version: Version,

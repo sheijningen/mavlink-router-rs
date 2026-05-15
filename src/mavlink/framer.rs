@@ -9,6 +9,10 @@ use super::msgid_table::{self, MsgEntry};
 
 const DEFAULT_BUF_CAPACITY: usize = 8192;
 
+/// Per-endpoint MAVLink frame state machine. Callers write raw transport
+/// bytes into the inner `BytesMut` via `buffer_mut()` and drain complete
+/// frames via `try_next_frame()`. Garbage prefixes and CRC failures are
+/// counted (`resync_bytes`, `crc_errors`) but never panic.
 pub struct Framer {
     buf: BytesMut,
     resync_bytes: u64,
