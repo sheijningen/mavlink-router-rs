@@ -86,4 +86,66 @@ mod tests {
             SORTED.len()
         );
     }
+
+    #[test]
+    fn param_request_list_targets_at_start() {
+        let e = lookup(21).expect("PARAM_REQUEST_LIST (id 21) must be in the table");
+        assert_eq!(e.name, "PARAM_REQUEST_LIST");
+        // Two uint8_t fields, stable size-sort preserves their declaration order.
+        assert_eq!(e.target_sys_offset, Some(0));
+        assert_eq!(e.target_comp_offset, Some(1));
+        assert_eq!(e.min_payload_len, 2);
+    }
+
+    #[test]
+    fn command_long_targets() {
+        let e = lookup(76).expect("COMMAND_LONG (id 76) must be in the table");
+        assert_eq!(e.name, "COMMAND_LONG");
+        // Wire sort: 7 floats (28 bytes), command u16 (2), then the three u8s:
+        // target_system (30), target_component (31), confirmation (32).
+        assert_eq!(e.target_sys_offset, Some(30));
+        assert_eq!(e.target_comp_offset, Some(31));
+        assert_eq!(e.min_payload_len, 33);
+    }
+
+    #[test]
+    fn change_operator_control_has_sys_but_not_comp() {
+        // CHANGE_OPERATOR_CONTROL (id 5) is the only standard targeted message
+        // that has target_system without target_component — exercises the
+        // half-target offset branch end to end.
+        let e = lookup(5).expect("CHANGE_OPERATOR_CONTROL (id 5) must be in the table");
+        assert_eq!(e.name, "CHANGE_OPERATOR_CONTROL");
+        assert_eq!(e.target_sys_offset, Some(0));
+        assert_eq!(e.target_comp_offset, None);
+    }
+
+    #[test]
+    fn target_offsets_are_within_min_payload_len() {
+        for (id, entry) in SORTED {
+            if let Some(off) = entry.target_sys_offset {
+                assert!(
+                    off < entry.min_payload_len,
+                    "msgid {id} ({}): target_sys_offset {off} >= min_payload_len {}",
+                    entry.name,
+                    entry.min_payload_len
+                );
+                assert!(
+                    off < 256,
+                    "msgid {id} target_sys_offset {off} does not fit in u8"
+                );
+            }
+            if let Some(off) = entry.target_comp_offset {
+                assert!(
+                    off < entry.min_payload_len,
+                    "msgid {id} ({}): target_comp_offset {off} >= min_payload_len {}",
+                    entry.name,
+                    entry.min_payload_len
+                );
+                assert!(
+                    off < 256,
+                    "msgid {id} target_comp_offset {off} does not fit in u8"
+                );
+            }
+        }
+    }
 }

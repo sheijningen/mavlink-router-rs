@@ -475,6 +475,155 @@ mod tests {
         assert_eq!(f.resync_bytes(), 0);
         assert_eq!(f.crc_errors(), 0);
     }
+
+    #[test]
+    fn default_constructor_is_usable() {
+        let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
+        let frame = build_v1(0, &heartbeat_payload(), crc_extra);
+        let mut f: Framer = Framer::default();
+        f.buffer_mut().put_slice(&frame);
+        assert!(f.try_next_frame().is_some());
+    }
+
+    #[test]
+    fn with_capacity_zero_still_parses() {
+        // BytesMut::with_capacity(0) gives a buffer that must grow on first
+        // put_slice; the framer must not panic on zero initial headroom.
+        let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
+        let frame = build_v1(0, &heartbeat_payload(), crc_extra);
+        let mut f = Framer::with_capacity(0);
+        f.buffer_mut().put_slice(&frame);
+        let (h, _) = f.try_next_frame().expect("frame");
+        assert_eq!(h.msgid, 0);
+    }
+
+    #[test]
+    fn buffer_with_only_stx_byte_waits_without_consuming() {
+        let mut f = Framer::new();
+        f.buffer_mut().put_slice(&[STX_V1]);
+        assert!(f.try_next_frame().is_none());
+        // The STX must be retained — the framer can't decide anything yet.
+        assert_eq!(f.resync_bytes(), 0);
+        assert_eq!(f.buffer_mut().len(), 1);
+    }
+
+    #[test]
+    fn buffer_ending_mid_v1_header_waits() {
+        // V1 header is 6 bytes; feed only 3 (STX + 2). The framer should hold
+        // them and return None until the header completes.
+        let mut f = Framer::new();
+        f.buffer_mut().put_slice(&[STX_V1, 9, 0]);
+        assert!(f.try_next_frame().is_none());
+        assert_eq!(f.resync_bytes(), 0);
+        assert_eq!(f.buffer_mut().len(), 3);
+    }
+
+    #[test]
+    fn buffer_ending_mid_v2_header_waits() {
+        // V2 header is 10 bytes; feed 5. The framer must wait.
+        let mut f = Framer::new();
+        f.buffer_mut().put_slice(&[STX_V2, 9, 0, 0, 7]);
+        assert!(f.try_next_frame().is_none());
+        assert_eq!(f.resync_bytes(), 0);
+        assert_eq!(f.buffer_mut().len(), 5);
+    }
+
+    #[test]
+    fn large_garbage_prefix_beyond_default_buffer_is_all_counted() {
+        // 12_000 STX-free bytes — larger than DEFAULT_BUF_CAPACITY (8192).
+        // The whole prefix should be consumed as resync_bytes in a single call
+        // (the framer clears the buffer once it finds no STX).
+        let garbage = vec![0u8; 12_000];
+        let mut f = Framer::new();
+        f.buffer_mut().put_slice(&garbage);
+        assert!(f.try_next_frame().is_none());
+        assert_eq!(f.resync_bytes(), 12_000);
+        assert_eq!(f.buffer_mut().len(), 0);
+
+        // Then a real frame still parses.
+        let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
+        let frame = build_v1(0, &heartbeat_payload(), crc_extra);
+        f.buffer_mut().put_slice(&frame);
+        assert!(f.try_next_frame().is_some());
+    }
+
+    #[test]
+    fn byte_by_byte_feeding_yields_same_frame() {
+        let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
+        let frame = build_v1(0, &heartbeat_payload(), crc_extra);
+
+        let mut f = Framer::new();
+        let mut parsed = 0;
+        for &b in &frame {
+            f.buffer_mut().put_slice(&[b]);
+            if let Some((h, _)) = f.try_next_frame() {
+                assert_eq!(h.msgid, 0);
+                parsed += 1;
+            }
+        }
+        assert_eq!(parsed, 1);
+        assert_eq!(f.resync_bytes(), 0);
+        assert_eq!(f.crc_errors(), 0);
+    }
+
+    #[test]
+    fn v1_header_is_never_signed_even_if_iflag_bit_was_set() {
+        // ParsedHeader::is_signed must require version == V2.
+        let h = ParsedHeader {
+            version: Version::V1,
+            sysid: 1,
+            compid: 1,
+            msgid: 0,
+            seq: 0,
+            payload_len: 0,
+            incompat_flags: V2_IFLAG_SIGNED,
+            compat_flags: 0,
+            target_system: None,
+            target_component: None,
+        };
+        assert!(!h.is_signed());
+    }
+
+    #[test]
+    fn half_target_msgid_yields_sys_some_comp_none() {
+        // CHANGE_OPERATOR_CONTROL (id 5) has target_system at offset 0 but no
+        // target_component. Build a frame and assert the framer reflects this.
+        let entry = msgid_table::lookup(5).expect("CHANGE_OPERATOR_CONTROL");
+        assert_eq!(entry.target_sys_offset, Some(0));
+        assert_eq!(entry.target_comp_offset, None);
+
+        let mut payload = vec![0u8; entry.min_payload_len as usize];
+        payload[0] = 42; // target_system byte
+        let frame = build_v1(5, &payload, entry.crc_extra);
+
+        let mut f = Framer::new();
+        f.buffer_mut().put_slice(&frame);
+        let (h, _) = f.try_next_frame().expect("frame");
+        assert_eq!(h.target_system, Some(42));
+        assert_eq!(h.target_component, None);
+    }
+
+    #[test]
+    fn partial_tail_remains_after_full_frames() {
+        let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
+        let frame = build_v1(0, &heartbeat_payload(), crc_extra);
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&frame);
+        stream.extend_from_slice(&frame);
+        stream.extend_from_slice(&frame[..4]); // partial third
+
+        let mut f = Framer::new();
+        f.buffer_mut().put_slice(&stream);
+
+        let mut count = 0;
+        while f.try_next_frame().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 2);
+        assert_eq!(f.buffer_mut().len(), 4);
+        assert_eq!(f.resync_bytes(), 0);
+    }
 }
 
 #[cfg(test)]
