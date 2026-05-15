@@ -228,7 +228,7 @@ GLOBAL OPTS:
       --stats             enable periodic per-endpoint stats (JSON-Lines on stdout)
       --stats-interval N  stats output interval in seconds (default 5)
       --dedup-ms N        duplicate suppression window (0 = off)
-      --shutdown-grace N  per-task drain budget on shutdown, seconds (default 5)
+      --shutdown-grace N  overall wall-clock shutdown budget, seconds (default 5)
 ```
 
 Output channels:
