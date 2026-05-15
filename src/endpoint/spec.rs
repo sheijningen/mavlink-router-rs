@@ -274,12 +274,32 @@ fn validate_name(s: &str) -> Result<(), SpecError> {
 
 fn default_name(kind: &EndpointKind) -> String {
     match kind {
-        EndpointKind::Serial { path, baud } => format!("serial-{path}-{baud}"),
-        EndpointKind::UdpServer { host, port } => format!("udps-{host}-{port}"),
-        EndpointKind::UdpClient { host, port } => format!("udpc-{host}-{port}"),
-        EndpointKind::TcpServer { host, port } => format!("tcps-{host}-{port}"),
-        EndpointKind::TcpClient { host, port } => format!("tcpc-{host}-{port}"),
+        EndpointKind::Serial { path, baud } => format!("serial-{}-{baud}", sanitize_for_name(path)),
+        EndpointKind::UdpServer { host, port } => {
+            format!("udps-{}-{port}", sanitize_for_name(host))
+        }
+        EndpointKind::UdpClient { host, port } => {
+            format!("udpc-{}-{port}", sanitize_for_name(host))
+        }
+        EndpointKind::TcpServer { host, port } => {
+            format!("tcps-{}-{port}", sanitize_for_name(host))
+        }
+        EndpointKind::TcpClient { host, port } => {
+            format!("tcpc-{}-{port}", sanitize_for_name(host))
+        }
     }
+}
+
+fn sanitize_for_name(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn parse_query(s: &str) -> Result<BTreeMap<String, String>, SpecError> {
@@ -367,7 +387,7 @@ mod tests {
                 baud: 921600
             }
         );
-        assert_eq!(s.name, "serial-/dev/ttyUSB0-921600");
+        assert_eq!(s.name, "serial-_dev_ttyUSB0-921600");
         assert!(!s.explicit_name);
     }
 
@@ -492,7 +512,7 @@ mod tests {
                 port: 14550
             }
         );
-        assert_eq!(s.name, "udps-0.0.0.0-14550");
+        assert_eq!(s.name, "udps-0_0_0_0-14550");
     }
 
     #[test]
@@ -505,7 +525,7 @@ mod tests {
                 port: 14550
             }
         );
-        assert_eq!(s.name, "udps-::-14550");
+        assert_eq!(s.name, "udps-__-14550");
     }
 
     #[test]
@@ -567,7 +587,7 @@ mod tests {
             s.query.get("allow_src_sys_out").map(String::as_str),
             Some("1")
         );
-        assert_eq!(s.name, "tcpc-gcs.local-5760");
+        assert_eq!(s.name, "tcpc-gcs_local-5760");
     }
 
     #[test]
@@ -827,6 +847,33 @@ mod tests {
         assert_eq!(levenshtein("abc", "abc"), 0);
         assert_eq!(levenshtein("kitten", "sitting"), 3);
         assert_eq!(levenshtein("snifer", "sniffer"), 1);
+    }
+
+    #[test]
+    fn auto_names_satisfy_explicit_name_regex() {
+        for input in &[
+            "serial:/dev/ttyUSB0:921600",
+            r"serial:\\.\COM10:115200",
+            "udps:0.0.0.0:14550",
+            "udps:[::]:14550",
+            "tcps:[2001:db8::1]:5760",
+            "tcpc:gcs.local:5760",
+            "udpc:companion.local:14550",
+        ] {
+            let s = parse_ok(input);
+            validate_name(&s.name)
+                .unwrap_or_else(|e| panic!("auto-name {:?} fails name regex: {e}", s.name));
+        }
+    }
+
+    #[test]
+    fn sanitize_for_name_replaces_disallowed_chars() {
+        assert_eq!(sanitize_for_name("0.0.0.0"), "0_0_0_0");
+        assert_eq!(sanitize_for_name("/dev/ttyUSB0"), "_dev_ttyUSB0");
+        assert_eq!(sanitize_for_name("::1"), "__1");
+        assert_eq!(sanitize_for_name("gcs.local"), "gcs_local");
+        assert_eq!(sanitize_for_name(r"\\.\COM10"), "____COM10");
+        assert_eq!(sanitize_for_name("abc_DEF-123"), "abc_DEF-123");
     }
 
     #[test]

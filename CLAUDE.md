@@ -237,7 +237,7 @@ Output channels:
 
 CLI + TOML merge: TOML endpoints are processed first, CLI endpoints appended in argv order. Endpoint names (`#name`) must be unique across the combined set — a duplicate is a fatal error, not a merge. CLI globals override TOML globals on a per-key basis.
 
-Endpoint name defaults: when `#name` is omitted, a name is derived from `scheme-addr-port` (e.g. `udps-0.0.0.0-14550`) so logs and stats never display `endpoint=<unnamed>`. Explicit `#name` values must match `[A-Za-z0-9_-]{1,64}` — anything else is a parse-time error with a clear message (so names are safe in logs, JSON stats, and span fields).
+Endpoint name defaults: when `#name` is omitted, a name is derived from `scheme-addr-port` (e.g. `udps:0.0.0.0:14550` → `udps-0_0_0_0-14550`) so logs and stats never display `endpoint=<unnamed>`. Characters outside `[A-Za-z0-9_-]` in the addr part (dots in IPv4, colons in IPv6, slashes in serial paths) are replaced with `_` so the auto-name satisfies the same regex as explicit names. Explicit `#name` values must match `[A-Za-z0-9_-]{1,64}` — anything else is a parse-time error with a clear message (so names are safe in logs, JSON stats, span fields, and as sub-endpoint name prefixes).
 
 **Filter list grammar.** All `allow_*` / `block_*` query values are comma-separated lists of **decimal integers and decimal `lo-hi` ranges**, e.g. `block_msgid_in=33,100-150,32`. Whitespace around items is tolerated; everything else (hex literals, symbolic names like `HEARTBEAT`, wildcards) is a parse-time error with a clear message. Ranges are inclusive on both ends; `lo > hi` is fatal. Same grammar applies in TOML (`block_msgid_in = "33,100-150,32"` as a string, parsed identically).
 
