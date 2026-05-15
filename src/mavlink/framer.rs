@@ -2,8 +2,8 @@ use bytes::{Buf, Bytes, BytesMut};
 
 use super::crc::Crc16;
 use super::frame::{
-    CRC_LEN, ParsedHeader, STX_V1, STX_V2, V1_HEADER_LEN, V2_HEADER_LEN, V2_IFLAG_SIGNED,
-    V2_SIGNATURE_LEN, Version,
+    CRC_LEN, ParsedHeader, Stx, V1_HEADER_LEN, V2_HEADER_LEN, V2_IFLAG_SIGNED, V2_SIGNATURE_LEN,
+    Version,
 };
 use super::msgid_table::{self, MsgEntry};
 
@@ -55,7 +55,7 @@ impl Framer {
     pub fn try_next_frame(&mut self) -> Option<(ParsedHeader, Bytes)> {
         loop {
             let stx = self.align_to_stx()?;
-            if self.buf.len() < stx_header_len(stx) {
+            if self.buf.len() < stx.header_len() {
                 return None;
             }
             let (frame_len, incompat_flags) = match self.decide_frame_len(stx) {
@@ -81,17 +81,22 @@ impl Framer {
     }
 
     /// Advance over any garbage prefix until the buffer starts at an STX byte.
-    /// Returns the STX byte that's now at `buf[0]`, or None if the buffer held
+    /// Returns the [`Stx`] variant now at `buf[0]`, or None if the buffer held
     /// no STX at all (in which case all of it is counted as resync and the
     /// buffer is cleared — nothing read so far can ever become a frame).
-    fn align_to_stx(&mut self) -> Option<u8> {
-        match self.buf.iter().position(|&b| b == STX_V1 || b == STX_V2) {
-            Some(pos) => {
+    fn align_to_stx(&mut self) -> Option<Stx> {
+        let found = self
+            .buf
+            .iter()
+            .enumerate()
+            .find_map(|(i, &b)| Stx::from_byte(b).map(|s| (i, s)));
+        match found {
+            Some((pos, stx)) => {
                 if pos > 0 {
                     self.add_resync(pos as u64);
                     self.buf.advance(pos);
                 }
-                Some(self.buf[0])
+                Some(stx)
             }
             None => {
                 self.add_resync(self.buf.len() as u64);
@@ -103,14 +108,14 @@ impl Framer {
 
     /// Peek the header far enough to compute the full frame length. Caller
     /// must have verified that `buf` already holds the header bytes for `stx`.
-    fn decide_frame_len(&self, stx: u8) -> FrameLen {
+    fn decide_frame_len(&self, stx: Stx) -> FrameLen {
         let payload_len = self.buf[1] as usize;
         match stx {
-            STX_V1 => FrameLen::Ready {
+            Stx::V1 => FrameLen::Ready {
                 frame_len: V1_HEADER_LEN + payload_len + CRC_LEN,
                 incompat_flags: 0,
             },
-            STX_V2 => {
+            Stx::V2 => {
                 let iflags = self.buf[2];
                 if iflags & !V2_IFLAG_SIGNED != 0 {
                     return FrameLen::UnknownIncompatFlag;
@@ -125,7 +130,6 @@ impl Framer {
                     incompat_flags: iflags,
                 }
             }
-            _ => unreachable!("align_to_stx returned non-STX byte"),
         }
     }
 
@@ -134,7 +138,7 @@ impl Framer {
     /// caller's loop retries on None.
     fn try_validate_and_emit(
         &mut self,
-        stx: u8,
+        stx: Stx,
         incompat_flags: u8,
         frame_len: usize,
     ) -> Option<(ParsedHeader, Bytes)> {
@@ -188,24 +192,15 @@ enum FrameLen {
     UnknownIncompatFlag,
 }
 
-#[inline]
-fn stx_header_len(stx: u8) -> usize {
-    match stx {
-        STX_V1 => V1_HEADER_LEN,
-        STX_V2 => V2_HEADER_LEN,
-        _ => unreachable!("align_to_stx returned non-STX byte"),
-    }
-}
-
 impl Default for Framer {
     fn default() -> Self {
         Self::new()
     }
 }
 
-fn parse_header(frame: &[u8], stx: u8, incompat_flags: u8) -> ParsedHeader {
+fn parse_header(frame: &[u8], stx: Stx, incompat_flags: u8) -> ParsedHeader {
     match stx {
-        STX_V1 => ParsedHeader {
+        Stx::V1 => ParsedHeader {
             version: Version::V1,
             payload_len: frame[1],
             seq: frame[2],
@@ -217,7 +212,7 @@ fn parse_header(frame: &[u8], stx: u8, incompat_flags: u8) -> ParsedHeader {
             target_system: None,
             target_component: None,
         },
-        STX_V2 => ParsedHeader {
+        Stx::V2 => ParsedHeader {
             version: Version::V2,
             payload_len: frame[1],
             incompat_flags,
@@ -229,7 +224,6 @@ fn parse_header(frame: &[u8], stx: u8, incompat_flags: u8) -> ParsedHeader {
             target_system: None,
             target_component: None,
         },
-        _ => unreachable!(),
     }
 }
 
@@ -270,6 +264,7 @@ fn extract_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mavlink::frame::{STX_V1, STX_V2};
     use crate::mavlink::msgid_table;
     use bytes::BufMut;
 
@@ -690,6 +685,7 @@ mod tests {
 #[cfg(test)]
 mod property_tests {
     use super::*;
+    use crate::mavlink::frame::{STX_V1, STX_V2};
     use bytes::BufMut;
     use proptest::prelude::*;
 

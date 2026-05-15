@@ -1,8 +1,4 @@
 //! MAVLink wire-format types and constants.
-//!
-//! "STX" (start of text) is the byte that marks the start of a MAVLink frame
-//! on the wire. The byte value differs by wire version (`STX_V1` = 0xFE,
-//! `STX_V2` = 0xFD) so a parser can detect the version after a single byte.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
@@ -21,6 +17,30 @@ pub const V2_SIGNATURE_LEN: usize = 13;
 pub(crate) const V1_HEADER_LEN: usize = 6;
 pub(crate) const V2_HEADER_LEN: usize = 10;
 pub(crate) const CRC_LEN: usize = 2;
+
+/// Which STX byte the framer is currently aligned on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stx {
+    V1,
+    V2,
+}
+
+impl Stx {
+    pub(crate) const fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            STX_V1 => Some(Stx::V1),
+            STX_V2 => Some(Stx::V2),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn header_len(self) -> usize {
+        match self {
+            Stx::V1 => V1_HEADER_LEN,
+            Stx::V2 => V2_HEADER_LEN,
+        }
+    }
+}
 
 /// Routing-relevant fields extracted from a MAVLink frame header in the reader
 /// task, so the router never re-parses. Bytes the header was decoded from stay
