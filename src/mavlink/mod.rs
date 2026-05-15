@@ -1,7 +1,7 @@
-pub mod crc;
-pub mod crc_extra;
+pub(crate) mod crc;
+pub(crate) mod crc_extra;
 pub mod frame;
 pub mod framer;
-pub mod generated;
-pub mod msgid_table;
-pub mod xml_loader;
+pub(crate) mod generated;
+pub(crate) mod msgid_table;
+pub(crate) mod xml_loader;

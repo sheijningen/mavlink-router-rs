@@ -10,9 +10,9 @@ pub const STX_V2: u8 = 0xFD;
 pub const V2_IFLAG_SIGNED: u8 = 0x01;
 pub const V2_SIGNATURE_LEN: usize = 13;
 
-pub const V1_HEADER_LEN: usize = 6;
-pub const V2_HEADER_LEN: usize = 10;
-pub const CRC_LEN: usize = 2;
+pub(crate) const V1_HEADER_LEN: usize = 6;
+pub(crate) const V2_HEADER_LEN: usize = 10;
+pub(crate) const CRC_LEN: usize = 2;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ParsedHeader {
@@ -33,7 +33,7 @@ pub struct ParsedHeader {
 }
 
 impl ParsedHeader {
-    pub fn payload_start(&self) -> usize {
+    pub(crate) fn payload_start(&self) -> usize {
         match self.version {
             Version::V1 => V1_HEADER_LEN,
             Version::V2 => V2_HEADER_LEN,
