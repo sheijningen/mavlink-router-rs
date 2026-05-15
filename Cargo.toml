@@ -41,3 +41,7 @@ proptest = "1"
 [features]
 default = []
 serial_hw = []
+
+# Temporary: phases 0-6 introduce code ahead of its callers. Remove after phase 7.
+[lints.rust]
+dead_code = "allow"
