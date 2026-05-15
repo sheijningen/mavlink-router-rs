@@ -1,16 +1,5 @@
 // Single source of truth for the CRC-16-MCRF4XX (MAVLink CRC) update step
-// and the `crc_extra` byte computation.
-//
-// This file is `include!`d from `build.rs` (Cargo forbids `build.rs` from
-// `use`ing items in the crate it is building), so it MUST be self-contained:
-// no `use crate::*`, no `use super::*`, no `mod` declarations that refer to
-// sibling files. It is also exposed as a regular module via
-// `pub mod crc_extra;` in `mavlink/mod.rs`, so the rest of the crate can call
-// these helpers directly. Items are `pub(crate)` for both consumers.
-//
-// References:
-//   - https://mavlink.io/en/guide/serialization.html#checksum
-//   - pymavlink/generator/mavparse.py (`message_checksum`, MAVField sorting)
+// and the `crc_extra` byte computation. Used both in the project and in `build.rs`.
 
 pub(crate) const CRC_INIT: u16 = 0xFFFF;
 

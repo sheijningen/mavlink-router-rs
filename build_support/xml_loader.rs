@@ -1,10 +1,4 @@
-// Generic include-graph walker. `include!`d into build.rs (the only
-// production user) and into tests/build_support.rs (which drives the
-// unit tests below). build.rs uses it with K = PathBuf (canonicalised);
-// the tests below use K = &'static str so they don't need real files.
-//
-// Must remain self-contained (no `use crate::*`, no sibling `mod`) so
-// the include! works in both contexts.
+// Generic include-graph walker.  build.rs uses it with K = PathBuf (canonicalised);
 
 #[derive(Debug)]
 pub(crate) enum WalkError<K> {
