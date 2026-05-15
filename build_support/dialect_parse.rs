@@ -1,9 +1,10 @@
-// Pure transforms over MAVLink dialect parse results, shared between
-// build.rs (via include!) and the runtime crate (so unit tests can drive
-// them without running build.rs). No I/O, no XML parsing — quick-xml lives
-// only in build-dependencies.
+// Pure transforms over MAVLink dialect parse results. `include!`d into
+// build.rs (the only production user) and into tests/build_support.rs
+// (which drives the unit tests below). No I/O, no XML parsing —
+// quick-xml lives only in build-dependencies.
 //
-// Must remain self-contained (no `use crate::*`, no sibling `mod`).
+// Must remain self-contained (no `use crate::*`, no sibling `mod`) so
+// the include! works in both contexts.
 
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedField {

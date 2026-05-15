@@ -15,11 +15,11 @@ include!(concat!(
 ));
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/src/mavlink/xml_loader.rs"
+    "/build_support/xml_loader.rs"
 ));
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/src/mavlink/dialect_parse.rs"
+    "/build_support/dialect_parse.rs"
 ));
 
 use std::collections::HashMap;
@@ -35,8 +35,9 @@ const DIALECTS: &[&str] = &["common.xml", "ardupilotmega.xml"];
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/mavlink/crc_extra.rs");
-    println!("cargo:rerun-if-changed=src/mavlink/xml_loader.rs");
-    println!("cargo:rerun-if-changed=src/mavlink/dialect_parse.rs");
+    println!("cargo:rerun-if-changed=build_support");
+    println!("cargo:rerun-if-changed=build_support/xml_loader.rs");
+    println!("cargo:rerun-if-changed=build_support/dialect_parse.rs");
 
     let xml_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("vendor")
