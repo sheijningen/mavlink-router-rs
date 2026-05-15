@@ -1,27 +1,22 @@
-// Pure transforms over MAVLink dialect parse results. `include!`d into
-// build.rs (the only production user) and into tests/build_support.rs
-// (which drives the unit tests below). No I/O, no XML parsing —
-// quick-xml lives only in build-dependencies.
-//
-// Must remain self-contained (no `use crate::*`, no sibling `mod`) so
-// the include! works in both contexts.
+// Pure transforms over MAVLink dialect parse results from `build.rs`.
 
-/// One MAVLink `<field>` parsed from a dialect XML. Array suffix (`uint8_t[16]`)
-/// has been split into `type_name = "uint8_t"` + `array_length = 16`.
+/// One MAVLink `<field>` parsed from a dialect XML.
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedField {
     pub name: String,
+    /// Element type without any `[N]` suffix (split off into `array_length`).
     pub type_name: String,
+    /// 0 for scalars, otherwise the array length `N` parsed off the suffix.
     pub array_length: u8,
     pub is_extension: bool,
 }
 
-/// One MAVLink `<message>` parsed from a dialect XML. `fields` is in
-/// declaration order; size-sorting for wire layout happens downstream.
+/// One MAVLink `<message>` parsed from a dialect XML.
 #[derive(Debug)]
 pub(crate) struct ParsedMessage {
     pub id: u32,
     pub name: String,
+    /// In XML declaration order; size-sorting for wire layout happens downstream.
     pub fields: Vec<ParsedField>,
 }
 

@@ -2,15 +2,17 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-/// A single endpoint declaration after parsing a CLI string or TOML entry.
-/// `kind` carries the scheme-specific address; `name` is either the explicit
-/// `#name` fragment or an auto-name derived from the scheme + address.
-/// `query` holds the post-`?` key/value overrides (filters, timeouts, etc.).
+/// One endpoint declaration after parsing a CLI string or TOML entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EndpointSpec {
+    /// Scheme-specific address (serial path + baud, or UDP/TCP host + port).
     pub kind: EndpointKind,
+    /// Either the explicit `#name` fragment or an auto-name derived from the
+    /// scheme + address (sanitised to satisfy the explicit-name regex).
     pub name: String,
+    /// True when `name` came from `#name` rather than being auto-derived.
     pub explicit_name: bool,
+    /// Post-`?` key/value overrides (filters, timeouts, group memberships).
     pub query: BTreeMap<String, String>,
 }
 

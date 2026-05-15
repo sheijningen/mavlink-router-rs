@@ -1,21 +1,18 @@
+//! MAVLink wire-format types and constants.
+//!
+//! "STX" (start of text) is the byte that marks the start of a MAVLink frame
+//! on the wire. The byte value differs by wire version (`STX_V1` = 0xFE,
+//! `STX_V2` = 0xFD) so a parser can detect the version after a single byte.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
     V1,
     V2,
 }
 
-/// Start-of-frame byte for MAVLink v1. The 6-byte v1 header begins with this
-/// byte (then `len`, `seq`, `sysid`, `compid`, `msgid`); the header is
-/// followed by `len` payload bytes and a 2-byte CRC.
+/// Start-of-frame byte for MAVLink v1.
 pub const STX_V1: u8 = 0xFE;
-
-/// Start-of-frame byte for MAVLink v2. Distinct from `STX_V1` so a parser
-/// detects the wire version after a single byte. The 10-byte v2 header
-/// begins with this byte (then `len`, `incompat_flags`, `compat_flags`,
-/// `seq`, `sysid`, `compid`, and a 3-byte little-endian `msgid`); the header
-/// is followed by `len` payload bytes, a 2-byte CRC, and — when the
-/// `V2_IFLAG_SIGNED` bit is set in `incompat_flags` — a 13-byte signature
-/// trailer that RMR forwards opaquely.
+/// Start-of-frame byte for MAVLink v2.
 pub const STX_V2: u8 = 0xFD;
 
 pub const V2_IFLAG_SIGNED: u8 = 0x01;

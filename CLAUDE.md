@@ -463,7 +463,7 @@ CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `c
 ## Conventions for this repo
 
 - Default to no comments. Names should carry the meaning; comments are for non-obvious WHY.
-- **Every struct gets a brief `///` docstring** explaining its purpose — what it represents and why it exists, not how it's used. This is API documentation (visible in rustdoc), not a regular comment, and is exempt from the "no comments" rule above. One or two sentences. Field-level docstrings remain optional and reserved for non-obvious fields.
+- **Every struct gets a brief `///` docstring** explaining its purpose — what it represents and why it exists, not how it's used. This is API documentation (visible in rustdoc), not a regular comment, and is exempt from the "no comments" rule above. One or two sentences. Keep the struct docstring about the **type as a whole** — do not list or describe individual fields in it. If a field needs explanation, attach the `///` to that field; the struct docstring is not the place for it. Self-explanatory fields stay undocumented.
 - One `tracing::span` per endpoint; route decisions log at `trace!`.
 - Errors are `thiserror` enums per module, joined at the binary boundary by a top-level `Error` enum with `From` impls. **No `anyhow`** anywhere in the tree, including `main`.
 - No `unwrap()` outside of `main()` startup and tests.

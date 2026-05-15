@@ -1,16 +1,21 @@
 use super::generated::SORTED;
 
-/// A single row of the build-time `SORTED` msgid table. Holds everything the
-/// router needs to validate and route a frame of this msgid without parsing
-/// the payload: CRC seed, the v1 wire size (used as the v2 zero-trim ceiling),
-/// and the offsets at which `target_system` / `target_component` would sit
-/// when the msgid carries them.
+/// One row of the build-time `SORTED` msgid table — everything the router
+/// needs to validate and route a frame of this msgid without parsing the
+/// payload.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MsgEntry {
     pub name: &'static str,
+    /// CRC-16-MCRF4XX seed mixed in after the framed bytes.
     pub crc_extra: u8,
+    /// Sum of non-extension field sizes (the v1 wire size); also the v2
+    /// zero-trim ceiling.
     pub min_payload_len: u16,
+    /// Payload-relative offset of the `target_system` field if this msgid
+    /// carries one, else `None`.
     pub target_sys_offset: Option<u16>,
+    /// Payload-relative offset of the `target_component` field if this msgid
+    /// carries one, else `None`.
     pub target_comp_offset: Option<u16>,
 }
 
