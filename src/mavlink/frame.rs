@@ -4,7 +4,18 @@ pub enum Version {
     V2,
 }
 
+/// Start-of-frame byte for MAVLink v1. The 6-byte v1 header begins with this
+/// byte (then `len`, `seq`, `sysid`, `compid`, `msgid`); the header is
+/// followed by `len` payload bytes and a 2-byte CRC.
 pub const STX_V1: u8 = 0xFE;
+
+/// Start-of-frame byte for MAVLink v2. Distinct from `STX_V1` so a parser
+/// detects the wire version after a single byte. The 10-byte v2 header
+/// begins with this byte (then `len`, `incompat_flags`, `compat_flags`,
+/// `seq`, `sysid`, `compid`, and a 3-byte little-endian `msgid`); the header
+/// is followed by `len` payload bytes, a 2-byte CRC, and — when the
+/// `V2_IFLAG_SIGNED` bit is set in `incompat_flags` — a 13-byte signature
+/// trailer that RMR forwards opaquely.
 pub const STX_V2: u8 = 0xFD;
 
 pub const V2_IFLAG_SIGNED: u8 = 0x01;
