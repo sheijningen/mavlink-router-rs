@@ -356,7 +356,8 @@ Each phase ends in a usable binary. Don't skip ahead; each phase exposes integra
 
 - [ ] **Two-class priority TX queue per endpoint** (`low_priority_msgids` config list, weighted drain ratio configurable, default 4:1). High class is the existing single queue from Phase 5; low class is added alongside. No reordering within a class.
 - [ ] Stats output: dedicated stats task draining a bounded `mpsc<StatsLine>` (`stats_queue_lines`, default 256); JSON-Lines on stdout, one object per `--stats-interval` (default 5s), enabled by `--stats`; `ts` field formatted by `time` crate as RFC 3339 UTC; `BrokenPipe` on stdout logs once at WARN and continues; overflow increments `stats_dropped` and emits a WARN at most once per interval. Schema documented in this file.
-- [ ] Cross-platform CI (GitHub Actions: linux-x86_64, linux-aarch64, windows-x86_64, macos)
+- [ ] Cross-platform CI (GitHub Actions: linux-x86_64, linux-aarch64, windows-x86_64, macos) — extends the ubuntu+windows matrix already in place from Phase 0
+- [ ] Remove the temporary `[lints.rust] dead_code = "allow"` from `Cargo.toml` and delete any code that is genuinely unused
 - [ ] Release artifacts (musl static for Linux, MSVC for Windows)
 
 ### Stretch (not v1)
