@@ -17,6 +17,10 @@ include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/src/mavlink/xml_loader.rs"
 ));
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/mavlink/dialect_parse.rs"
+));
 
 use std::collections::HashMap;
 use std::fs;
@@ -28,34 +32,11 @@ use quick_xml::events::{BytesStart, Event};
 
 const DIALECTS: &[&str] = &["common.xml", "ardupilotmega.xml"];
 
-#[derive(Debug)]
-struct ParsedField {
-    name: String,
-    type_name: String,
-    array_length: u8,
-    is_extension: bool,
-}
-
-#[derive(Debug)]
-struct ParsedMessage {
-    id: u32,
-    name: String,
-    fields: Vec<ParsedField>,
-}
-
-#[derive(Debug, Clone)]
-struct MsgEntryGen {
-    name: String,
-    crc_extra: u8,
-    min_payload_len: u16,
-    target_sys_offset: Option<u16>,
-    target_comp_offset: Option<u16>,
-}
-
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/mavlink/crc_extra.rs");
     println!("cargo:rerun-if-changed=src/mavlink/xml_loader.rs");
+    println!("cargo:rerun-if-changed=src/mavlink/dialect_parse.rs");
 
     let xml_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("vendor")
@@ -134,52 +115,30 @@ fn main() {
 }
 
 fn ingest_message(canon: &Path, msg: ParsedMessage, entries: &mut HashMap<u32, MsgEntryGen>) {
-    let crc_fields: Vec<CrcExtraField<'_>> = msg
-        .fields
-        .iter()
-        .map(|f| CrcExtraField {
-            name: &f.name,
-            type_name: &f.type_name,
-            array_length: f.array_length,
-            is_extension: f.is_extension,
-        })
-        .collect();
-    let crc_extra = crc_extra_for_message(&msg.name, &crc_fields);
+    let crc_extra = {
+        let crc_fields: Vec<CrcExtraField<'_>> = msg
+            .fields
+            .iter()
+            .map(|f| CrcExtraField {
+                name: &f.name,
+                type_name: &f.type_name,
+                array_length: f.array_length,
+                is_extension: f.is_extension,
+            })
+            .collect();
+        crc_extra_for_message(&msg.name, &crc_fields)
+    };
     let (min_payload_len, target_sys_offset, target_comp_offset) = compute_offsets(&msg.fields);
-
-    if let Some(prev) = entries.get(&msg.id) {
-        if prev.crc_extra != crc_extra {
-            panic!(
-                "crc_extra conflict for msgid {} ({} vs {} in {}): {} != {}",
-                msg.id,
-                prev.name,
-                msg.name,
-                canon.display(),
-                prev.crc_extra,
-                crc_extra
-            );
-        }
-        if prev.name != msg.name {
-            panic!(
-                "msgid {} declared under two names: '{}' and '{}' (in {})",
-                msg.id,
-                prev.name,
-                msg.name,
-                canon.display()
-            );
-        }
-        return;
-    }
-    entries.insert(
+    merge_entry(
         msg.id,
-        MsgEntryGen {
-            name: msg.name,
-            crc_extra,
-            min_payload_len,
-            target_sys_offset,
-            target_comp_offset,
-        },
-    );
+        msg.name,
+        crc_extra,
+        min_payload_len,
+        target_sys_offset,
+        target_comp_offset,
+        entries,
+    )
+    .unwrap_or_else(|e| panic!("{e} (in {})", canon.display()));
 }
 
 fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
@@ -218,7 +177,8 @@ fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
                     "field" => {
                         if let Some(msg) = current_msg.as_mut() {
                             let (type_name, field_name) = parse_field_attrs(&e);
-                            let (elem, len) = parse_array_suffix(&type_name);
+                            let (elem, len) = parse_array_suffix(&type_name)
+                                .unwrap_or_else(|err| panic!("{err}"));
                             msg.fields.push(ParsedField {
                                 name: field_name,
                                 type_name: elem,
@@ -243,7 +203,8 @@ fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
                     "field" => {
                         if let Some(msg) = current_msg.as_mut() {
                             let (type_name, field_name) = parse_field_attrs(&e);
-                            let (elem, len) = parse_array_suffix(&type_name);
+                            let (elem, len) = parse_array_suffix(&type_name)
+                                .unwrap_or_else(|err| panic!("{err}"));
                             msg.fields.push(ParsedField {
                                 name: field_name,
                                 type_name: elem,
@@ -321,24 +282,6 @@ fn parse_field_attrs(e: &BytesStart<'_>) -> (String, String) {
         }
     }
     (type_name, field_name)
-}
-
-fn parse_array_suffix(t: &str) -> (String, u8) {
-    if let Some(lb) = t.find('[') {
-        let rb = t
-            .find(']')
-            .unwrap_or_else(|| panic!("malformed array type '{t}'"));
-        let elem = t[..lb].to_string();
-        let len: u8 = t[lb + 1..rb]
-            .parse()
-            .unwrap_or_else(|_| panic!("bad array length in '{t}'"));
-        if len == 0 {
-            panic!("zero-length array in '{t}'");
-        }
-        (elem, len)
-    } else {
-        (t.to_string(), 0)
-    }
 }
 
 fn compute_offsets(fields: &[ParsedField]) -> (u16, Option<u16>, Option<u16>) {
