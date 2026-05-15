@@ -1,1 +1,89 @@
+use super::generated::SORTED;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MsgEntry {
+    pub name: &'static str,
+    pub crc_extra: u8,
+    pub min_payload_len: u16,
+    pub target_sys_offset: Option<u16>,
+    pub target_comp_offset: Option<u16>,
+}
+
+pub(crate) fn lookup(msgid: u32) -> Option<&'static MsgEntry> {
+    SORTED
+        .binary_search_by_key(&msgid, |(id, _)| *id)
+        .ok()
+        .map(|i| &SORTED[i].1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heartbeat() {
+        let e = lookup(0).expect("HEARTBEAT (id 0) must be in the table");
+        assert_eq!(e.name, "HEARTBEAT");
+        assert_eq!(e.crc_extra, 50);
+        assert_eq!(e.min_payload_len, 9);
+        assert_eq!(e.target_sys_offset, None);
+        assert_eq!(e.target_comp_offset, None);
+    }
+
+    #[test]
+    fn sys_status() {
+        let e = lookup(1).expect("SYS_STATUS (id 1) must be in the table");
+        assert_eq!(e.name, "SYS_STATUS");
+        assert_eq!(e.crc_extra, 124);
+        assert_eq!(e.min_payload_len, 31);
+        assert_eq!(e.target_sys_offset, None);
+    }
+
+    #[test]
+    fn ping_target_offsets() {
+        let e = lookup(4).expect("PING (id 4) must be in the table");
+        assert_eq!(e.name, "PING");
+        assert_eq!(e.crc_extra, 237);
+        // Wire order: time_usec (u64, 0..8), seq (u32, 8..12),
+        //             target_system (u8, 12), target_component (u8, 13).
+        assert_eq!(e.target_sys_offset, Some(12));
+        assert_eq!(e.target_comp_offset, Some(13));
+        assert_eq!(e.min_payload_len, 14);
+    }
+
+    #[test]
+    fn attitude() {
+        let e = lookup(30).expect("ATTITUDE (id 30) must be in the table");
+        assert_eq!(e.name, "ATTITUDE");
+        assert_eq!(e.crc_extra, 39);
+        assert_eq!(e.min_payload_len, 28);
+        assert_eq!(e.target_sys_offset, None);
+    }
+
+    #[test]
+    fn unknown_msgid_returns_none() {
+        assert!(lookup(0x00FF_FFFF).is_none());
+    }
+
+    #[test]
+    fn sorted_invariant() {
+        let mut prev: Option<u32> = None;
+        for (id, _) in SORTED {
+            if let Some(p) = prev {
+                assert!(*id > p, "SORTED not sorted by msgid: {p} then {id}");
+            }
+            prev = Some(*id);
+        }
+    }
+
+    #[test]
+    fn table_is_nonempty() {
+        // common.xml alone is ~230 messages; with ardupilotmega we should be
+        // well over 300. A small number means the parser dropped messages.
+        assert!(
+            SORTED.len() > 200,
+            "msgid table too small: {}",
+            SORTED.len()
+        );
+    }
+}
