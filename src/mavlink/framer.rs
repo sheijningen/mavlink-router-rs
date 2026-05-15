@@ -5,7 +5,7 @@ use super::frame::{
     CRC_LEN, ParsedHeader, STX_V1, STX_V2, V1_HEADER_LEN, V2_HEADER_LEN, V2_IFLAG_SIGNED,
     V2_SIGNATURE_LEN, Version,
 };
-use super::msgid_table;
+use super::msgid_table::{self, MsgEntry};
 
 const DEFAULT_BUF_CAPACITY: usize = 8192;
 
@@ -104,8 +104,13 @@ impl Framer {
 
             let header = parse_header(&self.buf[..frame_len], stx, incompat_flags);
 
-            let crc_ok = match msgid_table::lookup(header.msgid) {
-                Some(entry) => validate_crc(&self.buf[..frame_len], &header, entry.crc_extra),
+            // Lookup once per frame; thread the result into both CRC and target
+            // extraction so the table is hit a single time even though both
+            // steps need it.
+            let entry: Option<&'static MsgEntry> = msgid_table::lookup(header.msgid);
+
+            let crc_ok = match entry {
+                Some(e) => validate_crc(&self.buf[..frame_len], &header, e.crc_extra),
                 None => true,
             };
 
@@ -117,7 +122,7 @@ impl Framer {
             }
 
             let (target_system, target_component) =
-                extract_targets(&self.buf[..frame_len], &header);
+                extract_targets(&self.buf[..frame_len], &header, entry);
             let full_header = ParsedHeader {
                 target_system,
                 target_component,
@@ -177,10 +182,13 @@ fn validate_crc(frame: &[u8], header: &ParsedHeader, crc_extra: u8) -> bool {
     crc.finalize() == expected
 }
 
-fn extract_targets(frame: &[u8], header: &ParsedHeader) -> (Option<u8>, Option<u8>) {
-    let entry = match msgid_table::lookup(header.msgid) {
-        Some(e) => e,
-        None => return (None, None),
+fn extract_targets(
+    frame: &[u8],
+    header: &ParsedHeader,
+    entry: Option<&'static MsgEntry>,
+) -> (Option<u8>, Option<u8>) {
+    let Some(entry) = entry else {
+        return (None, None);
     };
     let payload_start = header.payload_start();
     let payload_len = header.payload_len as usize;
