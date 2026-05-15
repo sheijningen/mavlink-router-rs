@@ -13,8 +13,12 @@ include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/src/mavlink/crc_extra.rs"
 ));
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/mavlink/xml_loader.rs"
+));
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -51,18 +55,44 @@ struct MsgEntryGen {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/mavlink/crc_extra.rs");
+    println!("cargo:rerun-if-changed=src/mavlink/xml_loader.rs");
 
     let xml_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("vendor")
         .join("mavlink");
 
     let mut entries: HashMap<u32, MsgEntryGen> = HashMap::new();
-    let mut visited: HashSet<PathBuf> = HashSet::new();
-    let mut in_progress: HashSet<PathBuf> = HashSet::new();
 
     for dialect in DIALECTS {
         let p = xml_dir.join(dialect);
-        process_xml(&p, &mut entries, &mut visited, &mut in_progress);
+        let root = fs::canonicalize(&p)
+            .unwrap_or_else(|e| panic!("dialect XML not found: {} ({})", p.display(), e));
+        let walk = walk_includes(root, |canon: &PathBuf| -> Result<Vec<PathBuf>, String> {
+            println!("cargo:rerun-if-changed={}", canon.display());
+            let content = fs::read_to_string(canon).map_err(|e| e.to_string())?;
+            let (includes, messages) = parse_xml(&content);
+            for msg in messages {
+                ingest_message(canon, msg, &mut entries);
+            }
+            let dir = canon.parent().expect("XML has a parent dir");
+            includes
+                .into_iter()
+                .map(|inc| {
+                    let raw = dir.join(&inc);
+                    fs::canonicalize(&raw)
+                        .map_err(|e| format!("canonicalize include {}: {}", raw.display(), e))
+                })
+                .collect()
+        });
+        match walk {
+            Ok(()) => {}
+            Err(WalkError::Cycle(p)) => {
+                panic!("cycle in <include> resolution at {}", p.display());
+            }
+            Err(WalkError::LoadFailed { key, reason }) => {
+                panic!("failed to load {}: {}", key.display(), reason);
+            }
+        }
     }
 
     if entries.is_empty() {
@@ -103,84 +133,53 @@ fn main() {
     writeln!(out, "];").unwrap();
 }
 
-fn process_xml(
-    path: &Path,
-    entries: &mut HashMap<u32, MsgEntryGen>,
-    visited: &mut HashSet<PathBuf>,
-    in_progress: &mut HashSet<PathBuf>,
-) {
-    let canon = fs::canonicalize(path)
-        .unwrap_or_else(|e| panic!("dialect XML not found: {} ({})", path.display(), e));
+fn ingest_message(canon: &Path, msg: ParsedMessage, entries: &mut HashMap<u32, MsgEntryGen>) {
+    let crc_fields: Vec<CrcExtraField<'_>> = msg
+        .fields
+        .iter()
+        .map(|f| CrcExtraField {
+            name: &f.name,
+            type_name: &f.type_name,
+            array_length: f.array_length,
+            is_extension: f.is_extension,
+        })
+        .collect();
+    let crc_extra = crc_extra_for_message(&msg.name, &crc_fields);
+    let (min_payload_len, target_sys_offset, target_comp_offset) = compute_offsets(&msg.fields);
 
-    if in_progress.contains(&canon) {
-        panic!("cycle in <include> resolution at {}", canon.display());
-    }
-    if !visited.insert(canon.clone()) {
+    if let Some(prev) = entries.get(&msg.id) {
+        if prev.crc_extra != crc_extra {
+            panic!(
+                "crc_extra conflict for msgid {} ({} vs {} in {}): {} != {}",
+                msg.id,
+                prev.name,
+                msg.name,
+                canon.display(),
+                prev.crc_extra,
+                crc_extra
+            );
+        }
+        if prev.name != msg.name {
+            panic!(
+                "msgid {} declared under two names: '{}' and '{}' (in {})",
+                msg.id,
+                prev.name,
+                msg.name,
+                canon.display()
+            );
+        }
         return;
     }
-    in_progress.insert(canon.clone());
-    println!("cargo:rerun-if-changed={}", canon.display());
-
-    let content =
-        fs::read_to_string(&canon).unwrap_or_else(|e| panic!("read {}: {}", canon.display(), e));
-    let (includes, messages) = parse_xml(&content);
-
-    let dir = canon.parent().expect("XML has a parent dir").to_path_buf();
-    for inc in includes {
-        let inc_path = dir.join(&inc);
-        process_xml(&inc_path, entries, visited, in_progress);
-    }
-
-    for msg in messages {
-        let crc_fields: Vec<CrcExtraField<'_>> = msg
-            .fields
-            .iter()
-            .map(|f| CrcExtraField {
-                name: &f.name,
-                type_name: &f.type_name,
-                array_length: f.array_length,
-                is_extension: f.is_extension,
-            })
-            .collect();
-        let crc_extra = crc_extra_for_message(&msg.name, &crc_fields);
-        let (min_payload_len, target_sys_offset, target_comp_offset) = compute_offsets(&msg.fields);
-
-        if let Some(prev) = entries.get(&msg.id) {
-            if prev.crc_extra != crc_extra {
-                panic!(
-                    "crc_extra conflict for msgid {} ({} vs {} in {}): {} != {}",
-                    msg.id,
-                    prev.name,
-                    msg.name,
-                    canon.display(),
-                    prev.crc_extra,
-                    crc_extra
-                );
-            }
-            if prev.name != msg.name {
-                panic!(
-                    "msgid {} declared under two names: '{}' and '{}' (in {})",
-                    msg.id,
-                    prev.name,
-                    msg.name,
-                    canon.display()
-                );
-            }
-            continue;
-        }
-        entries.insert(
-            msg.id,
-            MsgEntryGen {
-                name: msg.name,
-                crc_extra,
-                min_payload_len,
-                target_sys_offset,
-                target_comp_offset,
-            },
-        );
-    }
-
-    in_progress.remove(&canon);
+    entries.insert(
+        msg.id,
+        MsgEntryGen {
+            name: msg.name,
+            crc_extra,
+            min_payload_len,
+            target_sys_offset,
+            target_comp_offset,
+        },
+    );
 }
 
 fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {

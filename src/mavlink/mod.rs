@@ -4,3 +4,4 @@ pub mod frame;
 pub mod framer;
 pub mod generated;
 pub mod msgid_table;
+pub mod xml_loader;
