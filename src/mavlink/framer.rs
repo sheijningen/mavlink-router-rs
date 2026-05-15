@@ -54,89 +54,146 @@ impl Framer {
     /// garbage prefixes (counted) silently.
     pub fn try_next_frame(&mut self) -> Option<(ParsedHeader, Bytes)> {
         loop {
-            let stx_pos = match self.buf.iter().position(|&b| b == STX_V1 || b == STX_V2) {
-                Some(p) => p,
-                None => {
-                    self.resync_bytes = self.resync_bytes.saturating_add(self.buf.len() as u64);
-                    self.buf.clear();
-                    return None;
-                }
-            };
-            if stx_pos > 0 {
-                self.resync_bytes = self.resync_bytes.saturating_add(stx_pos as u64);
-                self.buf.advance(stx_pos);
-            }
-
-            let stx = self.buf[0];
-            let header_len = match stx {
-                STX_V1 => V1_HEADER_LEN,
-                STX_V2 => V2_HEADER_LEN,
-                _ => unreachable!("STX scan returned non-STX byte"),
-            };
-
-            if self.buf.len() < header_len {
+            let stx = self.align_to_stx()?;
+            if self.buf.len() < stx_header_len(stx) {
                 return None;
             }
-
-            let payload_len = self.buf[1] as usize;
-            let (frame_len, incompat_flags) = match stx {
-                STX_V1 => (V1_HEADER_LEN + payload_len + CRC_LEN, 0u8),
-                STX_V2 => {
-                    let iflags = self.buf[2];
-                    let unknown = iflags & !V2_IFLAG_SIGNED;
-                    if unknown != 0 {
-                        // Frame uses incompat features RMR doesn't understand —
-                        // we don't know its length and can't safely forward.
-                        // Discard the STX and rescan.
-                        self.resync_bytes = self.resync_bytes.saturating_add(1);
-                        self.buf.advance(1);
-                        continue;
-                    }
-                    let signed_extra = if (iflags & V2_IFLAG_SIGNED) != 0 {
-                        V2_SIGNATURE_LEN
-                    } else {
-                        0
-                    };
-                    (V2_HEADER_LEN + payload_len + CRC_LEN + signed_extra, iflags)
+            let (frame_len, incompat_flags) = match self.decide_frame_len(stx) {
+                FrameLen::Ready {
+                    frame_len,
+                    incompat_flags,
+                } => (frame_len, incompat_flags),
+                FrameLen::UnknownIncompatFlag => {
+                    // Length is unknowable, so we can't safely forward. Drop
+                    // the STX byte and rescan from the next one.
+                    self.discard_byte();
+                    continue;
                 }
-                _ => unreachable!(),
             };
-
             if self.buf.len() < frame_len {
                 return None;
             }
-
-            let header = parse_header(&self.buf[..frame_len], stx, incompat_flags);
-
-            // Lookup once per frame; thread the result into both CRC and target
-            // extraction so the table is hit a single time even though both
-            // steps need it.
-            let entry: Option<&'static MsgEntry> = msgid_table::lookup(header.msgid);
-
-            let crc_ok = match entry {
-                Some(e) => validate_crc(&self.buf[..frame_len], &header, e.crc_extra),
-                None => true,
-            };
-
-            if !crc_ok {
-                self.crc_errors = self.crc_errors.saturating_add(1);
-                self.resync_bytes = self.resync_bytes.saturating_add(1);
-                self.buf.advance(1);
-                continue;
+            if let Some(frame) = self.try_validate_and_emit(stx, incompat_flags, frame_len) {
+                return Some(frame);
             }
-
-            let (target_system, target_component) =
-                extract_targets(&self.buf[..frame_len], &header, entry);
-            let full_header = ParsedHeader {
-                target_system,
-                target_component,
-                ..header
-            };
-
-            let frame = self.buf.split_to(frame_len).freeze();
-            self.buf.reserve(self.read_capacity);
-            return Some((full_header, frame));
+            // CRC failed; try_validate_and_emit already discarded one byte.
         }
+    }
+
+    /// Advance over any garbage prefix until the buffer starts at an STX byte.
+    /// Returns the STX byte that's now at `buf[0]`, or None if the buffer held
+    /// no STX at all (in which case all of it is counted as resync and the
+    /// buffer is cleared — nothing read so far can ever become a frame).
+    fn align_to_stx(&mut self) -> Option<u8> {
+        match self.buf.iter().position(|&b| b == STX_V1 || b == STX_V2) {
+            Some(pos) => {
+                if pos > 0 {
+                    self.add_resync(pos as u64);
+                    self.buf.advance(pos);
+                }
+                Some(self.buf[0])
+            }
+            None => {
+                self.add_resync(self.buf.len() as u64);
+                self.buf.clear();
+                None
+            }
+        }
+    }
+
+    /// Peek the header far enough to compute the full frame length. Caller
+    /// must have verified that `buf` already holds the header bytes for `stx`.
+    fn decide_frame_len(&self, stx: u8) -> FrameLen {
+        let payload_len = self.buf[1] as usize;
+        match stx {
+            STX_V1 => FrameLen::Ready {
+                frame_len: V1_HEADER_LEN + payload_len + CRC_LEN,
+                incompat_flags: 0,
+            },
+            STX_V2 => {
+                let iflags = self.buf[2];
+                if iflags & !V2_IFLAG_SIGNED != 0 {
+                    return FrameLen::UnknownIncompatFlag;
+                }
+                let signed_extra = if iflags & V2_IFLAG_SIGNED != 0 {
+                    V2_SIGNATURE_LEN
+                } else {
+                    0
+                };
+                FrameLen::Ready {
+                    frame_len: V2_HEADER_LEN + payload_len + CRC_LEN + signed_extra,
+                    incompat_flags: iflags,
+                }
+            }
+            _ => unreachable!("align_to_stx returned non-STX byte"),
+        }
+    }
+
+    /// Parse the header, validate CRC (for known msgids), and either return
+    /// the frame or count a CRC failure and discard one byte for resync. The
+    /// caller's loop retries on None.
+    fn try_validate_and_emit(
+        &mut self,
+        stx: u8,
+        incompat_flags: u8,
+        frame_len: usize,
+    ) -> Option<(ParsedHeader, Bytes)> {
+        let header = parse_header(&self.buf[..frame_len], stx, incompat_flags);
+
+        // Single binary search per frame; the borrow flows into both CRC and
+        // target extraction so the table isn't probed twice.
+        let entry: Option<&'static MsgEntry> = msgid_table::lookup(header.msgid);
+
+        let crc_ok = match entry {
+            Some(e) => validate_crc(&self.buf[..frame_len], &header, e.crc_extra),
+            None => true,
+        };
+        if !crc_ok {
+            self.crc_errors = self.crc_errors.saturating_add(1);
+            self.discard_byte();
+            return None;
+        }
+
+        let (target_system, target_component) =
+            extract_targets(&self.buf[..frame_len], &header, entry);
+        let full_header = ParsedHeader {
+            target_system,
+            target_component,
+            ..header
+        };
+        let frame = self.buf.split_to(frame_len).freeze();
+        self.buf.reserve(self.read_capacity);
+        Some((full_header, frame))
+    }
+
+    #[inline]
+    fn add_resync(&mut self, n: u64) {
+        self.resync_bytes = self.resync_bytes.saturating_add(n);
+    }
+
+    /// Discard one byte from the front of the buffer and count it as resync.
+    /// Used to break out of a stuck STX (bad incompat flag or failed CRC).
+    #[inline]
+    fn discard_byte(&mut self) {
+        self.add_resync(1);
+        self.buf.advance(1);
+    }
+}
+
+enum FrameLen {
+    Ready {
+        frame_len: usize,
+        incompat_flags: u8,
+    },
+    UnknownIncompatFlag,
+}
+
+#[inline]
+fn stx_header_len(stx: u8) -> usize {
+    match stx {
+        STX_V1 => V1_HEADER_LEN,
+        STX_V2 => V2_HEADER_LEN,
+        _ => unreachable!("align_to_stx returned non-STX byte"),
     }
 }
 
