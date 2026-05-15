@@ -1,4 +1,4 @@
-// Generic include-graph walker.  build.rs uses it with K = PathBuf (canonicalised);
+// Generic include-graph walker. build.rs uses it with K = PathBuf (canonicalised)
 
 #[derive(Debug)]
 pub(crate) enum WalkError<K> {

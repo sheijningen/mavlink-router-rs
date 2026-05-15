@@ -168,7 +168,7 @@ In short: router stalls are designed to be **rare** (bounded mpsc of 1024, ~50ns
 
 ### MAVLink handling depth
 
-The router uses a single in-memory table of `(msgid → {crc_extra, min_payload_len, target_sys_offset?, target_comp_offset?})`. Populated in two layers:
+The router uses a single in-memory table of `(msgid → {name, crc_extra, min_payload_len, target_sys_offset?, target_comp_offset?})`. `name` is the MAVLink message name as `&'static str` — purely a label for error messages, conflict diagnostics during the build-time merge, and `tracing` output; the router never matches on it. Populated in two layers:
 
 1. **Compile-time built-in** — `build.rs` parses vendored MAVLink XML (default: `common.xml` + `ardupilotmega.xml`) with `quick-xml` (build-dependency) and emits `const SORTED: &[(u32, MsgEntry)]`, sorted by msgid. Lookup is binary search (≈9 comparisons for ~500 entries). Zero runtime cost, ~95% coverage. `<include>foo.xml</include>` is resolved recursively at build time, search path = the including file's directory, with cycle detection (fatal if detected).
 2. **Pass-through** — unknown msgids forward as broadcast with no CRC check.
@@ -292,23 +292,23 @@ Each phase ends in a usable binary. Don't skip ahead; each phase exposes integra
 
 ### Phase 0 — skeleton (current state + bootstrap)
 
-- [ ] `Cargo.toml` with `tokio`, `tokio-util` (CancellationToken), `clap`, `tracing`, `tracing-subscriber` (with `json` feature), `serde`, `serde_json`, `toml`, `thiserror`, `bytes`, `twox-hash`, `smallvec`, `socket2`, `crossbeam-queue`, `time` (with `formatting` + `macros` features), `proptest` (dev). `quick-xml` is a `[build-dependencies]` entry only — not a runtime dependency. `rust-version = "1.85"` set in `[package]`.
-- [ ] CLI parsing (clap derive), `--log-format text|json`, log init, graceful Ctrl-C shutdown via `CancellationToken` with per-task 2s drain and 5s overall `JoinSet`-abort fallback
-- [ ] `EndpointSpec` enum + parser for scheme-prefixed strings — full unit test coverage of valid + invalid forms, plus strict-validation rejection of unknown `?key=` names with a "did you mean" suggestion, `#name` validated against `[A-Za-z0-9_-]{1,64}`, plus auto-naming when `#name` is omitted
-- [ ] Repo layout scaffolded per the Project layout section: empty modules under `src/{mavlink,endpoint,router}/`, `src/lib.rs` re-exporting them, empty `tests/` directory committed with `.gitkeep`, `fixtures/` directory committed
-- [ ] CI workflow (GitHub Actions) runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all-features` on every push — all three must pass. Lint discipline is enforced from day one, not retrofitted.
-- [ ] `cargo test` passes (skeleton tests only); `cargo build` produces a binary that prints CLI help when invoked with `--help`
+- [x] `Cargo.toml` with `tokio`, `tokio-util` (CancellationToken), `clap`, `tracing`, `tracing-subscriber` (with `json` feature), `serde`, `serde_json`, `toml`, `thiserror`, `bytes`, `twox-hash`, `smallvec`, `socket2`, `crossbeam-queue`, `time` (with `formatting` + `macros` features), `proptest` (dev). `quick-xml` is a `[build-dependencies]` entry only — not a runtime dependency. `rust-version = "1.85"` set in `[package]`.
+- [x] CLI parsing (clap derive), `--log-format text|json`, log init, graceful Ctrl-C shutdown via `CancellationToken` with per-task 2s drain and 5s overall `JoinSet`-abort fallback
+- [x] `EndpointSpec` enum + parser for scheme-prefixed strings — full unit test coverage of valid + invalid forms, plus strict-validation rejection of unknown `?key=` names with a "did you mean" suggestion, `#name` validated against `[A-Za-z0-9_-]{1,64}`, plus auto-naming when `#name` is omitted
+- [x] Repo layout scaffolded per the Project layout section: empty modules under `src/{mavlink,endpoint,router}/`, `src/lib.rs` re-exporting them, empty `tests/` directory committed with `.gitkeep`, `fixtures/` directory committed
+- [x] CI workflow (GitHub Actions) runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all-features` on every push — all three must pass. Lint discipline is enforced from day one, not retrofitted.
+- [x] `cargo test` passes (skeleton tests only); `cargo build` produces a binary that prints CLI help when invoked with `--help`
 
 ### Phase 1 — frame layer
 
-- [ ] v1/v2 framer with resync (`resync_bytes` counter), zero-trim handling, `BytesMut` accumulator with `split_to(frame_len).freeze()` + `reserve(n)` on each complete frame; parsed `ParsedHeader` returned alongside the frozen `Bytes`
-- [ ] `crc_extra_for_message` helper (size-sorted, extension-aware) lives in `src/mavlink/crc_extra.rs`; `build.rs` consumes it via `include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/mavlink/crc_extra.rs"))`; runtime tests assert known `(msg_name → crc_extra)` pairs match published MAVLink reference values
-- [ ] `build.rs` consuming the `DIALECTS` list (defaults to `common.xml` + `ardupilotmega.xml`) with recursive `<include>` resolution against the including file's directory, cycle detection (fatal), and fatal error on `crc_extra` conflict between dialects → emit `const SORTED: &[(u32, MsgEntry)]` sorted by msgid (binary-search lookup)
-- [ ] CRC validation against `crc_extra` for known msgids; pass-through for unknown
-- [ ] Target-offset bounds check against `payload_len` (zero-trim → implicit 0 = broadcast)
-- [ ] Unit tests: known-good capture replay → expected frames out; signed v2 frame validates CRC and forwards signature trailer opaquely
-- [ ] Property test: garbage in → no panics, no infinite loops, framer always resyncs within bounded bytes
-- [ ] Integration test: a frame with a known msgid gets CRC-validated and targeted-routed; a frame with an unknown msgid forwards as broadcast without CRC check
+- [x] v1/v2 framer with resync (`resync_bytes` counter), zero-trim handling, `BytesMut` accumulator with `split_to(frame_len).freeze()` + `reserve(n)` on each complete frame; parsed `ParsedHeader` returned alongside the frozen `Bytes`
+- [x] `crc_extra_for_message` helper (size-sorted, extension-aware) lives in `src/mavlink/crc_extra.rs`; `build.rs` consumes it via `include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/mavlink/crc_extra.rs"))`; runtime tests assert known `(msg_name → crc_extra)` pairs match published MAVLink reference values
+- [x] `build.rs` consuming the `DIALECTS` list (defaults to `common.xml` + `ardupilotmega.xml`) with recursive `<include>` resolution against the including file's directory, cycle detection (fatal), and fatal error on `crc_extra` conflict between dialects → emit `const SORTED: &[(u32, MsgEntry)]` sorted by msgid (binary-search lookup)
+- [x] CRC validation against `crc_extra` for known msgids; pass-through for unknown
+- [x] Target-offset bounds check against `payload_len` (zero-trim → implicit 0 = broadcast)
+- [x] Unit tests: known-good capture replay → expected frames out; signed v2 frame validates CRC and forwards signature trailer opaquely
+- [x] Property test: garbage in → no panics, no infinite loops, framer always resyncs within bounded bytes
+- [x] Integration test: a frame with a known msgid gets CRC-validated and targeted-routed; a frame with an unknown msgid forwards as broadcast without CRC check
 
 ### Phase 2 — UDP endpoints
 
@@ -429,7 +429,7 @@ rmr/
     └── routing.rs
 ```
 
-**Why a `lib.rs`?** Exposing the crate as a library lets integration tests in `tests/` and benches in `benches/` import internals without going through the binary. The `main.rs` becomes a thin shell over `lib::run(args)`. Keep `lib.rs` minimal — it is for re-exports only, not for new logic.
+**Why a `lib.rs`?** Exposing the crate as a library lets integration tests in `tests/` and benches in `benches/` import internals without going through the binary. The `main.rs` becomes a thin shell over `lib::run(args)`. Keep `lib.rs` slim: module re-exports plus the top-level `run(args)` orchestrator (spec parsing, tracing init, cancellation-token plumbing, `JoinSet` wiring, top-level shutdown). Domain logic — framing, routing, transports — belongs in its module, not here.
 
 ## Testing strategy
 
@@ -482,7 +482,7 @@ CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `c
 - **DNS resolution:** re-resolve hostnames on every reconnect for `tcpc:` and `udpc:` endpoints. Survives DNS changes (k8s service migration, dynamic DNS, VPN routing changes) at the cost of one syscall per reconnect.
 - **CRC validation:** validate CRC for known msgids at ingress; drop frames with bad CRC and count them per-endpoint. Unknown msgids cannot be validated (no `crc_extra` available) and are forwarded as-is. **Rationale:** drone links (SiK radios, LTE, mesh) are bandwidth-constrained; spending CPU on the high-bandwidth ingress side to avoid wasting bytes on the scarce outbound side is the right trade. Recipients validate end-to-end too, but by then the wasted radio time is already gone.
 - **Dialect handling (2-layer model + fork path):**
-  1. **Built-in** at compile time: `build.rs` consumes the `DIALECTS` list (defaults to `common.xml` + `ardupilotmega.xml`) and emits a `const` table of `(msgid → {crc_extra, min_payload_len, target_sys_offset?, target_comp_offset?})`. Covers the ~95% case with zero config.
+  1. **Built-in** at compile time: `build.rs` consumes the `DIALECTS` list (defaults to `common.xml` + `ardupilotmega.xml`) and emits a `const` table of `(msgid → {name, crc_extra, min_payload_len, target_sys_offset?, target_comp_offset?})`. Covers the ~95% case with zero config.
   2. **Pass-through** for everything else: any msgid not in the table is forwarded as broadcast with CRC validation skipped. Never reject a frame for being unknown.
 
   Custom/proprietary dialects are handled by **forking**: drop the XML next to the vendored files, append the filename to `DIALECTS` in `build.rs`, rebuild. The existing `<include>` resolver, cycle detector, and `crc_extra` conflict checker apply to fork-added dialects automatically — a `crc_extra` mismatch with a built-in entry is a fatal build error, not a silent runtime override. There is intentionally no runtime `--dialect` flag: shipping an XML parser, include resolver, and conflict checker in the binary buys very little over pass-through, and the target audience (integrators building from source) loses nothing by rebuilding.
