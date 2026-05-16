@@ -10,6 +10,10 @@ use tracing::{Instrument, info_span, trace, warn};
 
 use super::super::EndpointId;
 use super::super::backoff::Backoff;
+use super::super::defaults::{
+    DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
+    DEFAULT_TX_QUEUE_FRAMES,
+};
 use super::super::events::RouterFrame;
 use super::super::identity_flags::IdentityFlags;
 use super::super::session::SessionOutcome;
@@ -20,10 +24,6 @@ use super::super::tx_queue::TxQueue;
 use super::super::wait_or_cancel;
 use super::session::run_session;
 
-const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
-const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
-const DEFAULT_READ_BUF_BYTES: usize = 8192;
-const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Per-endpoint runtime configuration. The spec parser hands us a fully-typed

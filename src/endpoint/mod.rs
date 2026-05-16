@@ -6,6 +6,7 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 pub mod backoff;
+pub mod defaults;
 pub mod events;
 pub mod filters;
 pub mod identity_flags;

@@ -14,6 +14,10 @@ use tracing::{Instrument, debug, info, info_span, trace, warn};
 use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
 use super::super::backoff::Backoff;
+use super::super::defaults::{
+    DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
+    DEFAULT_TX_QUEUE_FRAMES,
+};
 use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
 use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
@@ -26,10 +30,6 @@ use crate::mavlink::framer::Framer;
 
 const DEFAULT_IDLE_SECS: u64 = 60;
 const DEFAULT_PEER_CAPACITY: usize = 256;
-const DEFAULT_READ_BUF_BYTES: usize = 8192;
-const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
-const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
-const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
 // Max IP datagram payload plus headroom; one `recv_from` cannot return more
 // than the kernel's MTU-bounded payload, but we size the buffer to the IP
 // theoretical max so a fragmented giant datagram couldn't be truncated.

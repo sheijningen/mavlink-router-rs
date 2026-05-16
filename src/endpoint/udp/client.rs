@@ -13,6 +13,10 @@ use tracing::{Instrument, debug, info_span, trace, warn};
 
 use super::super::EndpointId;
 use super::super::backoff::Backoff;
+use super::super::defaults::{
+    DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
+    DEFAULT_TX_QUEUE_FRAMES,
+};
 use super::super::events::RouterFrame;
 use super::super::identity_flags::IdentityFlags;
 use super::super::socket::bind_udp_dual_stack;
@@ -23,10 +27,6 @@ use super::super::wait_or_cancel;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_LATCH_IDLE_SECS: u64 = 30;
-const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
-const DEFAULT_READ_BUF_BYTES: usize = 8192;
-const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
-const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
 // Max IP datagram payload plus headroom; matches `udps:` for symmetry so
 // neither side truncates an oversized inbound packet.
 const MAX_DATAGRAM_BYTES: usize = 65_536;

@@ -52,6 +52,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info_span, trace, warn};
 
 use super::EndpointId;
+use super::defaults::{DEFAULT_READ_BUF_BYTES, DEFAULT_TX_QUEUE_FRAMES};
 use super::events::RouterFrame;
 use super::identity_flags::IdentityFlags;
 use super::session::SessionOutcome;
@@ -62,8 +63,6 @@ use super::wait_or_cancel;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_SERIAL_REOPEN_MS: u64 = 1000;
-const DEFAULT_READ_BUF_BYTES: usize = 8192;
-const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
 
 /// Per-endpoint runtime configuration. The spec parser hands us a fully-typed
 /// `SerialEndpoint`; this struct collapses the optional knobs down to the

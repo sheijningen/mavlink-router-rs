@@ -11,6 +11,10 @@ use tracing::{Instrument, debug, info, info_span, trace, warn};
 use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
 use super::super::backoff::Backoff;
+use super::super::defaults::{
+    DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
+    DEFAULT_TX_QUEUE_FRAMES,
+};
 use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
 use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
@@ -21,11 +25,6 @@ use super::super::stats::EndpointStats;
 use super::super::tx_queue::TxQueue;
 use super::super::wait_or_cancel;
 use super::session::run_session;
-
-const DEFAULT_READ_BUF_BYTES: usize = 8192;
-const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
-const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
-const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
 
 /// Per-listener runtime configuration. The spec parser hands us a fully-typed
 /// `TcpServerEndpoint`; this struct collapses the optional knobs down to the
