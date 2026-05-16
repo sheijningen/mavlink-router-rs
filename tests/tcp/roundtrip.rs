@@ -16,6 +16,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::EndpointIdAllocator;
+use rmr::endpoint::events::{EndpointEvent, PeerRemovalReason};
 
 use crate::common;
 use crate::common::tcp::{connect_with_retry, spawn_tcps};
@@ -140,18 +141,26 @@ async fn tcps_handles_multiple_clients_and_per_client_disconnect() {
             .expect("A frame_rx closed");
     }
 
-    // Drop c1 — its session ends, PeerRemoved fires. The listener stays up.
+    // Drop c1 — its session ends, PeerRemoved fires with reason=Disconnected
+    // (a client-initiated socket close, not a listener shutdown). The listener
+    // itself stays up.
     drop(c1);
-    // Look for a PeerRemoved event for c1_local.
     let mut saw_c1_removed = false;
     for _ in 0..2 {
         let ev = timeout(Duration::from_secs(2), a.event_rx.recv())
             .await
             .expect("PeerRemoved timeout")
             .expect("event_rx closed");
-        if let rmr::endpoint::events::EndpointEvent::PeerRemoved { peer_addr, .. } = ev
+        if let EndpointEvent::PeerRemoved {
+            peer_addr, reason, ..
+        } = ev
             && peer_addr == c1_local
         {
+            assert_eq!(
+                reason,
+                PeerRemovalReason::Disconnected,
+                "client-initiated socket close must surface as Disconnected, got {reason:?}",
+            );
             saw_c1_removed = true;
             break;
         }
@@ -169,5 +178,33 @@ async fn tcps_handles_multiple_clients_and_per_client_disconnect() {
         .expect("A frame_rx closed");
     assert_eq!(f.header.seq, 5);
 
-    shutdown_all(&cancel, [a.task]).await;
+    // Trigger listener shutdown while c2 is still connected — its session
+    // unwinds via cancellation, producing PeerRemoved{ListenerShutdown}.
+    cancel.cancel();
+    let mut saw_c2_listener_shutdown = false;
+    for _ in 0..2 {
+        let ev = timeout(Duration::from_secs(3), a.event_rx.recv())
+            .await
+            .expect("PeerRemoved (ListenerShutdown) timeout")
+            .expect("event_rx closed");
+        if let EndpointEvent::PeerRemoved {
+            peer_addr, reason, ..
+        } = ev
+            && peer_addr == c2_local
+        {
+            assert_eq!(
+                reason,
+                PeerRemovalReason::ListenerShutdown,
+                "cancel-triggered child teardown must surface as ListenerShutdown, got {reason:?}",
+            );
+            saw_c2_listener_shutdown = true;
+            break;
+        }
+    }
+    assert!(
+        saw_c2_listener_shutdown,
+        "PeerRemoved{{ListenerShutdown}} for c2 not observed"
+    );
+
+    let _ = timeout(Duration::from_secs(3), a.task).await;
 }
