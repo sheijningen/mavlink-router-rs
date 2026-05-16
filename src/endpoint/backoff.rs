@@ -1,18 +1,7 @@
 use std::time::Duration;
 
 /// Capped-exponential reconnect backoff with ±20% jitter, shared by `tcpc:`
-/// reconnect attempts and `tcps:` initial-bind retries (per CLAUDE.md
-/// "Initial bind/dial failure path"). Each call to [`next_delay`] returns the
-/// delay to wait before the next attempt (jittered) and advances the internal
-/// state toward the cap; [`reset`] returns to the initial value after a
-/// successful connect / bind.
-///
-/// The jitter PRNG is a tiny xorshift64 seeded once from the wall clock at
-/// construction — sufficient to break up thundering-herd reconnects across
-/// endpoints without pulling in a `rand` dependency.
-///
-/// [`next_delay`]: Backoff::next_delay
-/// [`reset`]: Backoff::reset
+/// reconnect attempts and `tcps:` initial-bind retries
 #[derive(Debug)]
 pub struct Backoff {
     initial: Duration,
@@ -38,9 +27,7 @@ impl Backoff {
         self.current = self.initial;
     }
 
-    /// Sleep duration to apply before the next attempt: the current step,
-    /// scaled by a random factor in `[0.8, 1.2]`. Advances `current` toward
-    /// `max` for the *following* attempt.
+    /// Sleep duration to apply before the next attempt
     pub fn next_delay(&mut self) -> Duration {
         let base_ms = self.current.as_millis() as u64;
         let jitter_range = base_ms / 5; // 20%
@@ -50,13 +37,6 @@ impl Backoff {
         let delay = Duration::from_millis(jittered_ms);
         self.current = (self.current.saturating_mul(2)).min(self.max);
         delay
-    }
-
-    /// The undelayed step the next call to [`next_delay`] would use as its
-    /// jitter base — exposed for tests and metrics.
-    #[allow(dead_code)]
-    pub fn current_step(&self) -> Duration {
-        self.current
     }
 }
 
@@ -91,7 +71,7 @@ mod tests {
     #[test]
     fn initial_step_matches_initial_ms() {
         let b = Backoff::new(250, 30_000);
-        assert_eq!(b.current_step(), Duration::from_millis(250));
+        assert_eq!(b.current, Duration::from_millis(250));
     }
 
     #[test]
@@ -113,13 +93,13 @@ mod tests {
     fn next_delay_doubles_and_caps() {
         let mut b = Backoff::new(100, 800);
         let _ = b.next_delay(); // base 100 → current advances to 200
-        assert_eq!(b.current_step(), Duration::from_millis(200));
+        assert_eq!(b.current, Duration::from_millis(200));
         let _ = b.next_delay(); // → 400
-        assert_eq!(b.current_step(), Duration::from_millis(400));
+        assert_eq!(b.current, Duration::from_millis(400));
         let _ = b.next_delay(); // → 800 (max)
-        assert_eq!(b.current_step(), Duration::from_millis(800));
+        assert_eq!(b.current, Duration::from_millis(800));
         let _ = b.next_delay(); // → still 800
-        assert_eq!(b.current_step(), Duration::from_millis(800));
+        assert_eq!(b.current, Duration::from_millis(800));
     }
 
     #[test]
@@ -128,21 +108,21 @@ mod tests {
         for _ in 0..10 {
             let _ = b.next_delay();
         }
-        assert_eq!(b.current_step(), Duration::from_millis(800));
+        assert_eq!(b.current, Duration::from_millis(800));
         b.reset();
-        assert_eq!(b.current_step(), Duration::from_millis(100));
+        assert_eq!(b.current, Duration::from_millis(100));
     }
 
     #[test]
     fn max_below_initial_is_clamped_to_initial() {
         let b = Backoff::new(500, 100);
-        assert_eq!(b.current_step(), Duration::from_millis(500));
+        assert_eq!(b.current, Duration::from_millis(500));
     }
 
     #[test]
     fn zero_initial_is_floored() {
         let b = Backoff::new(0, 30_000);
-        assert_eq!(b.current_step(), Duration::from_millis(1));
+        assert_eq!(b.current, Duration::from_millis(1));
     }
 
     #[test]
