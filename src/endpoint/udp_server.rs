@@ -258,7 +258,9 @@ async fn handle_packet(
         trace!(parent_id = %ctx.parent_id, %src, "udps peer added");
     }
 
-    let peer = peers.get_mut(&src).expect("peer present after admit");
+    let Some(peer) = peers.get_mut(&src) else {
+        return;
+    };
     peer.last_seen = Instant::now();
 
     peer.framer.buffer_mut().extend_from_slice(data);
@@ -309,7 +311,9 @@ async fn evict_lru_peer(
     let Some((&victim, _)) = peers.iter().min_by_key(|(_, e)| e.last_seen) else {
         return;
     };
-    let entry = peers.remove(&victim).expect("victim present");
+    let Some(entry) = peers.remove(&victim) else {
+        return;
+    };
     entry.writer_cancel.cancel();
     let _ = event_tx
         .send(EndpointEvent::PeerRemoved {
