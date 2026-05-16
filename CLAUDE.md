@@ -365,7 +365,6 @@ Layered onto the 5a skeleton. End state: full v1 routing feature set.
 
 - [ ] TOML parser for the same surface as CLI plus filters and groups
 - [ ] CLI + file merge rules implemented: TOML endpoints first then CLI endpoints (no per-key merging by name — name collision is a fatal error), CLI globals override TOML globals
-- [ ] Stretch: SIGHUP reload on Unix, file-watcher reload on Windows
 
 ### Phase 7 — polish
 
