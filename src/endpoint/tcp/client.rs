@@ -2,6 +2,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use thiserror::Error;
 use tokio::net::{TcpStream, lookup_host};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -59,6 +60,14 @@ impl TcpClientConfig {
     }
 }
 
+/// Typed-empty return for `tcpc:` `run()`. Connect failures enter the
+/// capped-exp backoff loop, DNS failures log and retry, and disconnects are
+/// handled by the session — no terminal failure modes remain in v1. Kept as
+/// a typed return for symmetry with [`super::server::TcpServerError`] and
+/// the UDP endpoint modules in case a fatal case shows up later.
+#[derive(Debug, Error)]
+pub enum TcpClientError {}
+
 /// Inputs that distinguish one `tcpc:` endpoint from another: where to dial,
 /// what to call it, and the per-endpoint knobs from the query string.
 pub struct TcpClientSpec {
@@ -85,7 +94,7 @@ pub struct TcpClientWiring {
 /// are stale — CLAUDE.md "TX queue on disconnect: drain and discard"). Each
 /// session reads inbound bytes through a fresh `Framer` and writes outbound
 /// frames pulled from the TxQueue.
-pub async fn run(spec: TcpClientSpec, wiring: TcpClientWiring) {
+pub async fn run(spec: TcpClientSpec, wiring: TcpClientWiring) -> Result<(), TcpClientError> {
     let TcpClientSpec {
         host,
         port,
@@ -105,19 +114,19 @@ pub async fn run(spec: TcpClientSpec, wiring: TcpClientWiring) {
     loop {
         if cancel.is_cancelled() {
             tx_queue.drain_and_discard();
-            return;
+            return Ok(());
         }
 
         let stream = match dial_with_dns(&host, port, &cancel).await {
             DialOutcome::Connected(s) => s,
             DialOutcome::Cancelled => {
                 tx_queue.drain_and_discard();
-                return;
+                return Ok(());
             }
             DialOutcome::Failed => {
                 if !wait_or_cancel(&cancel, backoff.next_delay()).await {
                     tx_queue.drain_and_discard();
-                    return;
+                    return Ok(());
                 }
                 continue;
             }
@@ -146,7 +155,7 @@ pub async fn run(spec: TcpClientSpec, wiring: TcpClientWiring) {
         {
             SessionOutcome::Cancelled => {
                 tx_queue.drain_and_discard();
-                return;
+                return Ok(());
             }
             SessionOutcome::Disconnected => {
                 continue;

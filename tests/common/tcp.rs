@@ -15,7 +15,9 @@ use rmr::endpoint::{
     EndpointIdAllocator,
     events::{EndpointEvent, RouterFrame},
     stats::EndpointStats,
-    tcp::client::{self as tcp_client, TcpClientConfig, TcpClientSpec, TcpClientWiring},
+    tcp::client::{
+        self as tcp_client, TcpClientConfig, TcpClientError, TcpClientSpec, TcpClientWiring,
+    },
     tcp::server::{
         self as tcp_server, TcpServerConfig, TcpServerError, TcpServerSpec, TcpServerWiring,
     },
@@ -102,7 +104,7 @@ pub struct TcpcHarness {
     /// Shared stats the test can inspect (e.g. `dropped_tx`).
     pub stats: Arc<EndpointStats>,
     /// Join handle of the spawned task; await after cancelling.
-    pub task: JoinHandle<()>,
+    pub task: JoinHandle<Result<(), TcpClientError>>,
 }
 
 /// Spawn a `tcpc:` client targeting `target_addr`. The address's IP is passed

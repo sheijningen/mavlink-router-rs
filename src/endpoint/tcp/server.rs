@@ -63,13 +63,13 @@ impl TcpServerConfig {
     }
 }
 
+/// Typed-empty return for `tcps:` `run()`. Bind failures enter the same
+/// backoff loop as `tcpc:` reconnects, accept errors are logged and the loop
+/// continues, and per-child disconnects are routine — no terminal failure
+/// modes remain in v1. Kept as a typed return for symmetry with the other
+/// endpoint modules in case a fatal case shows up later.
 #[derive(Debug, Error)]
-pub enum TcpServerError {
-    // No terminal errors in v1: bind failures enter the same backoff loop as
-    // `tcpc:` reconnects, accept errors are logged and the loop continues, and
-    // per-child disconnects are routine. Kept as a typed return for symmetry
-    // with the other endpoint modules in case a fatal case shows up later.
-}
+pub enum TcpServerError {}
 
 /// Inputs that distinguish one `tcps:` listener from another: where to bind,
 /// what to call it, and the per-listener knobs from the query string.
