@@ -131,3 +131,22 @@ pub struct TcpClientEndpoint {
     pub reconnect_max_ms: Option<u64>,
     pub common: CommonQuery,
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::endpoint::spec::EndpointSpec;
+
+    #[test]
+    fn endpoint_kind_scheme_roundtrip() {
+        for input in &[
+            "serial:/dev/ttyUSB0:115200",
+            "udps:0.0.0.0:1",
+            "udpc:1.2.3.4:1",
+            "tcps:0.0.0.0:1",
+            "tcpc:host:1",
+        ] {
+            let s = EndpointSpec::parse(input).expect("parse");
+            assert!(input.starts_with(&format!("{}:", s.kind.scheme())));
+        }
+    }
+}

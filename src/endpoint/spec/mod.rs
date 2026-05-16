@@ -7,9 +7,6 @@ mod error;
 mod parse;
 mod query;
 
-#[cfg(test)]
-mod tests;
-
 pub use endpoint_kinds::{
     CommonQuery, EndpointKind, MsgIdRange, SerialEndpoint, TcpClientEndpoint, TcpServerEndpoint,
     U8Range, UdpClientEndpoint, UdpServerEndpoint,

@@ -402,13 +402,12 @@ rmr/
 │   │   └── generated.rs              ← `include!` from build.rs OUT_DIR
 │   ├── endpoint/
 │   │   ├── mod.rs                    ← Endpoint trait, EndpointHandle, IDs
-│   │   ├── spec/                     ← typed endpoint-spec parser (CLI string → fully-typed `EndpointSpec`)
+│   │   ├── spec/                     ← typed endpoint-spec parser (CLI string → fully-typed `EndpointSpec`). Tests live in each file as `#[cfg(test)] mod tests`, next to the code they exercise.
 │   │   │   ├── mod.rs                ← `EndpointSpec` and the `parse()` entry point
-│   │   │   ├── endpoint_kinds.rs     ← `EndpointKind` + the five per-scheme `*Endpoint` structs (via `endpoint_struct!` macro) + `MsgIdRange`, `U8Range`
+│   │   │   ├── endpoint_kinds.rs     ← `EndpointKind` + the five per-scheme `*Endpoint` structs, each holding a `CommonQuery` substruct for the 18 shared knob fields + `MsgIdRange`, `U8Range`
 │   │   │   ├── error.rs              ← `SpecError`
 │   │   │   ├── parse.rs              ← body/address parsers, name validation, scheme dispatch
-│   │   │   ├── query.rs              ← query-string parser, per-scheme `QueryApplier`s, value parsers, did-you-mean suggestion
-│   │   │   └── tests.rs              ← parser unit tests (end-to-end, 70+ cases)
+│   │   │   └── query.rs              ← query-string parser, per-scheme `QueryApplier`s, `CommonQuery::apply`, value parsers, did-you-mean suggestion
 │   │   ├── filters.rs                ← In/Out filter types, evaluation fns
 │   │   ├── stats.rs                  ← per-endpoint counter struct
 │   │   ├── tx_queue.rs               ← bounded queue with drop-oldest
