@@ -16,13 +16,12 @@ use super::super::defaults::{
 };
 use super::super::events::RouterFrame;
 use super::super::identity_flags::IdentityFlags;
-use super::super::session::SessionOutcome;
+use super::super::session::{SessionOutcome, run_session};
 use super::super::socket::configure_tcp_stream;
 use super::super::spec::TcpClientEndpoint;
 use super::super::stats::EndpointStats;
 use super::super::tx_queue::TxQueue;
 use super::super::wait_or_cancel;
-use super::session::run_session;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 

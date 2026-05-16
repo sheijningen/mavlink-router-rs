@@ -18,13 +18,12 @@ use super::super::defaults::{
 use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
 use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
-use super::super::session::SessionOutcome;
+use super::super::session::{SessionOutcome, run_session};
 use super::super::socket::{bind_tcp_dual_stack, configure_tcp_stream};
 use super::super::spec::TcpServerEndpoint;
 use super::super::stats::EndpointStats;
 use super::super::tx_queue::TxQueue;
 use super::super::wait_or_cancel;
-use super::session::run_session;
 
 /// Per-listener runtime configuration. The spec parser hands us a fully-typed
 /// `TcpServerEndpoint`; this struct collapses the optional knobs down to the

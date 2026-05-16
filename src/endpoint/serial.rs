@@ -45,22 +45,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info_span, trace, warn};
+use tracing::{Instrument, info_span, trace, warn};
 
 use super::EndpointId;
 use super::defaults::{DEFAULT_READ_BUF_BYTES, DEFAULT_TX_QUEUE_FRAMES};
 use super::events::RouterFrame;
 use super::identity_flags::IdentityFlags;
-use super::session::SessionOutcome;
+use super::session::{SessionOutcome, run_session};
 use super::spec::{SerialEndpoint, SerialFlowControl};
-use super::stats::{EndpointStats, FramerCounters};
+use super::stats::EndpointStats;
 use super::tx_queue::TxQueue;
 use super::wait_or_cancel;
-use crate::mavlink::framer::Framer;
 
 const DEFAULT_SERIAL_REOPEN_MS: u64 = 1000;
 
@@ -269,70 +267,6 @@ fn try_open(
     tokio_serial::new(path, baud)
         .flow_control(fc)
         .open_native_async()
-}
-
-/// Read inbound bytes through a fresh `Framer` and write outbound frames from
-/// the TxQueue until cancellation, EOF, or I/O error. Shape mirrors
-/// `tcp::session::run_session` so behaviour stays consistent across transports
-/// — same biased select, same per-frame stats accounting, same framer-counter
-/// sync after each read burst.
-pub async fn run_session(
-    stream: SerialStream,
-    endpoint_id: EndpointId,
-    stats: &Arc<EndpointStats>,
-    frame_tx: &mpsc::Sender<RouterFrame>,
-    tx_queue: &TxQueue,
-    cancel: &CancellationToken,
-    read_buf_bytes: usize,
-) -> SessionOutcome {
-    let (mut rh, mut wh) = tokio::io::split(stream);
-    let mut framer = Framer::with_capacity(read_buf_bytes);
-    let mut framer_counters = FramerCounters::new();
-
-    loop {
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return SessionOutcome::Cancelled,
-            res = rh.read_buf(framer.buffer_mut()) => {
-                match res {
-                    Ok(0) => {
-                        debug!("serial read returned EOF (device closed)");
-                        return SessionOutcome::Disconnected;
-                    }
-                    Ok(_) => {
-                        while let Some((header, frame)) = framer.try_next_frame() {
-                            let frame_len = frame.len();
-                            stats.add_rx_frame(frame_len);
-                            if frame_tx
-                                .send(RouterFrame {
-                                    endpoint_id,
-                                    frame,
-                                    header,
-                                })
-                                .await
-                                .is_err()
-                            {
-                                debug!("serial router channel closed; ending session");
-                                return SessionOutcome::RouterGone;
-                            }
-                        }
-                        framer_counters.sync(&framer, stats);
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "serial read failed");
-                        return SessionOutcome::Disconnected;
-                    }
-                }
-            }
-            frame = tx_queue.pop_or_wait() => {
-                if let Err(e) = wh.write_all(&frame).await {
-                    warn!(error = %e, "serial write failed");
-                    return SessionOutcome::Disconnected;
-                }
-                stats.add_tx_frame(frame.len());
-            }
-        }
-    }
 }
 
 #[cfg(test)]
