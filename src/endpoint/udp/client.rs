@@ -14,7 +14,7 @@ use tracing::{Instrument, debug, info_span, trace, warn};
 use super::super::EndpointId;
 use super::super::backoff::Backoff;
 use super::super::events::RouterFrame;
-use super::super::filters::IdentityFlags;
+use super::super::identity_flags::IdentityFlags;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
 use super::super::stats::EndpointStats;

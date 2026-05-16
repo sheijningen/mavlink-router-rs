@@ -4,7 +4,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use super::EndpointId;
-use super::filters::IdentityFlags;
+use super::identity_flags::IdentityFlags;
 use super::stats::EndpointStats;
 use super::tx_queue::TxQueue;
 use crate::mavlink::frame::ParsedHeader;

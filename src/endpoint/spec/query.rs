@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
-use super::super::filters::{Filters, IdentityFlags};
+use super::super::filters::Filters;
+use super::super::identity_flags::IdentityFlags;
 use super::endpoint_kinds::{
     CommonQuery, SerialEndpoint, SerialFlowControl, TcpClientEndpoint, TcpServerEndpoint,
     UdpClientEndpoint, UdpServerEndpoint,
@@ -251,7 +252,8 @@ fn parse_usize(v: &str, key: &'static str) -> Result<usize, SpecError> {
 #[cfg(test)]
 mod tests {
     use super::{COMMON_KEYS, levenshtein};
-    use crate::endpoint::filters::{Filters, IdentityFlags, MsgIdRange, U8Range};
+    use crate::endpoint::filters::{Filters, MsgIdRange, U8Range};
+    use crate::endpoint::identity_flags::IdentityFlags;
     use crate::endpoint::spec::{
         EndpointKind, EndpointSpec, SerialEndpoint, SpecError, TcpClientEndpoint,
         UdpClientEndpoint, UdpServerEndpoint,

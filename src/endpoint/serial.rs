@@ -56,7 +56,7 @@ use tracing::{Instrument, debug, info_span, trace, warn};
 
 use super::EndpointId;
 use super::events::RouterFrame;
-use super::filters::IdentityFlags;
+use super::identity_flags::IdentityFlags;
 use super::spec::{SerialEndpoint, SerialFlowControl};
 use super::stats::EndpointStats;
 use super::tx_queue::TxQueue;

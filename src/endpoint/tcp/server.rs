@@ -14,7 +14,7 @@ use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
 use super::super::backoff::Backoff;
 use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
-use super::super::filters::IdentityFlags;
+use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
 use super::super::socket::{bind_tcp_dual_stack, configure_tcp_stream};
 use super::super::spec::TcpServerEndpoint;

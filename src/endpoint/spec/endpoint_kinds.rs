@@ -1,4 +1,4 @@
-use super::super::filters::IdentityFlags;
+use super::super::identity_flags::IdentityFlags;
 
 /// Supported endpoint schemes.
 #[derive(Debug, Clone, PartialEq, Eq)]

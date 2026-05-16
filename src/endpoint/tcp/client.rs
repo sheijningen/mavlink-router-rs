@@ -12,7 +12,7 @@ use tracing::{Instrument, info_span, trace, warn};
 use super::super::EndpointId;
 use super::super::backoff::Backoff;
 use super::super::events::RouterFrame;
-use super::super::filters::IdentityFlags;
+use super::super::identity_flags::IdentityFlags;
 use super::super::socket::configure_tcp_stream;
 use super::super::spec::TcpClientEndpoint;
 use super::super::stats::EndpointStats;

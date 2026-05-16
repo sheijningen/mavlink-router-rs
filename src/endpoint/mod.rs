@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub mod backoff;
 pub mod events;
 pub mod filters;
+pub mod identity_flags;
 pub mod serial;
 pub mod socket;
 pub mod spec;

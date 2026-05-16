@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use rmr::endpoint::{
     EndpointIdAllocator,
     events::{EndpointEvent, RouterFrame},
-    filters::IdentityFlags,
+    identity_flags::IdentityFlags,
     stats::EndpointStats,
     tx_queue::TxQueue,
     udp::client::{

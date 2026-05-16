@@ -11,7 +11,8 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::EndpointEvent;
-use rmr::endpoint::filters::{Filters, IdentityFlags, MsgIdRange, U8Range};
+use rmr::endpoint::filters::{Filters, MsgIdRange, U8Range};
+use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::tcp::server::TcpServerConfig;
 
 use crate::common;
