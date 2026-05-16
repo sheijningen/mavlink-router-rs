@@ -1,5 +1,8 @@
 //! MAVLink wire-format types and constants.
 
+/// Wire protocol version of a parsed MAVLink frame: v1 (`0xFE` STX) or v2
+/// (`0xFD` STX). The router forwards both transparently and never converts
+/// between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
     V1,
