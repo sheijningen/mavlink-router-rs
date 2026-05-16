@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -16,6 +15,7 @@ use super::EndpointId;
 use super::EndpointIdAllocator;
 use super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
 use super::socket::bind_udp_dual_stack;
+use super::spec::UdpServerEndpoint;
 use super::stats::EndpointStats;
 use super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
@@ -27,7 +27,10 @@ const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
 const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REAP_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Per-listener configuration sourced from the endpoint spec's query map.
+/// Per-listener runtime configuration. The spec parser hands us a fully-typed
+/// `UdpServerEndpoint`; this struct collapses the optional knobs down to the
+/// concrete values the task actually uses, substituting CLAUDE.md defaults
+/// where the user left a knob unset.
 #[derive(Debug, Clone, Copy)]
 pub struct UdpServerConfig {
     pub idle_secs: u64,
@@ -48,60 +51,18 @@ impl Default for UdpServerConfig {
 }
 
 impl UdpServerConfig {
-    pub fn from_query(q: &BTreeMap<String, String>) -> Result<Self, UdpServerError> {
-        let mut cfg = Self::default();
-        if let Some(v) = q.get("idle_secs") {
-            cfg.idle_secs = parse_u64(v, "idle_secs")?;
-            if cfg.idle_secs == 0 {
-                return Err(UdpServerError::InvalidQuery(
-                    "idle_secs must be > 0".to_string(),
-                ));
-            }
+    pub fn from_endpoint(ep: &UdpServerEndpoint) -> Self {
+        Self {
+            idle_secs: ep.idle_secs.unwrap_or(DEFAULT_IDLE_SECS),
+            peer_capacity: ep.udps_peer_capacity.unwrap_or(DEFAULT_PEER_CAPACITY),
+            read_buf_bytes: ep.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
+            tx_queue_frames: ep.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
         }
-        if let Some(v) = q.get("udps_peer_capacity") {
-            cfg.peer_capacity = parse_usize(v, "udps_peer_capacity")?;
-            if cfg.peer_capacity == 0 {
-                return Err(UdpServerError::InvalidQuery(
-                    "udps_peer_capacity must be > 0".to_string(),
-                ));
-            }
-        }
-        if let Some(v) = q.get("read_buf_bytes") {
-            cfg.read_buf_bytes = parse_usize(v, "read_buf_bytes")?;
-            if cfg.read_buf_bytes == 0 {
-                return Err(UdpServerError::InvalidQuery(
-                    "read_buf_bytes must be > 0".to_string(),
-                ));
-            }
-        }
-        if let Some(v) = q.get("tx_queue_frames") {
-            cfg.tx_queue_frames = parse_usize(v, "tx_queue_frames")?;
-            if cfg.tx_queue_frames == 0 {
-                return Err(UdpServerError::InvalidQuery(
-                    "tx_queue_frames must be > 0".to_string(),
-                ));
-            }
-        }
-        Ok(cfg)
     }
-}
-
-fn parse_u64(v: &str, key: &str) -> Result<u64, UdpServerError> {
-    v.parse().map_err(|_| {
-        UdpServerError::InvalidQuery(format!("{key} must be a non-negative integer, got '{v}'"))
-    })
-}
-
-fn parse_usize(v: &str, key: &str) -> Result<usize, UdpServerError> {
-    v.parse().map_err(|_| {
-        UdpServerError::InvalidQuery(format!("{key} must be a non-negative integer, got '{v}'"))
-    })
 }
 
 #[derive(Debug, Error)]
 pub enum UdpServerError {
-    #[error("invalid udps: query: {0}")]
-    InvalidQuery(String),
     #[error("udps: bind {addr} failed: {source}")]
     Bind {
         addr: SocketAddr,
@@ -471,9 +432,9 @@ mod tests {
     }
 
     #[test]
-    fn config_defaults_when_query_empty() {
-        let q = BTreeMap::new();
-        let cfg = UdpServerConfig::from_query(&q).unwrap();
+    fn config_defaults_when_endpoint_unset() {
+        let ep = UdpServerEndpoint::default();
+        let cfg = UdpServerConfig::from_endpoint(&ep);
         assert_eq!(cfg.idle_secs, DEFAULT_IDLE_SECS);
         assert_eq!(cfg.peer_capacity, DEFAULT_PEER_CAPACITY);
         assert_eq!(cfg.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
@@ -481,47 +442,19 @@ mod tests {
     }
 
     #[test]
-    fn config_overrides_from_query() {
-        let mut q = BTreeMap::new();
-        q.insert("idle_secs".into(), "10".into());
-        q.insert("udps_peer_capacity".into(), "4".into());
-        q.insert("read_buf_bytes".into(), "1024".into());
-        q.insert("tx_queue_frames".into(), "8".into());
-        let cfg = UdpServerConfig::from_query(&q).unwrap();
+    fn config_overrides_from_endpoint() {
+        let ep = UdpServerEndpoint {
+            idle_secs: Some(10),
+            udps_peer_capacity: Some(4),
+            read_buf_bytes: Some(1024),
+            tx_queue_frames: Some(8),
+            ..UdpServerEndpoint::default()
+        };
+        let cfg = UdpServerConfig::from_endpoint(&ep);
         assert_eq!(cfg.idle_secs, 10);
         assert_eq!(cfg.peer_capacity, 4);
         assert_eq!(cfg.read_buf_bytes, 1024);
         assert_eq!(cfg.tx_queue_frames, 8);
-    }
-
-    #[test]
-    fn config_zero_idle_secs_rejected() {
-        let mut q = BTreeMap::new();
-        q.insert("idle_secs".into(), "0".into());
-        assert!(matches!(
-            UdpServerConfig::from_query(&q),
-            Err(UdpServerError::InvalidQuery(_))
-        ));
-    }
-
-    #[test]
-    fn config_zero_peer_capacity_rejected() {
-        let mut q = BTreeMap::new();
-        q.insert("udps_peer_capacity".into(), "0".into());
-        assert!(matches!(
-            UdpServerConfig::from_query(&q),
-            Err(UdpServerError::InvalidQuery(_))
-        ));
-    }
-
-    #[test]
-    fn config_non_numeric_rejected() {
-        let mut q = BTreeMap::new();
-        q.insert("idle_secs".into(), "ten".into());
-        assert!(matches!(
-            UdpServerConfig::from_query(&q),
-            Err(UdpServerError::InvalidQuery(_))
-        ));
     }
 
     fn dummy_peer(child_id: EndpointId, age: Duration) -> PeerEntry {

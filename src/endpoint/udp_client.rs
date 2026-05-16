@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -15,6 +14,7 @@ use tracing::{debug, trace, warn};
 use super::EndpointId;
 use super::events::RouterFrame;
 use super::socket::bind_udp_dual_stack;
+use super::spec::UdpClientEndpoint;
 use super::stats::EndpointStats;
 use super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
@@ -25,7 +25,10 @@ const DEFAULT_READ_BUF_BYTES: usize = 8192;
 const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REVERT_TICK: Duration = Duration::from_secs(1);
 
-/// Per-endpoint configuration sourced from the endpoint spec's query map.
+/// Per-endpoint runtime configuration. The spec parser hands us a fully-typed
+/// `UdpClientEndpoint`; this struct collapses the optional knobs down to the
+/// concrete values the task actually uses, substituting CLAUDE.md defaults
+/// where the user left a knob unset.
 #[derive(Debug, Clone, Copy)]
 pub struct UdpClientConfig {
     pub latch_idle_secs: u64,
@@ -44,52 +47,17 @@ impl Default for UdpClientConfig {
 }
 
 impl UdpClientConfig {
-    pub fn from_query(q: &BTreeMap<String, String>) -> Result<Self, UdpClientError> {
-        let mut cfg = Self::default();
-        if let Some(v) = q.get("latch_idle_secs") {
-            cfg.latch_idle_secs = v.parse().map_err(|_| {
-                UdpClientError::InvalidQuery(format!(
-                    "latch_idle_secs must be a non-negative integer, got '{v}'"
-                ))
-            })?;
-            if cfg.latch_idle_secs == 0 {
-                return Err(UdpClientError::InvalidQuery(
-                    "latch_idle_secs must be > 0".to_string(),
-                ));
-            }
+    pub fn from_endpoint(ep: &UdpClientEndpoint) -> Self {
+        Self {
+            latch_idle_secs: ep.latch_idle_secs.unwrap_or(DEFAULT_LATCH_IDLE_SECS),
+            tx_queue_frames: ep.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+            read_buf_bytes: ep.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
         }
-        if let Some(v) = q.get("tx_queue_frames") {
-            cfg.tx_queue_frames = v.parse().map_err(|_| {
-                UdpClientError::InvalidQuery(format!(
-                    "tx_queue_frames must be a non-negative integer, got '{v}'"
-                ))
-            })?;
-            if cfg.tx_queue_frames == 0 {
-                return Err(UdpClientError::InvalidQuery(
-                    "tx_queue_frames must be > 0".to_string(),
-                ));
-            }
-        }
-        if let Some(v) = q.get("read_buf_bytes") {
-            cfg.read_buf_bytes = v.parse().map_err(|_| {
-                UdpClientError::InvalidQuery(format!(
-                    "read_buf_bytes must be a non-negative integer, got '{v}'"
-                ))
-            })?;
-            if cfg.read_buf_bytes == 0 {
-                return Err(UdpClientError::InvalidQuery(
-                    "read_buf_bytes must be > 0".to_string(),
-                ));
-            }
-        }
-        Ok(cfg)
     }
 }
 
 #[derive(Debug, Error)]
 pub enum UdpClientError {
-    #[error("invalid udpc: query: {0}")]
-    InvalidQuery(String),
     #[error("udpc: local bind failed: {0}")]
     Bind(#[source] std::io::Error),
 }
@@ -431,44 +399,26 @@ mod tests {
     }
 
     #[test]
-    fn config_defaults_when_query_empty() {
-        let q = BTreeMap::new();
-        let cfg = UdpClientConfig::from_query(&q).unwrap();
+    fn config_defaults_when_endpoint_unset() {
+        let ep = UdpClientEndpoint::default();
+        let cfg = UdpClientConfig::from_endpoint(&ep);
         assert_eq!(cfg.latch_idle_secs, DEFAULT_LATCH_IDLE_SECS);
         assert_eq!(cfg.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
         assert_eq!(cfg.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
     }
 
     #[test]
-    fn config_overrides_from_query() {
-        let mut q = BTreeMap::new();
-        q.insert("latch_idle_secs".into(), "5".into());
-        q.insert("tx_queue_frames".into(), "8".into());
-        q.insert("read_buf_bytes".into(), "1024".into());
-        let cfg = UdpClientConfig::from_query(&q).unwrap();
+    fn config_overrides_from_endpoint() {
+        let ep = UdpClientEndpoint {
+            latch_idle_secs: Some(5),
+            tx_queue_frames: Some(8),
+            read_buf_bytes: Some(1024),
+            ..UdpClientEndpoint::default()
+        };
+        let cfg = UdpClientConfig::from_endpoint(&ep);
         assert_eq!(cfg.latch_idle_secs, 5);
         assert_eq!(cfg.tx_queue_frames, 8);
         assert_eq!(cfg.read_buf_bytes, 1024);
-    }
-
-    #[test]
-    fn config_zero_latch_idle_rejected() {
-        let mut q = BTreeMap::new();
-        q.insert("latch_idle_secs".into(), "0".into());
-        assert!(matches!(
-            UdpClientConfig::from_query(&q),
-            Err(UdpClientError::InvalidQuery(_))
-        ));
-    }
-
-    #[test]
-    fn config_non_numeric_rejected() {
-        let mut q = BTreeMap::new();
-        q.insert("latch_idle_secs".into(), "ten".into());
-        assert!(matches!(
-            UdpClientConfig::from_query(&q),
-            Err(UdpClientError::InvalidQuery(_))
-        ));
     }
 
     #[test]
