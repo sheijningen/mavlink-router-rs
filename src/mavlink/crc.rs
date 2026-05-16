@@ -4,28 +4,28 @@ use super::crc_extra::{CRC_INIT, crc16_update};
 /// single-byte update step from `crc_extra.rs` so the framer can feed bytes
 /// incrementally as it validates a frame.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Crc16(u16);
+pub struct Crc16(u16);
 
 impl Crc16 {
     #[inline]
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self(CRC_INIT)
     }
 
     #[inline]
-    pub(crate) fn update(&mut self, b: u8) {
+    pub fn update(&mut self, b: u8) {
         crc16_update(&mut self.0, b);
     }
 
     #[inline]
-    pub(crate) fn update_slice(&mut self, bytes: &[u8]) {
+    pub fn update_slice(&mut self, bytes: &[u8]) {
         for &b in bytes {
             self.update(b);
         }
     }
 
     #[inline]
-    pub(crate) fn finalize(self) -> u16 {
+    pub fn finalize(self) -> u16 {
         self.0
     }
 }
