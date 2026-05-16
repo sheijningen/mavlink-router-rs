@@ -25,6 +25,8 @@ const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
 const DEFAULT_READ_BUF_BYTES: usize = 8192;
 const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
 const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
+// Max IP datagram payload plus headroom; matches `udps:` for symmetry so
+// neither side truncates an oversized inbound packet.
 const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REVERT_TICK: Duration = Duration::from_secs(1);
 
@@ -255,7 +257,9 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
 
     let mut revert_tick = interval(REVERT_TICK);
     revert_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let _ = revert_tick.tick().await; // consume immediate first tick
+    // `interval(...)` fires its first tick immediately; skip it so the
+    // revert check doesn't run before we've had a chance to latch.
+    let _ = revert_tick.tick().await;
 
     loop {
         tokio::select! {

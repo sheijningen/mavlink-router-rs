@@ -4,6 +4,10 @@ use std::net::SocketAddr;
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
+// `man 2 listen`: a backlog of 1024 is the conventional ceiling honored by both
+// Linux (capped to `net.core.somaxconn`, usually 4096) and Windows. RMR
+// accepts as fast as it can; the backlog matters only during a brief startup
+// burst where many GCSes connect simultaneously.
 const TCP_LISTEN_BACKLOG: i32 = 1024;
 
 /// Bind a UDP socket with the same options RMR uses for every UDP endpoint:

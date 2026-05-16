@@ -28,6 +28,9 @@ const DEFAULT_READ_BUF_BYTES: usize = 8192;
 const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
 const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
 const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
+// Max IP datagram payload plus headroom; one `recv_from` cannot return more
+// than the kernel's MTU-bounded payload, but we size the buffer to the IP
+// theoretical max so a fragmented giant datagram couldn't be truncated.
 const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REAP_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -173,7 +176,9 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
 
     let mut reaper = interval(REAP_INTERVAL);
     reaper.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let _ = reaper.tick().await; // consume the immediate first tick
+    // `interval(...)` fires its first tick immediately; skip it so the
+    // reaper doesn't sweep before any packets have arrived.
+    let _ = reaper.tick().await;
 
     let ctx = ListenerCtx {
         socket: socket.clone(),
