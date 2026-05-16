@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::EndpointEvent;
-use rmr::endpoint::filters::{IdentityFlags, MsgIdRange, U8Range};
+use rmr::endpoint::filters::{Filters, IdentityFlags, MsgIdRange, U8Range};
 use rmr::endpoint::tcp::server::TcpServerConfig;
 
 use crate::common;
@@ -31,9 +31,11 @@ async fn tcps_child_inherits_parent_identity() {
         group: Some(Arc::from("uplink")),
         learn_capacity: 11,
         seq_tracker_capacity: 7,
-        block_msgid_in: vec![MsgIdRange::single(33), MsgIdRange { lo: 100, hi: 150 }],
-        allow_src_sys_out: vec![U8Range::single(1)],
-        ..IdentityFlags::default()
+        filters: Filters {
+            block_msgid_in: vec![MsgIdRange::single(33), MsgIdRange { lo: 100, hi: 150 }],
+            allow_src_sys_out: vec![U8Range::single(1)],
+            ..Filters::default()
+        },
     };
 
     let mut harness = spawn_tcps_at_with_config_and_identity(

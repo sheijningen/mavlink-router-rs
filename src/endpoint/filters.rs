@@ -43,16 +43,18 @@ impl U8Range {
     }
 }
 
-/// Per-endpoint identity bundle: filter lists, sniffer flag, optional group
-/// label, and learn/seq-tracker capacities. Travels on the `*Spec` (not the
-/// `*Wiring`) per CLAUDE.md's "Filters, group, sniffer, and learn/seq
-/// capacities travel with the `*Spec`, not the `*Wiring`" decision — these
-/// are per-endpoint identity, not shared plumbing. The parser populates
-/// fields directly during query-string apply; missing knobs keep the
-/// CLAUDE.md defaults baked in by [`IdentityFlags::default`]. Sub-endpoints
-/// inherit a clone of the parent's `IdentityFlags` at spawn time.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IdentityFlags {
+/// The 12 per-endpoint filter lists: `allow_*` / `block_*` on the msgid,
+/// `src_sys`, and `src_comp` axes for both ingress (`*_in`) and egress
+/// (`*_out`). Empty list = no restriction; blocklist wins over allowlist on
+/// overlap. Phase 5 will hang the per-frame decision methods
+/// (`passes_in_filter` / `passes_out_filter`) off this struct; today this is
+/// the data half.
+///
+/// Lives on [`IdentityFlags::filters`] alongside the rest of the per-endpoint
+/// identity (sniffer / group / capacities). Sub-endpoints inherit the parent
+/// listener's `Filters` by clone at spawn time.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Filters {
     pub allow_msgid_in: Vec<MsgIdRange>,
     pub block_msgid_in: Vec<MsgIdRange>,
     pub allow_msgid_out: Vec<MsgIdRange>,
@@ -65,36 +67,9 @@ pub struct IdentityFlags {
     pub block_src_comp_in: Vec<U8Range>,
     pub allow_src_comp_out: Vec<U8Range>,
     pub block_src_comp_out: Vec<U8Range>,
-    pub sniffer: bool,
-    pub group: Option<Arc<str>>,
-    pub learn_capacity: usize,
-    pub seq_tracker_capacity: usize,
 }
 
-impl Default for IdentityFlags {
-    fn default() -> Self {
-        Self {
-            allow_msgid_in: Vec::new(),
-            block_msgid_in: Vec::new(),
-            allow_msgid_out: Vec::new(),
-            block_msgid_out: Vec::new(),
-            allow_src_sys_in: Vec::new(),
-            block_src_sys_in: Vec::new(),
-            allow_src_sys_out: Vec::new(),
-            block_src_sys_out: Vec::new(),
-            allow_src_comp_in: Vec::new(),
-            block_src_comp_in: Vec::new(),
-            allow_src_comp_out: Vec::new(),
-            block_src_comp_out: Vec::new(),
-            sniffer: false,
-            group: None,
-            learn_capacity: DEFAULT_LEARN_CAPACITY,
-            seq_tracker_capacity: DEFAULT_SEQ_TRACKER_CAPACITY,
-        }
-    }
-}
-
-impl IdentityFlags {
+impl Filters {
     /// Sorted list of every query key this struct understands. Used by the
     /// parser's "did you mean" suggestion. Kept here so the field set and
     /// the key set don't drift.
@@ -111,34 +86,13 @@ impl IdentityFlags {
         "block_src_comp_out",
         "block_src_sys_in",
         "block_src_sys_out",
-        "group",
-        "learn_capacity",
-        "seq_tracker_capacity",
-        "sniffer",
     ];
 
-    /// Apply one query key/value pair if it names an identity knob. Returns
-    /// `Ok(true)` when consumed, `Ok(false)` when the key isn't ours
-    /// (caller falls through to plumbing keys / scheme-specific keys), or
-    /// `Err` on a malformed value. Mirrors `CommonQuery::apply`.
+    /// Apply one query key/value pair if it names a filter list. Returns
+    /// `Ok(true)` when consumed, `Ok(false)` when the key isn't ours, or
+    /// `Err` on a malformed value.
     pub fn apply(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
         match key {
-            "sniffer" => {
-                self.sniffer = parse_bool(value, "sniffer")?;
-                Ok(true)
-            }
-            "group" => {
-                self.group = Some(Arc::from(value));
-                Ok(true)
-            }
-            "learn_capacity" => {
-                self.learn_capacity = parse_usize(value, "learn_capacity")?;
-                Ok(true)
-            }
-            "seq_tracker_capacity" => {
-                self.seq_tracker_capacity = parse_usize(value, "seq_tracker_capacity")?;
-                Ok(true)
-            }
             "allow_msgid_in" => {
                 self.allow_msgid_in = parse_msgid_ranges(value, "allow_msgid_in")?;
                 Ok(true)
@@ -185,6 +139,74 @@ impl IdentityFlags {
             }
             "block_src_comp_out" => {
                 self.block_src_comp_out = parse_u8_ranges(value, "block_src_comp_out")?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+}
+
+/// Per-endpoint identity bundle: filter rules, sniffer flag, optional group
+/// label, and learn/seq-tracker capacities. Travels on the `*Spec` (not the
+/// `*Wiring`) per CLAUDE.md's "Filters, group, sniffer, and learn/seq
+/// capacities travel with the `*Spec`, not the `*Wiring`" decision — these
+/// are per-endpoint identity, not shared plumbing. The parser populates
+/// fields directly during query-string apply; missing knobs keep the
+/// CLAUDE.md defaults baked in by [`IdentityFlags::default`]. Sub-endpoints
+/// inherit a clone of the parent's `IdentityFlags` at spawn time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityFlags {
+    pub filters: Filters,
+    pub sniffer: bool,
+    pub group: Option<Arc<str>>,
+    pub learn_capacity: usize,
+    pub seq_tracker_capacity: usize,
+}
+
+impl Default for IdentityFlags {
+    fn default() -> Self {
+        Self {
+            filters: Filters::default(),
+            sniffer: false,
+            group: None,
+            learn_capacity: DEFAULT_LEARN_CAPACITY,
+            seq_tracker_capacity: DEFAULT_SEQ_TRACKER_CAPACITY,
+        }
+    }
+}
+
+impl IdentityFlags {
+    /// Sorted list of every non-filter identity query key this struct handles
+    /// directly. Filter keys live on [`Filters::KEYS`]; the parser's "did you
+    /// mean" suggestion walks both. Kept here so the field set and the key
+    /// set don't drift.
+    pub const KEYS: &'static [&'static str] =
+        &["group", "learn_capacity", "seq_tracker_capacity", "sniffer"];
+
+    /// Apply one query key/value pair if it names an identity knob. Delegates
+    /// filter keys to [`Filters::apply`]; otherwise handles the four
+    /// non-filter identity keys directly. Returns `Ok(true)` when consumed,
+    /// `Ok(false)` when the key isn't ours (caller falls through to plumbing
+    /// / scheme-specific keys), or `Err` on a malformed value.
+    pub fn apply(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
+        if self.filters.apply(key, value)? {
+            return Ok(true);
+        }
+        match key {
+            "sniffer" => {
+                self.sniffer = parse_bool(value, "sniffer")?;
+                Ok(true)
+            }
+            "group" => {
+                self.group = Some(Arc::from(value));
+                Ok(true)
+            }
+            "learn_capacity" => {
+                self.learn_capacity = parse_usize(value, "learn_capacity")?;
+                Ok(true)
+            }
+            "seq_tracker_capacity" => {
+                self.seq_tracker_capacity = parse_usize(value, "seq_tracker_capacity")?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -288,9 +310,11 @@ fn parse_range_pair_u32(item: &str, key: &'static str) -> Result<(u32, u32), Spe
 mod tests {
     use super::*;
 
+    // --- Filters ---
+
     #[test]
-    fn default_is_allow_all_no_sniffer_no_group_default_capacities() {
-        let f = IdentityFlags::default();
+    fn filters_default_is_all_empty() {
+        let f = Filters::default();
         assert!(f.allow_msgid_in.is_empty());
         assert!(f.block_msgid_in.is_empty());
         assert!(f.allow_msgid_out.is_empty());
@@ -303,53 +327,19 @@ mod tests {
         assert!(f.block_src_comp_in.is_empty());
         assert!(f.allow_src_comp_out.is_empty());
         assert!(f.block_src_comp_out.is_empty());
-        assert!(!f.sniffer);
-        assert!(f.group.is_none());
-        assert_eq!(f.learn_capacity, DEFAULT_LEARN_CAPACITY);
-        assert_eq!(f.seq_tracker_capacity, DEFAULT_SEQ_TRACKER_CAPACITY);
     }
 
     #[test]
-    fn apply_returns_false_on_unknown_key() {
-        let mut f = IdentityFlags::default();
+    fn filters_apply_returns_false_on_non_filter_key() {
+        let mut f = Filters::default();
+        assert!(!f.apply("sniffer", "true").unwrap());
         assert!(!f.apply("read_buf_bytes", "8192").unwrap());
-        assert_eq!(f, IdentityFlags::default());
+        assert_eq!(f, Filters::default());
     }
 
     #[test]
-    fn apply_sniffer() {
-        let mut f = IdentityFlags::default();
-        assert!(f.apply("sniffer", "true").unwrap());
-        assert!(f.sniffer);
-        assert!(f.apply("sniffer", "false").unwrap());
-        assert!(!f.sniffer);
-        assert!(f.apply("sniffer", "yes").is_err());
-    }
-
-    #[test]
-    fn apply_group_stores_arc_str() {
-        let mut f = IdentityFlags::default();
-        assert!(f.apply("group", "uplink").unwrap());
-        assert_eq!(f.group.as_deref(), Some("uplink"));
-        let cloned = f.clone();
-        let (Some(a), Some(b)) = (f.group.as_ref(), cloned.group.as_ref()) else {
-            panic!("group should be Some after clone");
-        };
-        assert!(Arc::ptr_eq(a, b));
-    }
-
-    #[test]
-    fn apply_capacities_overwrite_defaults() {
-        let mut f = IdentityFlags::default();
-        assert!(f.apply("learn_capacity", "8").unwrap());
-        assert!(f.apply("seq_tracker_capacity", "16").unwrap());
-        assert_eq!(f.learn_capacity, 8);
-        assert_eq!(f.seq_tracker_capacity, 16);
-    }
-
-    #[test]
-    fn apply_msgid_lists_parse_ranges_and_singles() {
-        let mut f = IdentityFlags::default();
+    fn filters_apply_msgid_lists_parse_ranges_and_singles() {
+        let mut f = Filters::default();
         assert!(f.apply("block_msgid_in", "33,100-150,200").unwrap());
         assert_eq!(
             f.block_msgid_in,
@@ -362,47 +352,130 @@ mod tests {
     }
 
     #[test]
-    fn apply_u8_lists_reject_out_of_range() {
-        let mut f = IdentityFlags::default();
+    fn filters_apply_u8_lists_reject_out_of_range() {
+        let mut f = Filters::default();
         assert!(f.apply("allow_src_sys_in", "256").is_err());
         assert!(f.apply("allow_src_sys_in", "100-300").is_err());
     }
 
     #[test]
-    fn apply_rejects_inverted_range() {
-        let mut f = IdentityFlags::default();
+    fn filters_apply_rejects_inverted_range() {
+        let mut f = Filters::default();
         assert!(f.apply("block_msgid_in", "150-100").is_err());
     }
 
     #[test]
-    fn apply_rejects_empty_list_entry() {
-        let mut f = IdentityFlags::default();
+    fn filters_apply_rejects_empty_list_entry() {
+        let mut f = Filters::default();
         assert!(f.apply("block_msgid_in", "33,,100").is_err());
     }
 
     #[test]
-    fn keys_cover_every_identity_field_handled_by_apply() {
-        // Every key in KEYS must be consumed by apply(). Any key apply()
-        // consumes must appear in KEYS. This test pins the contract so the
-        // "did you mean" suggestion stays in sync with the apply match.
+    fn filters_keys_cover_every_filter_field_handled_by_apply() {
+        for k in Filters::KEYS {
+            let mut f = Filters::default();
+            let consumed = f
+                .apply(k, "1")
+                .unwrap_or_else(|e| panic!("apply({k}, ..) errored: {e}"));
+            assert!(
+                consumed,
+                "Filters::apply({k}) returned false; missing from match arm"
+            );
+        }
+    }
+
+    // --- IdentityFlags ---
+
+    #[test]
+    fn identity_default_is_allow_all_no_sniffer_no_group_default_capacities() {
+        let f = IdentityFlags::default();
+        assert_eq!(f.filters, Filters::default());
+        assert!(!f.sniffer);
+        assert!(f.group.is_none());
+        assert_eq!(f.learn_capacity, DEFAULT_LEARN_CAPACITY);
+        assert_eq!(f.seq_tracker_capacity, DEFAULT_SEQ_TRACKER_CAPACITY);
+    }
+
+    #[test]
+    fn identity_apply_returns_false_on_unknown_key() {
+        let mut f = IdentityFlags::default();
+        assert!(!f.apply("read_buf_bytes", "8192").unwrap());
+        assert_eq!(f, IdentityFlags::default());
+    }
+
+    #[test]
+    fn identity_apply_sniffer() {
+        let mut f = IdentityFlags::default();
+        assert!(f.apply("sniffer", "true").unwrap());
+        assert!(f.sniffer);
+        assert!(f.apply("sniffer", "false").unwrap());
+        assert!(!f.sniffer);
+        assert!(f.apply("sniffer", "yes").is_err());
+    }
+
+    #[test]
+    fn identity_apply_group_stores_arc_str() {
+        let mut f = IdentityFlags::default();
+        assert!(f.apply("group", "uplink").unwrap());
+        assert_eq!(f.group.as_deref(), Some("uplink"));
+        let cloned = f.clone();
+        let (Some(a), Some(b)) = (f.group.as_ref(), cloned.group.as_ref()) else {
+            panic!("group should be Some after clone");
+        };
+        assert!(Arc::ptr_eq(a, b));
+    }
+
+    #[test]
+    fn identity_apply_capacities_overwrite_defaults() {
+        let mut f = IdentityFlags::default();
+        assert!(f.apply("learn_capacity", "8").unwrap());
+        assert!(f.apply("seq_tracker_capacity", "16").unwrap());
+        assert_eq!(f.learn_capacity, 8);
+        assert_eq!(f.seq_tracker_capacity, 16);
+    }
+
+    #[test]
+    fn identity_apply_delegates_filter_keys_to_filters() {
+        // Identity::apply must route filter keys through `filters.apply`
+        // so external callers (the query parser) don't have to know about
+        // the split.
+        let mut f = IdentityFlags::default();
+        assert!(f.apply("block_msgid_in", "33,100-150").unwrap());
+        assert_eq!(
+            f.filters.block_msgid_in,
+            vec![MsgIdRange::single(33), MsgIdRange { lo: 100, hi: 150 }]
+        );
+        assert!(f.apply("allow_src_sys_out", "1").unwrap());
+        assert_eq!(f.filters.allow_src_sys_out, vec![U8Range::single(1)]);
+    }
+
+    #[test]
+    fn identity_keys_cover_every_non_filter_field_handled_by_apply() {
         let probe_value = |key: &str| -> &'static str {
             match key {
                 "sniffer" => "true",
                 "group" => "x",
-                "learn_capacity" | "seq_tracker_capacity" => "1",
-                k if k.contains("msgid") => "1",
-                k if k.contains("src_sys") || k.contains("src_comp") => "1",
                 _ => "1",
             }
         };
         for k in IdentityFlags::KEYS {
             let mut f = IdentityFlags::default();
-            let consumed = f.apply(k, probe_value(k)).unwrap_or_else(|e| {
-                panic!("apply({k}, ..) errored: {e}");
-            });
+            let consumed = f
+                .apply(k, probe_value(k))
+                .unwrap_or_else(|e| panic!("apply({k}, ..) errored: {e}"));
             assert!(
                 consumed,
-                "apply({k}) returned false; missing from match arm"
+                "IdentityFlags::apply({k}) returned false; missing from match arm"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_and_filter_key_sets_are_disjoint() {
+        for ik in IdentityFlags::KEYS {
+            assert!(
+                !Filters::KEYS.contains(ik),
+                "key {ik} appears in both IdentityFlags::KEYS and Filters::KEYS"
             );
         }
     }

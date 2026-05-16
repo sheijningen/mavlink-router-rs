@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::EndpointEvent;
-use rmr::endpoint::filters::{IdentityFlags, MsgIdRange, U8Range};
+use rmr::endpoint::filters::{Filters, IdentityFlags, MsgIdRange, U8Range};
 use rmr::endpoint::udp::server::UdpServerConfig;
 
 use crate::common;
@@ -31,9 +31,11 @@ async fn udps_peer_inherits_parent_identity() {
         group: Some(Arc::from("uplink")),
         learn_capacity: 13,
         seq_tracker_capacity: 5,
-        allow_msgid_out: vec![MsgIdRange::single(0), MsgIdRange { lo: 30, hi: 40 }],
-        block_src_comp_in: vec![U8Range::single(42)],
-        ..IdentityFlags::default()
+        filters: Filters {
+            allow_msgid_out: vec![MsgIdRange::single(0), MsgIdRange { lo: 30, hi: 40 }],
+            block_src_comp_in: vec![U8Range::single(42)],
+            ..Filters::default()
+        },
     };
 
     let mut harness = spawn_udps_at_with_config_and_identity(

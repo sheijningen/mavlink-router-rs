@@ -1,14 +1,15 @@
 use std::collections::BTreeSet;
 
-use super::super::filters::IdentityFlags;
+use super::super::filters::{Filters, IdentityFlags};
 use super::endpoint_kinds::{
     CommonQuery, SerialEndpoint, SerialFlowControl, TcpClientEndpoint, TcpServerEndpoint,
     UdpClientEndpoint, UdpServerEndpoint,
 };
 use super::error::SpecError;
 
-/// Plumbing keys handled by [`CommonQuery::apply`]. Identity keys live on
-/// [`IdentityFlags::KEYS`]; the "did you mean" suggestion walks both.
+/// Plumbing keys handled by [`CommonQuery::apply`]. Identity-side keys live
+/// on [`IdentityFlags::KEYS`] and [`Filters::KEYS`]; the "did you mean"
+/// suggestion walks all three.
 pub const COMMON_KEYS: &[&str] = &["read_buf_bytes", "tx_queue_frames"];
 
 const SERIAL_EXTRA: &[&str] = &["flow_control", "serial_reopen_ms"];
@@ -199,6 +200,7 @@ fn suggest_query_key(scheme: &str, unknown: &str) -> Option<&'static str> {
     COMMON_KEYS
         .iter()
         .chain(IdentityFlags::KEYS.iter())
+        .chain(Filters::KEYS.iter())
         .chain(extras.iter())
         .map(|k| (*k, levenshtein(unknown, k)))
         .filter(|(_, d)| *d <= 3)
@@ -249,7 +251,7 @@ fn parse_usize(v: &str, key: &'static str) -> Result<usize, SpecError> {
 #[cfg(test)]
 mod tests {
     use super::{COMMON_KEYS, levenshtein};
-    use crate::endpoint::filters::{IdentityFlags, MsgIdRange, U8Range};
+    use crate::endpoint::filters::{Filters, IdentityFlags, MsgIdRange, U8Range};
     use crate::endpoint::spec::{
         EndpointKind, EndpointSpec, SerialEndpoint, SpecError, TcpClientEndpoint,
         UdpClientEndpoint, UdpServerEndpoint,
@@ -328,7 +330,7 @@ mod tests {
         let s = parse_ok("tcpc:gcs.local:5760?block_msgid_in=33,100-150,32");
         let e = as_tcpc(&s);
         assert_eq!(
-            e.identity.block_msgid_in,
+            e.identity.filters.block_msgid_in,
             vec![
                 MsgIdRange::single(33),
                 MsgIdRange { lo: 100, hi: 150 },
@@ -341,8 +343,11 @@ mod tests {
     fn msgid_filter_list_with_whitespace() {
         let s = parse_ok("tcpc:gcs.local:5760?allow_msgid_out=1, 2 , 3-5");
         let e = as_tcpc(&s);
-        assert_eq!(e.identity.allow_msgid_out.len(), 3);
-        assert_eq!(e.identity.allow_msgid_out[2], MsgIdRange { lo: 3, hi: 5 });
+        assert_eq!(e.identity.filters.allow_msgid_out.len(), 3);
+        assert_eq!(
+            e.identity.filters.allow_msgid_out[2],
+            MsgIdRange { lo: 3, hi: 5 }
+        );
     }
 
     #[test]
@@ -384,7 +389,7 @@ mod tests {
         let s = parse_ok("tcpc:gcs.local:5760?allow_src_sys_out=1,5-10,200");
         let e = as_tcpc(&s);
         assert_eq!(
-            e.identity.allow_src_sys_out,
+            e.identity.filters.allow_src_sys_out,
             vec![
                 U8Range::single(1),
                 U8Range { lo: 5, hi: 10 },
@@ -616,18 +621,54 @@ mod tests {
                  &allow_src_sys_in=5&block_src_sys_in=6&allow_src_sys_out=7&block_src_sys_out=8\
                  &allow_src_comp_in=9&block_src_comp_in=10&allow_src_comp_out=11&block_src_comp_out=12";
         let e = as_tcpc(&parse_ok(&format!("tcpc:x:1?{q}"))).clone();
-        assert_eq!(e.identity.allow_msgid_in, vec![MsgIdRange::single(1)]);
-        assert_eq!(e.identity.block_msgid_in, vec![MsgIdRange::single(2)]);
-        assert_eq!(e.identity.allow_msgid_out, vec![MsgIdRange::single(3)]);
-        assert_eq!(e.identity.block_msgid_out, vec![MsgIdRange::single(4)]);
-        assert_eq!(e.identity.allow_src_sys_in, vec![U8Range::single(5)]);
-        assert_eq!(e.identity.block_src_sys_in, vec![U8Range::single(6)]);
-        assert_eq!(e.identity.allow_src_sys_out, vec![U8Range::single(7)]);
-        assert_eq!(e.identity.block_src_sys_out, vec![U8Range::single(8)]);
-        assert_eq!(e.identity.allow_src_comp_in, vec![U8Range::single(9)]);
-        assert_eq!(e.identity.block_src_comp_in, vec![U8Range::single(10)]);
-        assert_eq!(e.identity.allow_src_comp_out, vec![U8Range::single(11)]);
-        assert_eq!(e.identity.block_src_comp_out, vec![U8Range::single(12)]);
+        assert_eq!(
+            e.identity.filters.allow_msgid_in,
+            vec![MsgIdRange::single(1)]
+        );
+        assert_eq!(
+            e.identity.filters.block_msgid_in,
+            vec![MsgIdRange::single(2)]
+        );
+        assert_eq!(
+            e.identity.filters.allow_msgid_out,
+            vec![MsgIdRange::single(3)]
+        );
+        assert_eq!(
+            e.identity.filters.block_msgid_out,
+            vec![MsgIdRange::single(4)]
+        );
+        assert_eq!(
+            e.identity.filters.allow_src_sys_in,
+            vec![U8Range::single(5)]
+        );
+        assert_eq!(
+            e.identity.filters.block_src_sys_in,
+            vec![U8Range::single(6)]
+        );
+        assert_eq!(
+            e.identity.filters.allow_src_sys_out,
+            vec![U8Range::single(7)]
+        );
+        assert_eq!(
+            e.identity.filters.block_src_sys_out,
+            vec![U8Range::single(8)]
+        );
+        assert_eq!(
+            e.identity.filters.allow_src_comp_in,
+            vec![U8Range::single(9)]
+        );
+        assert_eq!(
+            e.identity.filters.block_src_comp_in,
+            vec![U8Range::single(10)]
+        );
+        assert_eq!(
+            e.identity.filters.allow_src_comp_out,
+            vec![U8Range::single(11)]
+        );
+        assert_eq!(
+            e.identity.filters.block_src_comp_out,
+            vec![U8Range::single(12)]
+        );
     }
 
     #[test]
@@ -676,6 +717,17 @@ mod tests {
         copy.dedup();
         assert_eq!(copy.len(), IdentityFlags::KEYS.len(), "duplicates present");
         for w in IdentityFlags::KEYS.windows(2) {
+            assert!(w[0] < w[1], "not sorted: {} >= {}", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn filters_keys_sorted_and_unique() {
+        let mut copy: Vec<&&str> = Filters::KEYS.iter().collect();
+        copy.sort();
+        copy.dedup();
+        assert_eq!(copy.len(), Filters::KEYS.len(), "duplicates present");
+        for w in Filters::KEYS.windows(2) {
             assert!(w[0] < w[1], "not sorted: {} >= {}", w[0], w[1]);
         }
     }
