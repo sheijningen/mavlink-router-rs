@@ -402,7 +402,13 @@ rmr/
 │   │   └── generated.rs              ← `include!` from build.rs OUT_DIR
 │   ├── endpoint/
 │   │   ├── mod.rs                    ← Endpoint trait, EndpointHandle, IDs
-│   │   ├── spec.rs                   ← EndpointSpec enum and string parser
+│   │   ├── spec/                     ← typed endpoint-spec parser (CLI string → fully-typed `EndpointSpec`)
+│   │   │   ├── mod.rs                ← `EndpointSpec` and the `parse()` entry point
+│   │   │   ├── endpoint_kinds.rs     ← `EndpointKind` + the five per-scheme `*Endpoint` structs (via `endpoint_struct!` macro) + `MsgIdRange`, `U8Range`
+│   │   │   ├── error.rs              ← `SpecError`
+│   │   │   ├── parse.rs              ← body/address parsers, name validation, scheme dispatch
+│   │   │   ├── query.rs              ← query-string parser, per-scheme `QueryApplier`s, value parsers, did-you-mean suggestion
+│   │   │   └── tests.rs              ← parser unit tests (end-to-end, 70+ cases)
 │   │   ├── filters.rs                ← In/Out filter types, evaluation fns
 │   │   ├── stats.rs                  ← per-endpoint counter struct
 │   │   ├── tx_queue.rs               ← bounded queue with drop-oldest
