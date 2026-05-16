@@ -27,7 +27,6 @@ toml = "0.8"
 thiserror = "2"
 bytes = "1"
 twox-hash = { version = "2", default-features = false, features = ["xxhash3_64"] }
-smallvec = "1"
 socket2 = { version = "0.5", features = ["all"] }
 crossbeam-queue = "0.3"
 time = { version = "0.3", features = ["formatting", "macros"] }

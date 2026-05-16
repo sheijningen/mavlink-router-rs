@@ -622,7 +622,6 @@ dependencies = [
  "quick-xml",
  "serde",
  "serde_json",
- "smallvec",
  "socket2 0.5.10",
  "thiserror",
  "time",
