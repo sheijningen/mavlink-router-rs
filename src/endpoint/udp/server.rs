@@ -257,9 +257,6 @@ async fn handle_packet(
     ctx: &ListenerCtx<'_>,
 ) {
     if !peers.contains_key(&src) {
-        if peers.len() >= ctx.cfg.peer_capacity {
-            evict_lru_peer(peers, ctx.parent_id, ctx.event_tx).await;
-        }
         let child_id = ctx.allocator.alloc();
         let stats = Arc::new(EndpointStats::new());
         let tx_queue = TxQueue::new(ctx.cfg.tx_queue_frames, stats.clone());
@@ -267,9 +264,10 @@ async fn handle_packet(
         let name = peer_endpoint_name(ctx.parent_name, src);
         let writer_span = info_span!("udps_peer", name = %name);
 
-        // Announce PeerAdded before spawning the writer and inserting the peer
-        // so that on a closed router event channel we don't leak a writer task
-        // or accumulate per-peer state the router will never see.
+        // Announce PeerAdded before LRU-evicting and before spawning the writer:
+        // a closed router event channel here means the router is gone, and
+        // destroying an existing peer's state in vain (silent PeerRemoved that
+        // nobody receives) is worse than just dropping the new packet.
         if ctx
             .event_tx
             .send(EndpointEvent::PeerAdded {
@@ -287,6 +285,10 @@ async fn handle_packet(
             return;
         }
         trace!(parent_id = %ctx.parent_id, %src, "udps peer added");
+
+        if peers.len() >= ctx.cfg.peer_capacity {
+            evict_lru_peer(peers, ctx.parent_id, ctx.event_tx).await;
+        }
 
         writer_tasks.spawn(
             run_peer_writer(
@@ -583,6 +585,57 @@ mod tests {
         cancel.cancel();
         let r = wait_or_cancel(&cancel, Duration::from_secs(60)).await;
         assert!(!r);
+    }
+
+    /// Regression: when the router event channel is already closed and a
+    /// brand-new peer arrives at capacity, `handle_packet` must NOT evict an
+    /// existing peer just to drop the new one. Reordering the announce ahead
+    /// of the LRU eviction guarantees we never destroy real state in vain.
+    #[tokio::test]
+    async fn handle_packet_with_closed_event_tx_does_not_evict() {
+        let socket = Arc::new(
+            UdpSocket::bind("127.0.0.1:0")
+                .await
+                .expect("bind ctx socket"),
+        );
+        let allocator = Arc::new(EndpointIdAllocator::new());
+        let parent_id = allocator.alloc();
+        let cfg = UdpServerConfig {
+            peer_capacity: 2,
+            ..UdpServerConfig::default()
+        };
+        let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
+        let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(8);
+        let cancel = CancellationToken::new();
+        let parent_name = "test".to_string();
+        let ctx = ListenerCtx {
+            socket: socket.clone(),
+            parent_id,
+            parent_name: &parent_name,
+            cfg: &cfg,
+            allocator: &allocator,
+            frame_tx: &frame_tx,
+            event_tx: &event_tx,
+            cancel: &cancel,
+        };
+
+        let mut peers: HashMap<SocketAddr, PeerEntry> = HashMap::new();
+        peers.insert(addr(1), dummy_peer(EndpointId(10), Duration::from_secs(30)));
+        peers.insert(addr(2), dummy_peer(EndpointId(11), Duration::from_secs(60)));
+        let mut writer_tasks: JoinSet<()> = JoinSet::new();
+
+        // Close the event channel so PeerAdded send fails immediately.
+        drop(event_rx);
+
+        handle_packet(&[], addr(3), &mut peers, &mut writer_tasks, &ctx).await;
+
+        assert_eq!(peers.len(), 2, "no peer should have been evicted");
+        assert!(peers.contains_key(&addr(1)), "addr(1) should remain");
+        assert!(peers.contains_key(&addr(2)), "addr(2) should remain");
+        assert!(
+            writer_tasks.is_empty(),
+            "no writer task should have spawned for the dropped peer"
+        );
     }
 
     #[tokio::test]
