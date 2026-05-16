@@ -578,7 +578,7 @@ mod tests {
         let s = parse_ok("udps:0.0.0.0:1#name?group=g");
         assert_eq!(s.name, "name");
         let e = as_udps(&s);
-        assert_eq!(e.common.group.as_deref(), Some("g"));
+        assert_eq!(e.identity.group.as_deref(), Some("g"));
     }
 
     #[test]

@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use rmr::endpoint::{
     EndpointIdAllocator,
     events::{EndpointEvent, RouterFrame},
+    filters::IdentityFlags,
     stats::EndpointStats,
     tcp::client::{
         self as tcp_client, TcpClientConfig, TcpClientError, TcpClientSpec, TcpClientWiring,
@@ -89,6 +90,7 @@ pub fn spawn_tcps_at_with_config(
                 parent_id,
                 parent_name,
                 cfg,
+                identity: IdentityFlags::default(),
             },
             TcpServerWiring {
                 allocator,
@@ -147,6 +149,7 @@ pub fn spawn_tcpc(
                     endpoint_id,
                     name,
                     cfg,
+                    identity: IdentityFlags::default(),
                 },
                 TcpClientWiring {
                     frame_tx,

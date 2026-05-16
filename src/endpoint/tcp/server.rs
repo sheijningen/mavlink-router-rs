@@ -14,6 +14,7 @@ use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
 use super::super::backoff::Backoff;
 use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
+use super::super::filters::IdentityFlags;
 use super::super::peer_endpoint_name;
 use super::super::socket::{bind_tcp_dual_stack, configure_tcp_stream};
 use super::super::spec::TcpServerEndpoint;
@@ -73,11 +74,16 @@ pub enum TcpServerError {}
 
 /// Inputs that distinguish one `tcps:` listener from another: where to bind,
 /// what to call it, and the per-listener knobs from the query string.
+/// `identity` carries the filter / sniffer / group / capacity bundle —
+/// inherited by every accepted child at admission time (CLAUDE.md "Sub-
+/// endpoints inherit their parent's `IdentityFlags` by clone at spawn
+/// time"). Unused until Phase 5 wires it through the reader and the router.
 pub struct TcpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,
     pub parent_name: String,
     pub cfg: TcpServerConfig,
+    pub identity: IdentityFlags,
 }
 
 /// Shared wiring every endpoint needs: the global EndpointId allocator,
@@ -110,6 +116,7 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), T
         parent_id,
         parent_name,
         cfg,
+        identity: _,
     } = spec;
     let TcpServerWiring {
         allocator,
@@ -346,7 +353,6 @@ mod tests {
             common: CommonQuery {
                 read_buf_bytes: Some(1024),
                 tx_queue_frames: Some(8),
-                ..CommonQuery::default()
             },
             ..TcpServerEndpoint::default()
         };

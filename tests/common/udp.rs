@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 use rmr::endpoint::{
     EndpointIdAllocator,
     events::{EndpointEvent, RouterFrame},
+    filters::IdentityFlags,
     stats::EndpointStats,
     tx_queue::TxQueue,
     udp::client::{
@@ -94,6 +95,7 @@ pub fn spawn_udps_at_with_config(
                 parent_id,
                 parent_name,
                 cfg,
+                identity: IdentityFlags::default(),
             },
             UdpServerWiring {
                 allocator,
@@ -150,6 +152,7 @@ pub fn spawn_udpc(
                     endpoint_id,
                     name,
                     cfg,
+                    identity: IdentityFlags::default(),
                 },
                 UdpClientWiring {
                     frame_tx,

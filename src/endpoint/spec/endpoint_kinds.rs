@@ -1,3 +1,5 @@
+use super::super::filters::IdentityFlags;
+
 /// Supported endpoint schemes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EndpointKind {
@@ -20,63 +22,13 @@ impl EndpointKind {
     }
 }
 
-/// Inclusive decimal range used inside `allow_msgid_*` and `block_msgid_*`
-/// filter lists. Single values parse to `lo == hi`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MsgIdRange {
-    pub lo: u32,
-    pub hi: u32,
-}
-
-impl MsgIdRange {
-    pub fn single(n: u32) -> Self {
-        Self { lo: n, hi: n }
-    }
-
-    pub fn contains(self, x: u32) -> bool {
-        self.lo <= x && x <= self.hi
-    }
-}
-
-/// Inclusive decimal range used inside `allow_src_sys_*`, `block_src_sys_*`,
-/// `allow_src_comp_*`, `block_src_comp_*` filter lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct U8Range {
-    pub lo: u8,
-    pub hi: u8,
-}
-
-impl U8Range {
-    pub fn single(n: u8) -> Self {
-        Self { lo: n, hi: n }
-    }
-
-    pub fn contains(self, x: u8) -> bool {
-        self.lo <= x && x <= self.hi
-    }
-}
-
-/// Knobs that every endpoint type understands
+/// Plumbing knobs every endpoint type understands. Identity knobs (filters,
+/// sniffer, group, learn/seq capacities) live on [`IdentityFlags`] alongside
+/// the structures that consume them.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommonQuery {
-    pub sniffer: bool,
-    pub group: Option<String>,
-    pub learn_capacity: Option<usize>,
-    pub seq_tracker_capacity: Option<usize>,
     pub read_buf_bytes: Option<usize>,
     pub tx_queue_frames: Option<usize>,
-    pub allow_msgid_in: Option<Vec<MsgIdRange>>,
-    pub block_msgid_in: Option<Vec<MsgIdRange>>,
-    pub allow_msgid_out: Option<Vec<MsgIdRange>>,
-    pub block_msgid_out: Option<Vec<MsgIdRange>>,
-    pub allow_src_sys_in: Option<Vec<U8Range>>,
-    pub block_src_sys_in: Option<Vec<U8Range>>,
-    pub allow_src_sys_out: Option<Vec<U8Range>>,
-    pub block_src_sys_out: Option<Vec<U8Range>>,
-    pub allow_src_comp_in: Option<Vec<U8Range>>,
-    pub block_src_comp_in: Option<Vec<U8Range>>,
-    pub allow_src_comp_out: Option<Vec<U8Range>>,
-    pub block_src_comp_out: Option<Vec<U8Range>>,
 }
 
 /// Hardware flow-control mode for `serial:`. The query-key name
@@ -98,6 +50,7 @@ pub struct SerialEndpoint {
     pub flow_control: SerialFlowControl,
     pub serial_reopen_ms: Option<u64>,
     pub common: CommonQuery,
+    pub identity: IdentityFlags,
 }
 
 /// `udps:` endpoint config.
@@ -108,6 +61,7 @@ pub struct UdpServerEndpoint {
     pub idle_secs: Option<u64>,
     pub udps_peer_capacity: Option<usize>,
     pub common: CommonQuery,
+    pub identity: IdentityFlags,
 }
 
 /// `udpc:` endpoint config.
@@ -117,6 +71,7 @@ pub struct UdpClientEndpoint {
     pub port: u16,
     pub latch_idle_secs: Option<u64>,
     pub common: CommonQuery,
+    pub identity: IdentityFlags,
 }
 
 /// `tcps:` endpoint config.
@@ -125,6 +80,7 @@ pub struct TcpServerEndpoint {
     pub host: String,
     pub port: u16,
     pub common: CommonQuery,
+    pub identity: IdentityFlags,
 }
 
 /// `tcpc:` endpoint config.
@@ -135,6 +91,7 @@ pub struct TcpClientEndpoint {
     pub reconnect_initial_ms: Option<u64>,
     pub reconnect_max_ms: Option<u64>,
     pub common: CommonQuery,
+    pub identity: IdentityFlags,
 }
 
 #[cfg(test)]

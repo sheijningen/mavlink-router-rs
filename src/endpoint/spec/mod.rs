@@ -8,8 +8,8 @@ mod parse;
 mod query;
 
 pub use endpoint_kinds::{
-    CommonQuery, EndpointKind, MsgIdRange, SerialEndpoint, SerialFlowControl, TcpClientEndpoint,
-    TcpServerEndpoint, U8Range, UdpClientEndpoint, UdpServerEndpoint,
+    CommonQuery, EndpointKind, SerialEndpoint, SerialFlowControl, TcpClientEndpoint,
+    TcpServerEndpoint, UdpClientEndpoint, UdpServerEndpoint,
 };
 pub use error::SpecError;
 

@@ -56,6 +56,7 @@ use tracing::{Instrument, debug, info_span, trace, warn};
 
 use super::EndpointId;
 use super::events::RouterFrame;
+use super::filters::IdentityFlags;
 use super::spec::{SerialEndpoint, SerialFlowControl};
 use super::stats::EndpointStats;
 use super::tx_queue::TxQueue;
@@ -106,7 +107,11 @@ pub enum SerialError {}
 
 /// Inputs that distinguish one `serial:` endpoint from another: which device
 /// to open at what baud (with optional hardware flow control), what to call
-/// it, and the per-endpoint knobs from the query string.
+/// it, and the per-endpoint knobs from the query string. `identity` carries
+/// the filter / sniffer / group / capacity bundle — unused today, threaded
+/// here so Phase 5 readers and the router can consume it without a spawner
+/// rework (CLAUDE.md "Filters, group, sniffer, and learn/seq capacities
+/// travel with the `*Spec`").
 pub struct SerialSpec {
     pub path: String,
     pub baud: u32,
@@ -114,6 +119,7 @@ pub struct SerialSpec {
     pub endpoint_id: EndpointId,
     pub name: String,
     pub cfg: SerialConfig,
+    pub identity: IdentityFlags,
 }
 
 /// Shared wiring a `serial:` task needs. Mirrors `TcpClientWiring` /
@@ -163,6 +169,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialE
         endpoint_id,
         name: _,
         cfg,
+        identity: _,
     } = spec;
     let SerialWiring {
         frame_tx,
@@ -412,7 +419,6 @@ mod tests {
             common: CommonQuery {
                 read_buf_bytes: Some(1024),
                 tx_queue_frames: Some(16),
-                ..CommonQuery::default()
             },
             ..SerialEndpoint::default()
         };
@@ -445,6 +451,7 @@ mod tests {
                 serial_reopen_ms: 1000,
                 ..SerialConfig::default()
             },
+            identity: IdentityFlags::default(),
         };
         let wiring = SerialWiring {
             frame_tx,

@@ -12,6 +12,7 @@ use tracing::{Instrument, info_span, trace, warn};
 use super::super::EndpointId;
 use super::super::backoff::Backoff;
 use super::super::events::RouterFrame;
+use super::super::filters::IdentityFlags;
 use super::super::socket::configure_tcp_stream;
 use super::super::spec::TcpClientEndpoint;
 use super::super::stats::EndpointStats;
@@ -70,12 +71,17 @@ pub enum TcpClientError {}
 
 /// Inputs that distinguish one `tcpc:` endpoint from another: where to dial,
 /// what to call it, and the per-endpoint knobs from the query string.
+/// `identity` carries the filter / sniffer / group / capacity bundle —
+/// unused today, threaded so Phase 5 can wire it up without a spawner
+/// rework (CLAUDE.md "Filters, group, sniffer, and learn/seq capacities
+/// travel with the `*Spec`").
 pub struct TcpClientSpec {
     pub host: String,
     pub port: u16,
     pub endpoint_id: EndpointId,
     pub name: String,
     pub cfg: TcpClientConfig,
+    pub identity: IdentityFlags,
 }
 
 /// Shared wiring a `tcpc:` task needs. The TxQueue and stats are constructed
@@ -106,6 +112,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) -> Result<(), T
         endpoint_id,
         name: _,
         cfg,
+        identity: _,
     } = spec;
     let TcpClientWiring {
         frame_tx,
@@ -279,7 +286,6 @@ mod tests {
             common: CommonQuery {
                 read_buf_bytes: Some(1024),
                 tx_queue_frames: Some(8),
-                ..CommonQuery::default()
             },
             ..TcpClientEndpoint::default()
         };

@@ -14,6 +14,7 @@ use tracing::{Instrument, debug, info_span, trace, warn};
 use super::super::EndpointId;
 use super::super::backoff::Backoff;
 use super::super::events::RouterFrame;
+use super::super::filters::IdentityFlags;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
 use super::super::stats::EndpointStats;
@@ -81,12 +82,17 @@ pub enum UdpClientError {}
 
 /// Inputs that distinguish one `udpc:` endpoint from another: where to send,
 /// what to call it, and the per-endpoint knobs from the query string.
+/// `identity` carries the filter / sniffer / group / capacity bundle —
+/// unused today, threaded so Phase 5 can wire it up without a spawner
+/// rework (CLAUDE.md "Filters, group, sniffer, and learn/seq capacities
+/// travel with the `*Spec`").
 pub struct UdpClientSpec {
     pub host: String,
     pub port: u16,
     pub endpoint_id: EndpointId,
     pub name: String,
     pub cfg: UdpClientConfig,
+    pub identity: IdentityFlags,
 }
 
 /// Shared wiring a `udpc:` task needs. The TxQueue and stats are constructed
@@ -217,6 +223,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
         endpoint_id,
         name: _,
         cfg,
+        identity: _,
     } = spec;
     let UdpClientWiring {
         frame_tx,
@@ -471,7 +478,6 @@ mod tests {
             common: CommonQuery {
                 tx_queue_frames: Some(8),
                 read_buf_bytes: Some(1024),
-                ..CommonQuery::default()
             },
             ..UdpClientEndpoint::default()
         };

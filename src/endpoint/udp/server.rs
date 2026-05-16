@@ -15,6 +15,7 @@ use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
 use super::super::backoff::Backoff;
 use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
+use super::super::filters::IdentityFlags;
 use super::super::peer_endpoint_name;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpServerEndpoint;
@@ -100,11 +101,16 @@ struct PeerEntry {
 
 /// Inputs that distinguish one `udps:` listener from another: where to bind,
 /// what to call it, and the per-listener knobs from the query string.
+/// `identity` carries the filter / sniffer / group / capacity bundle —
+/// inherited by every learned peer at admission time (CLAUDE.md "Sub-
+/// endpoints inherit their parent's `IdentityFlags` by clone at spawn
+/// time"). Unused until Phase 5 wires it through the reader and the router.
 pub struct UdpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,
     pub parent_name: String,
     pub cfg: UdpServerConfig,
+    pub identity: IdentityFlags,
 }
 
 /// Shared wiring every endpoint needs: the global EndpointId allocator,
@@ -139,6 +145,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
         parent_id,
         parent_name,
         cfg,
+        identity: _,
     } = spec;
     let UdpServerWiring {
         allocator,
@@ -489,7 +496,6 @@ mod tests {
             common: CommonQuery {
                 read_buf_bytes: Some(1024),
                 tx_queue_frames: Some(8),
-                ..CommonQuery::default()
             },
             ..UdpServerEndpoint::default()
         };
