@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::endpoint_kinds::{
-    MsgIdRange, SerialEndpoint, TcpClientEndpoint, TcpServerEndpoint, U8Range, UdpClientEndpoint,
-    UdpServerEndpoint,
+    CommonQuery, MsgIdRange, SerialEndpoint, TcpClientEndpoint, TcpServerEndpoint, U8Range,
+    UdpClientEndpoint, UdpServerEndpoint,
 };
 use super::error::SpecError;
 
@@ -75,92 +75,94 @@ pub fn parse_query_pairs(s: &str) -> Result<Vec<(String, String)>, SpecError> {
     Ok(out)
 }
 
-/// Trait abstracting "set knob X to value V" so the per-scheme key dispatch
-/// is shared between schemes. Each scheme's applier owns a mutable borrow of
-/// its concrete endpoint struct and matches the keys it understands; common
-/// keys are routed through the [`apply_common`] macro.
-pub trait QueryApplier {
-    fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError>;
-}
-
-macro_rules! apply_common {
-    ($ep:expr, $key:expr, $value:expr) => {
-        match $key {
+impl CommonQuery {
+    /// Apply one key/value pair if it names a common knob. Returns `Ok(true)`
+    /// when the key was consumed, `Ok(false)` when it isn't a common-knob
+    /// name (caller falls through to scheme-specific handling), or `Err` on
+    /// a malformed value.
+    pub fn apply(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
+        match key {
             "sniffer" => {
-                $ep.sniffer = parse_bool($value, "sniffer")?;
+                self.sniffer = parse_bool(value, "sniffer")?;
                 Ok(true)
             }
             "group" => {
-                $ep.group = Some($value.to_string());
+                self.group = Some(value.to_string());
                 Ok(true)
             }
             "learn_capacity" => {
-                $ep.learn_capacity = Some(parse_usize($value, "learn_capacity")?);
+                self.learn_capacity = Some(parse_usize(value, "learn_capacity")?);
                 Ok(true)
             }
             "seq_tracker_capacity" => {
-                $ep.seq_tracker_capacity = Some(parse_usize($value, "seq_tracker_capacity")?);
+                self.seq_tracker_capacity = Some(parse_usize(value, "seq_tracker_capacity")?);
                 Ok(true)
             }
             "read_buf_bytes" => {
-                $ep.read_buf_bytes = Some(parse_usize($value, "read_buf_bytes")?);
+                self.read_buf_bytes = Some(parse_usize(value, "read_buf_bytes")?);
                 Ok(true)
             }
             "tx_queue_frames" => {
-                $ep.tx_queue_frames = Some(parse_usize($value, "tx_queue_frames")?);
+                self.tx_queue_frames = Some(parse_usize(value, "tx_queue_frames")?);
                 Ok(true)
             }
             "allow_msgid_in" => {
-                $ep.allow_msgid_in = Some(parse_msgid_ranges($value, "allow_msgid_in")?);
+                self.allow_msgid_in = Some(parse_msgid_ranges(value, "allow_msgid_in")?);
                 Ok(true)
             }
             "block_msgid_in" => {
-                $ep.block_msgid_in = Some(parse_msgid_ranges($value, "block_msgid_in")?);
+                self.block_msgid_in = Some(parse_msgid_ranges(value, "block_msgid_in")?);
                 Ok(true)
             }
             "allow_msgid_out" => {
-                $ep.allow_msgid_out = Some(parse_msgid_ranges($value, "allow_msgid_out")?);
+                self.allow_msgid_out = Some(parse_msgid_ranges(value, "allow_msgid_out")?);
                 Ok(true)
             }
             "block_msgid_out" => {
-                $ep.block_msgid_out = Some(parse_msgid_ranges($value, "block_msgid_out")?);
+                self.block_msgid_out = Some(parse_msgid_ranges(value, "block_msgid_out")?);
                 Ok(true)
             }
             "allow_src_sys_in" => {
-                $ep.allow_src_sys_in = Some(parse_u8_ranges($value, "allow_src_sys_in")?);
+                self.allow_src_sys_in = Some(parse_u8_ranges(value, "allow_src_sys_in")?);
                 Ok(true)
             }
             "block_src_sys_in" => {
-                $ep.block_src_sys_in = Some(parse_u8_ranges($value, "block_src_sys_in")?);
+                self.block_src_sys_in = Some(parse_u8_ranges(value, "block_src_sys_in")?);
                 Ok(true)
             }
             "allow_src_sys_out" => {
-                $ep.allow_src_sys_out = Some(parse_u8_ranges($value, "allow_src_sys_out")?);
+                self.allow_src_sys_out = Some(parse_u8_ranges(value, "allow_src_sys_out")?);
                 Ok(true)
             }
             "block_src_sys_out" => {
-                $ep.block_src_sys_out = Some(parse_u8_ranges($value, "block_src_sys_out")?);
+                self.block_src_sys_out = Some(parse_u8_ranges(value, "block_src_sys_out")?);
                 Ok(true)
             }
             "allow_src_comp_in" => {
-                $ep.allow_src_comp_in = Some(parse_u8_ranges($value, "allow_src_comp_in")?);
+                self.allow_src_comp_in = Some(parse_u8_ranges(value, "allow_src_comp_in")?);
                 Ok(true)
             }
             "block_src_comp_in" => {
-                $ep.block_src_comp_in = Some(parse_u8_ranges($value, "block_src_comp_in")?);
+                self.block_src_comp_in = Some(parse_u8_ranges(value, "block_src_comp_in")?);
                 Ok(true)
             }
             "allow_src_comp_out" => {
-                $ep.allow_src_comp_out = Some(parse_u8_ranges($value, "allow_src_comp_out")?);
+                self.allow_src_comp_out = Some(parse_u8_ranges(value, "allow_src_comp_out")?);
                 Ok(true)
             }
             "block_src_comp_out" => {
-                $ep.block_src_comp_out = Some(parse_u8_ranges($value, "block_src_comp_out")?);
+                self.block_src_comp_out = Some(parse_u8_ranges(value, "block_src_comp_out")?);
                 Ok(true)
             }
             _ => Ok(false),
         }
-    };
+    }
+}
+
+/// Per-scheme adapter that knows how to set scheme-specific knobs and then
+/// falls through to [`CommonQuery::apply`] for the shared ones.
+pub trait QueryApplier {
+    fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError>;
 }
 
 pub struct SerialApplier<'a>(pub &'a mut SerialEndpoint);
@@ -170,7 +172,7 @@ impl QueryApplier for SerialApplier<'_> {
             self.0.serial_reopen_ms = Some(parse_u64(value, "serial_reopen_ms")?);
             return Ok(true);
         }
-        apply_common!(self.0, key, value)
+        self.0.common.apply(key, value)
     }
 }
 
@@ -186,7 +188,7 @@ impl QueryApplier for UdpServerApplier<'_> {
                 self.0.udps_peer_capacity = Some(parse_usize(value, "udps_peer_capacity")?);
                 Ok(true)
             }
-            _ => apply_common!(self.0, key, value),
+            _ => self.0.common.apply(key, value),
         }
     }
 }
@@ -198,14 +200,14 @@ impl QueryApplier for UdpClientApplier<'_> {
             self.0.latch_idle_secs = Some(parse_u64(value, "latch_idle_secs")?);
             return Ok(true);
         }
-        apply_common!(self.0, key, value)
+        self.0.common.apply(key, value)
     }
 }
 
 pub struct TcpServerApplier<'a>(pub &'a mut TcpServerEndpoint);
 impl QueryApplier for TcpServerApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
-        apply_common!(self.0, key, value)
+        self.0.common.apply(key, value)
     }
 }
 
@@ -221,7 +223,7 @@ impl QueryApplier for TcpClientApplier<'_> {
                 self.0.reconnect_max_ms = Some(parse_u64(value, "reconnect_max_ms")?);
                 Ok(true)
             }
-            _ => apply_common!(self.0, key, value),
+            _ => self.0.common.apply(key, value),
         }
     }
 }

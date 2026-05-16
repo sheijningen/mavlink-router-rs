@@ -11,8 +11,8 @@ mod query;
 mod tests;
 
 pub use endpoint_kinds::{
-    EndpointKind, MsgIdRange, SerialEndpoint, TcpClientEndpoint, TcpServerEndpoint, U8Range,
-    UdpClientEndpoint, UdpServerEndpoint,
+    CommonQuery, EndpointKind, MsgIdRange, SerialEndpoint, TcpClientEndpoint, TcpServerEndpoint,
+    U8Range, UdpClientEndpoint, UdpServerEndpoint,
 };
 pub use error::SpecError;
 

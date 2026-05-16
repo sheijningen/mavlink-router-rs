@@ -1,7 +1,7 @@
 /// Discriminator for the supported endpoint schemes. Each variant carries the
 /// fully-typed config struct for that scheme — address, scheme-specific
-/// knobs, and the flattened common knobs (filters, sniffer, group, routing
-/// table sizes, read/tx buffer sizes).
+/// knobs, and a [`CommonQuery`] substruct holding the knobs that every scheme
+/// understands (filters, sniffer, group, routing table sizes, buffers).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EndpointKind {
     Serial(SerialEndpoint),
@@ -59,83 +59,75 @@ impl U8Range {
     }
 }
 
-/// Single source of truth for the flattened common-knob fieldset. Each
-/// scheme-specific endpoint struct invokes this macro with its own
-/// address + scheme-specific fields prepended; the macro tacks on the same
-/// 18 common fields so they round-trip with one definition.
-macro_rules! endpoint_struct {
-    (
-        $(#[$attr:meta])*
-        $name:ident { $($field:ident : $ty:ty,)* }
-    ) => {
-        $(#[$attr])*
-        #[derive(Debug, Clone, PartialEq, Eq, Default)]
-        pub struct $name {
-            $(pub $field: $ty,)*
-            pub sniffer: bool,
-            pub group: Option<String>,
-            pub learn_capacity: Option<usize>,
-            pub seq_tracker_capacity: Option<usize>,
-            pub read_buf_bytes: Option<usize>,
-            pub tx_queue_frames: Option<usize>,
-            pub allow_msgid_in: Option<Vec<MsgIdRange>>,
-            pub block_msgid_in: Option<Vec<MsgIdRange>>,
-            pub allow_msgid_out: Option<Vec<MsgIdRange>>,
-            pub block_msgid_out: Option<Vec<MsgIdRange>>,
-            pub allow_src_sys_in: Option<Vec<U8Range>>,
-            pub block_src_sys_in: Option<Vec<U8Range>>,
-            pub allow_src_sys_out: Option<Vec<U8Range>>,
-            pub block_src_sys_out: Option<Vec<U8Range>>,
-            pub allow_src_comp_in: Option<Vec<U8Range>>,
-            pub block_src_comp_in: Option<Vec<U8Range>>,
-            pub allow_src_comp_out: Option<Vec<U8Range>>,
-            pub block_src_comp_out: Option<Vec<U8Range>>,
-        }
-    };
+/// Knobs that every scheme understands, embedded in each `*Endpoint` struct
+/// under the `common` field. Filter lists, sniffer/group flags, routing
+/// table sizes, and read/tx buffer sizes — all the fields that aren't
+/// scheme-specific live here so adding a new scheme means declaring only
+/// the scheme-specific fields plus `pub common: CommonQuery`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CommonQuery {
+    pub sniffer: bool,
+    pub group: Option<String>,
+    pub learn_capacity: Option<usize>,
+    pub seq_tracker_capacity: Option<usize>,
+    pub read_buf_bytes: Option<usize>,
+    pub tx_queue_frames: Option<usize>,
+    pub allow_msgid_in: Option<Vec<MsgIdRange>>,
+    pub block_msgid_in: Option<Vec<MsgIdRange>>,
+    pub allow_msgid_out: Option<Vec<MsgIdRange>>,
+    pub block_msgid_out: Option<Vec<MsgIdRange>>,
+    pub allow_src_sys_in: Option<Vec<U8Range>>,
+    pub block_src_sys_in: Option<Vec<U8Range>>,
+    pub allow_src_sys_out: Option<Vec<U8Range>>,
+    pub block_src_sys_out: Option<Vec<U8Range>>,
+    pub allow_src_comp_in: Option<Vec<U8Range>>,
+    pub block_src_comp_in: Option<Vec<U8Range>>,
+    pub allow_src_comp_out: Option<Vec<U8Range>>,
+    pub block_src_comp_out: Option<Vec<U8Range>>,
 }
 
-endpoint_struct! {
-    /// Fully-typed `serial:` endpoint config.
-    SerialEndpoint {
-        path: String,
-        baud: u32,
-        serial_reopen_ms: Option<u64>,
-    }
+/// Fully-typed `serial:` endpoint config.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SerialEndpoint {
+    pub path: String,
+    pub baud: u32,
+    pub serial_reopen_ms: Option<u64>,
+    pub common: CommonQuery,
 }
 
-endpoint_struct! {
-    /// Fully-typed `udps:` endpoint config.
-    UdpServerEndpoint {
-        host: String,
-        port: u16,
-        idle_secs: Option<u64>,
-        udps_peer_capacity: Option<usize>,
-    }
+/// Fully-typed `udps:` endpoint config.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UdpServerEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub idle_secs: Option<u64>,
+    pub udps_peer_capacity: Option<usize>,
+    pub common: CommonQuery,
 }
 
-endpoint_struct! {
-    /// Fully-typed `udpc:` endpoint config.
-    UdpClientEndpoint {
-        host: String,
-        port: u16,
-        latch_idle_secs: Option<u64>,
-    }
+/// Fully-typed `udpc:` endpoint config.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UdpClientEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub latch_idle_secs: Option<u64>,
+    pub common: CommonQuery,
 }
 
-endpoint_struct! {
-    /// Fully-typed `tcps:` endpoint config.
-    TcpServerEndpoint {
-        host: String,
-        port: u16,
-    }
+/// Fully-typed `tcps:` endpoint config.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TcpServerEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub common: CommonQuery,
 }
 
-endpoint_struct! {
-    /// Fully-typed `tcpc:` endpoint config.
-    TcpClientEndpoint {
-        host: String,
-        port: u16,
-        reconnect_initial_ms: Option<u64>,
-        reconnect_max_ms: Option<u64>,
-    }
+/// Fully-typed `tcpc:` endpoint config.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TcpClientEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub reconnect_initial_ms: Option<u64>,
+    pub reconnect_max_ms: Option<u64>,
+    pub common: CommonQuery,
 }

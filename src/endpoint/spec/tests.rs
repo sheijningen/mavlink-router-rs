@@ -195,7 +195,7 @@ fn tcpc_hostname_explicit_name() {
 fn tcpc_with_group() {
     let s = parse_ok("tcpc:companion.local:5760#vehicle?group=uplink");
     let e = as_tcpc(&s);
-    assert_eq!(e.group.as_deref(), Some("uplink"));
+    assert_eq!(e.common.group.as_deref(), Some("uplink"));
     assert_eq!(s.name, "vehicle");
 }
 
@@ -204,19 +204,19 @@ fn udps_with_sniffer_query() {
     let s = parse_ok("udps:0.0.0.0:14551#tap?sniffer=true");
     let e = as_udps(&s);
     assert_eq!(s.name, "tap");
-    assert!(e.sniffer);
+    assert!(e.common.sniffer);
 }
 
 #[test]
 fn sniffer_false_explicit() {
     let e = as_udps(&parse_ok("udps:0.0.0.0:1?sniffer=false")).clone();
-    assert!(!e.sniffer);
+    assert!(!e.common.sniffer);
 }
 
 #[test]
 fn sniffer_default_is_false() {
     let e = as_udps(&parse_ok("udps:0.0.0.0:1")).clone();
-    assert!(!e.sniffer);
+    assert!(!e.common.sniffer);
 }
 
 #[test]
@@ -231,7 +231,7 @@ fn sniffer_invalid_value_rejected() {
 fn msgid_filter_list_typed() {
     let s = parse_ok("tcpc:gcs.local:5760?block_msgid_in=33,100-150,32");
     let e = as_tcpc(&s);
-    let list = e.block_msgid_in.as_deref().unwrap();
+    let list = e.common.block_msgid_in.as_deref().unwrap();
     assert_eq!(list.len(), 3);
     assert_eq!(list[0], MsgIdRange::single(33));
     assert_eq!(list[1], MsgIdRange { lo: 100, hi: 150 });
@@ -242,7 +242,7 @@ fn msgid_filter_list_typed() {
 fn msgid_filter_list_with_whitespace() {
     let s = parse_ok("tcpc:gcs.local:5760?allow_msgid_out=1, 2 , 3-5");
     let e = as_tcpc(&s);
-    let list = e.allow_msgid_out.as_deref().unwrap();
+    let list = e.common.allow_msgid_out.as_deref().unwrap();
     assert_eq!(list.len(), 3);
     assert_eq!(list[2], MsgIdRange { lo: 3, hi: 5 });
 }
@@ -283,7 +283,7 @@ fn msgid_filter_empty_entry_rejected() {
 fn src_sys_filter_typed_as_u8() {
     let s = parse_ok("tcpc:gcs.local:5760?allow_src_sys_out=1,5-10,200");
     let e = as_tcpc(&s);
-    let list = e.allow_src_sys_out.as_deref().unwrap();
+    let list = e.common.allow_src_sys_out.as_deref().unwrap();
     assert_eq!(list.len(), 3);
     assert_eq!(list[0], U8Range::single(1));
     assert_eq!(list[1], U8Range { lo: 5, hi: 10 });
@@ -543,26 +543,26 @@ fn malformed_query_empty_key_fails() {
 fn empty_query_after_question_mark_ok() {
     let s = parse_ok("udps:0.0.0.0:1?");
     let e = as_udps(&s);
-    assert!(e.group.is_none());
-    assert!(!e.sniffer);
+    assert!(e.common.group.is_none());
+    assert!(!e.common.sniffer);
 }
 
 #[test]
 fn trailing_ampersand_tolerated() {
     let e = as_udps(&parse_ok("udps:0.0.0.0:1?sniffer=true&")).clone();
-    assert!(e.sniffer);
+    assert!(e.common.sniffer);
 }
 
 #[test]
 fn empty_value_for_group_ok() {
     let e = as_udps(&parse_ok("udps:0.0.0.0:1?group=")).clone();
-    assert_eq!(e.group.as_deref(), Some(""));
+    assert_eq!(e.common.group.as_deref(), Some(""));
 }
 
 #[test]
 fn value_with_embedded_equals_kept_intact() {
     let e = as_udps(&parse_ok("udps:0.0.0.0:1?group=a=b")).clone();
-    assert_eq!(e.group.as_deref(), Some("a=b"));
+    assert_eq!(e.common.group.as_deref(), Some("a=b"));
 }
 
 #[test]
@@ -570,7 +570,7 @@ fn fragment_before_query_order_locked() {
     let s = parse_ok("udps:0.0.0.0:1#name?group=g");
     assert_eq!(s.name, "name");
     let e = as_udps(&s);
-    assert_eq!(e.group.as_deref(), Some("g"));
+    assert_eq!(e.common.group.as_deref(), Some("g"));
 }
 
 #[test]
@@ -587,18 +587,18 @@ fn all_common_filter_keys_accepted_on_tcpc() {
              &allow_src_sys_in=5&block_src_sys_in=6&allow_src_sys_out=7&block_src_sys_out=8\
              &allow_src_comp_in=9&block_src_comp_in=10&allow_src_comp_out=11&block_src_comp_out=12";
     let e = as_tcpc(&parse_ok(&format!("tcpc:x:1?{q}"))).clone();
-    assert!(e.allow_msgid_in.is_some());
-    assert!(e.block_msgid_in.is_some());
-    assert!(e.allow_msgid_out.is_some());
-    assert!(e.block_msgid_out.is_some());
-    assert!(e.allow_src_sys_in.is_some());
-    assert!(e.block_src_sys_in.is_some());
-    assert!(e.allow_src_sys_out.is_some());
-    assert!(e.block_src_sys_out.is_some());
-    assert!(e.allow_src_comp_in.is_some());
-    assert!(e.block_src_comp_in.is_some());
-    assert!(e.allow_src_comp_out.is_some());
-    assert!(e.block_src_comp_out.is_some());
+    assert!(e.common.allow_msgid_in.is_some());
+    assert!(e.common.block_msgid_in.is_some());
+    assert!(e.common.allow_msgid_out.is_some());
+    assert!(e.common.block_msgid_out.is_some());
+    assert!(e.common.allow_src_sys_in.is_some());
+    assert!(e.common.block_src_sys_in.is_some());
+    assert!(e.common.allow_src_sys_out.is_some());
+    assert!(e.common.block_src_sys_out.is_some());
+    assert!(e.common.allow_src_comp_in.is_some());
+    assert!(e.common.block_src_comp_in.is_some());
+    assert!(e.common.allow_src_comp_out.is_some());
+    assert!(e.common.block_src_comp_out.is_some());
 }
 
 #[test]

@@ -50,8 +50,8 @@ impl UdpClientConfig {
     pub fn from_endpoint(ep: &UdpClientEndpoint) -> Self {
         Self {
             latch_idle_secs: ep.latch_idle_secs.unwrap_or(DEFAULT_LATCH_IDLE_SECS),
-            tx_queue_frames: ep.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
-            read_buf_bytes: ep.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
+            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
         }
     }
 }
@@ -409,10 +409,14 @@ mod tests {
 
     #[test]
     fn config_overrides_from_endpoint() {
+        use crate::endpoint::spec::CommonQuery;
         let ep = UdpClientEndpoint {
             latch_idle_secs: Some(5),
-            tx_queue_frames: Some(8),
-            read_buf_bytes: Some(1024),
+            common: CommonQuery {
+                tx_queue_frames: Some(8),
+                read_buf_bytes: Some(1024),
+                ..CommonQuery::default()
+            },
             ..UdpClientEndpoint::default()
         };
         let cfg = UdpClientConfig::from_endpoint(&ep);

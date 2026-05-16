@@ -55,8 +55,8 @@ impl UdpServerConfig {
         Self {
             idle_secs: ep.idle_secs.unwrap_or(DEFAULT_IDLE_SECS),
             peer_capacity: ep.udps_peer_capacity.unwrap_or(DEFAULT_PEER_CAPACITY),
-            read_buf_bytes: ep.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
-            tx_queue_frames: ep.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
+            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
         }
     }
 }
@@ -443,11 +443,15 @@ mod tests {
 
     #[test]
     fn config_overrides_from_endpoint() {
+        use crate::endpoint::spec::CommonQuery;
         let ep = UdpServerEndpoint {
             idle_secs: Some(10),
             udps_peer_capacity: Some(4),
-            read_buf_bytes: Some(1024),
-            tx_queue_frames: Some(8),
+            common: CommonQuery {
+                read_buf_bytes: Some(1024),
+                tx_queue_frames: Some(8),
+                ..CommonQuery::default()
+            },
             ..UdpServerEndpoint::default()
         };
         let cfg = UdpServerConfig::from_endpoint(&ep);
