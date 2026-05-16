@@ -34,7 +34,7 @@ pub async fn run(cli: cli::Cli) -> Result<(), Error> {
 
     info!(
         endpoint_count,
-        "rmr started — phase 0 skeleton, no transport tasks yet"
+        "rmr started — endpoint specs parsed; spawn-wiring lands in phase 5"
     );
 
     token.cancelled().await;
