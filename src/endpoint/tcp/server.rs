@@ -240,7 +240,7 @@ async fn accept_one_client(
     }
 
     let child_id = allocator.alloc();
-    let stats = Arc::new(EndpointStats::new());
+    let stats = Arc::new(EndpointStats::default());
     let tx_queue = TxQueue::new(cfg.tx_queue_frames, stats.clone());
     let name = peer_endpoint_name(parent_name, peer_addr);
     let child_span = info_span!("tcps_child", name = %name);

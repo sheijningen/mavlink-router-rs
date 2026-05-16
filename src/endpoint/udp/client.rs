@@ -635,7 +635,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_framer_counters_propagates_deltas() {
-        let stats = Arc::new(EndpointStats::new());
+        let stats = Arc::new(EndpointStats::default());
         let mut framer = Framer::new();
         framer.buffer_mut().extend_from_slice(&[0, 0, 0, 0]);
         while framer.try_next_frame().is_some() {}

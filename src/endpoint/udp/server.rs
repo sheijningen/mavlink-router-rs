@@ -265,7 +265,7 @@ async fn handle_packet(
 ) {
     if !peers.contains_key(&src) {
         let child_id = ctx.allocator.alloc();
-        let stats = Arc::new(EndpointStats::new());
+        let stats = Arc::new(EndpointStats::default());
         let tx_queue = TxQueue::new(ctx.cfg.tx_queue_frames, stats.clone());
         let writer_cancel = ctx.cancel.child_token();
         let name = peer_endpoint_name(ctx.parent_name, src);
@@ -511,7 +511,7 @@ mod tests {
     }
 
     fn dummy_peer(child_id: EndpointId, age: Duration) -> PeerEntry {
-        let stats = Arc::new(EndpointStats::new());
+        let stats = Arc::new(EndpointStats::default());
         PeerEntry {
             child_id,
             framer: Framer::new(),

@@ -436,7 +436,7 @@ mod tests {
         // cancel token from inside its `wait_or_cancel` sleep.
         let allocator = EndpointIdAllocator::new();
         let endpoint_id = allocator.alloc();
-        let stats = Arc::new(EndpointStats::new());
+        let stats = Arc::new(EndpointStats::default());
         let tx_queue = TxQueue::new(8, stats.clone());
         let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
         let cancel = CancellationToken::new();
@@ -531,7 +531,7 @@ mod tests {
 
         let allocator = EndpointIdAllocator::new();
         let endpoint_id = allocator.alloc();
-        let stats = Arc::new(EndpointStats::new());
+        let stats = Arc::new(EndpointStats::default());
         let tx_queue = TxQueue::new(8, stats.clone());
         let (frame_tx, mut frame_rx) = mpsc::channel::<RouterFrame>(8);
         let cancel = CancellationToken::new();
@@ -605,7 +605,7 @@ mod tests {
 
         let allocator = EndpointIdAllocator::new();
         let endpoint_id = allocator.alloc();
-        let stats = Arc::new(EndpointStats::new());
+        let stats = Arc::new(EndpointStats::default());
         let tx_queue = TxQueue::new(8, stats.clone());
         let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
         let cancel = CancellationToken::new();

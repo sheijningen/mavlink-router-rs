@@ -138,7 +138,7 @@ pub fn spawn_udpc(
     name: &str,
 ) -> UdpcHarness {
     let endpoint_id = allocator.alloc();
-    let stats = Arc::new(EndpointStats::new());
+    let stats = Arc::new(EndpointStats::default());
     let tx_queue = TxQueue::new(8, stats.clone());
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let task = {

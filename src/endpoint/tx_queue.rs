@@ -85,7 +85,7 @@ mod tests {
     use std::time::Duration;
 
     fn make(cap: usize) -> (TxQueue, Arc<EndpointStats>) {
-        let stats = Arc::new(EndpointStats::new());
+        let stats = Arc::new(EndpointStats::default());
         (TxQueue::new(cap, stats.clone()), stats)
     }
 
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn capacity_at_least_one() {
-        let stats = Arc::new(EndpointStats::new());
+        let stats = Arc::new(EndpointStats::default());
         let q = TxQueue::new(0, stats);
         assert!(q.capacity() >= 1);
     }
