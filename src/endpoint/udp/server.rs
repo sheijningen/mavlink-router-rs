@@ -420,25 +420,30 @@ async fn run_peer_writer(
     cancel: CancellationToken,
 ) {
     loop {
-        while let Some(frame) = queue.pop() {
-            if cancel.is_cancelled() {
-                queue.drain_and_discard();
-                return;
-            }
-            match socket.send_to(&frame, peer_addr).await {
-                Ok(n) => stats.add_tx_frame(n),
-                Err(e) => {
-                    warn!(error = %e, peer = %peer_addr, "udps send_to failed; dropping frame");
-                }
-            }
-        }
         tokio::select! {
+            biased;
             _ = cancel.cancelled() => {
                 queue.drain_and_discard();
                 return;
             }
-            _ = queue.wait_for_push() => {}
+            frame = pop_or_wait(&queue) => {
+                match socket.send_to(&frame, peer_addr).await {
+                    Ok(n) => stats.add_tx_frame(n),
+                    Err(e) => {
+                        warn!(error = %e, peer = %peer_addr, "udps send_to failed; dropping frame");
+                    }
+                }
+            }
         }
+    }
+}
+
+async fn pop_or_wait(q: &TxQueue) -> bytes::Bytes {
+    loop {
+        if let Some(b) = q.pop() {
+            return b;
+        }
+        q.wait_for_push().await;
     }
 }
 
