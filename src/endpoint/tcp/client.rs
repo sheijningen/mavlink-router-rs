@@ -12,12 +12,13 @@ use super::super::EndpointId;
 use super::super::backoff::Backoff;
 use super::super::events::RouterFrame;
 use super::super::identity_flags::IdentityFlags;
+use super::super::session::SessionOutcome;
 use super::super::socket::configure_tcp_stream;
 use super::super::spec::TcpClientEndpoint;
 use super::super::stats::EndpointStats;
 use super::super::tx_queue::TxQueue;
 use super::super::wait_or_cancel;
-use super::session::{SessionOutcome, run_session};
+use super::session::run_session;
 
 const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
 const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;

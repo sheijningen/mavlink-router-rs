@@ -8,22 +8,10 @@ use tracing::{debug, warn};
 
 use super::super::EndpointId;
 use super::super::events::RouterFrame;
+use super::super::session::SessionOutcome;
 use super::super::stats::{EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
-
-/// Why a TCP session terminated — controls whether the caller reconnects
-/// (Disconnected) or unwinds toward shutdown (Cancelled / RouterGone). The
-/// `Cancelled` and `RouterGone` variants are handled identically by callers,
-/// but kept distinct so tracing/logs can tell "the cancel token fired" apart
-/// from "the router task exited and dropped the frame channel" during
-/// debugging.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionOutcome {
-    Cancelled,
-    RouterGone,
-    Disconnected,
-}
 
 /// Read inbound bytes through a fresh `Framer` and write outbound frames from
 /// the TxQueue until cancellation, EOF, or socket I/O error. Shared by

@@ -14,12 +14,13 @@ use super::super::backoff::Backoff;
 use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
 use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
+use super::super::session::SessionOutcome;
 use super::super::socket::{bind_tcp_dual_stack, configure_tcp_stream};
 use super::super::spec::TcpServerEndpoint;
 use super::super::stats::EndpointStats;
 use super::super::tx_queue::TxQueue;
 use super::super::wait_or_cancel;
-use super::session::{SessionOutcome, run_session};
+use super::session::run_session;
 
 const DEFAULT_READ_BUF_BYTES: usize = 8192;
 const DEFAULT_TX_QUEUE_FRAMES: usize = 256;

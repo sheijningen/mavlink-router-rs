@@ -10,6 +10,7 @@ pub mod events;
 pub mod filters;
 pub mod identity_flags;
 pub mod serial;
+pub mod session;
 pub mod socket;
 pub mod spec;
 pub mod stats;

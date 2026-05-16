@@ -54,6 +54,7 @@ use tracing::{Instrument, debug, info_span, trace, warn};
 use super::EndpointId;
 use super::events::RouterFrame;
 use super::identity_flags::IdentityFlags;
+use super::session::SessionOutcome;
 use super::spec::{SerialEndpoint, SerialFlowControl};
 use super::stats::{EndpointStats, FramerCounters};
 use super::tx_queue::TxQueue;
@@ -130,19 +131,6 @@ pub struct SerialWiring {
     pub tx_queue: TxQueue,
     pub stats: Arc<EndpointStats>,
     pub cancel: CancellationToken,
-}
-
-/// Why a serial session terminated — controls whether the caller re-opens
-/// (Disconnected) or unwinds toward shutdown (Cancelled / RouterGone). The
-/// `Cancelled` and `RouterGone` variants are handled identically by callers
-/// but kept distinct so tracing/logs can tell "the cancel token fired" apart
-/// from "the router task exited and dropped the frame channel" during
-/// debugging. Mirrors `tcp::session::SessionOutcome`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionOutcome {
-    Cancelled,
-    RouterGone,
-    Disconnected,
 }
 
 /// Run a `serial:` endpoint until the cancellation token fires.
