@@ -408,19 +408,23 @@ rmr/
 │   │   ├── msgid_table.rs            ← MsgEntry type and lookup over the build-time const slice
 │   │   └── generated.rs              ← `include!` from build.rs OUT_DIR
 │   ├── endpoint/
-│   │   ├── mod.rs                    ← Endpoint trait, EndpointHandle, IDs
+│   │   ├── mod.rs                    ← `EndpointId` + `EndpointIdAllocator`, sub-endpoint naming, `wait_or_cancel` shared by every transport
 │   │   ├── spec/                     ← typed endpoint-spec parser (CLI string → fully-typed `EndpointSpec`). Tests live in each file as `#[cfg(test)] mod tests`, next to the code they exercise.
 │   │   │   ├── mod.rs                ← `EndpointSpec` and the `parse()` entry point
-│   │   │   ├── endpoint_kinds.rs     ← `EndpointKind` + the five per-scheme `*Endpoint` structs, each holding a `CommonQuery` substruct for the 18 shared knob fields + `MsgIdRange`, `U8Range`
+│   │   │   ├── endpoint_kinds.rs     ← `EndpointKind` + the five per-scheme `*Endpoint` structs, each carrying a `common: CommonQuery` (plumbing knobs: `read_buf_bytes`, `tx_queue_frames`) and an `identity: IdentityFlags` (filters, sniffer, group, learn/seq capacities)
 │   │   │   ├── error.rs              ← `SpecError`
 │   │   │   ├── parse.rs              ← body/address parsers, name validation, scheme dispatch
-│   │   │   └── query.rs              ← query-string parser, per-scheme `QueryApplier`s, `CommonQuery::apply`, value parsers, did-you-mean suggestion
-│   │   ├── filters.rs                ← In/Out filter types, evaluation fns
-│   │   ├── stats.rs                  ← per-endpoint counter struct + `FramerCounters` delta helper
-│   │   ├── tx_queue.rs               ← bounded queue with drop-oldest
+│   │   │   └── query.rs              ← query-string parser, per-scheme `QueryApplier`s, `CommonQuery::apply`, value parsers, did-you-mean suggestion (walks `COMMON_KEYS`, `IdentityFlags::KEYS`, `Filters::KEYS`, and the per-scheme `*_EXTRA` lists)
+│   │   ├── filters.rs                ← `Filters` struct (12 `allow_*`/`block_*` lists), `MsgIdRange` / `U8Range`, range-list parsers. Phase 5 hangs `passes_in_filter` / `passes_out_filter` off `Filters`.
+│   │   ├── identity_flags.rs        ← `IdentityFlags`: `filters: Filters` + `sniffer` + `group` + `learn_capacity` + `seq_tracker_capacity`. Travels with every `*Spec`; cloned onto each sub-endpoint at admission.
+│   │   ├── events.rs                 ← `RouterFrame`, `EndpointEvent` (`EndpointAdded` / `PeerAdded` / `PeerRemoved`), `PeerRemovalReason`
+│   │   ├── stats.rs                  ← `EndpointStats` (per-endpoint counters + `state: AtomicU8`), `EndpointState` enum, `FramerCounters` delta helper
+│   │   ├── tx_queue.rs               ← bounded queue with drop-oldest (`force_push` + `pop_or_wait` + `drain_and_discard`)
+│   │   ├── backoff.rs                ← capped-exponential `Backoff` with ±20% jitter + `bind_with_backoff` helper shared by `tcps:`, `udps:`, `udpc:`
 │   │   ├── defaults.rs               ← cross-endpoint default constants (read buf, tx queue, reconnect curve)
+│   │   ├── socket.rs                 ← `bind_tcp_dual_stack`, `bind_udp_dual_stack`, `configure_tcp_stream` (`IPV6_V6ONLY=0`, `SO_REUSEADDR`, `TCP_NODELAY`, keepalive); used by every IP transport
 │   │   ├── session.rs                ← generic `run_session<S: AsyncRead + AsyncWrite>` + `SessionOutcome` shared by `serial:`, `tcpc:`, `tcps:` children
-│   │   ├── serial.rs                 ← `serial:` reader + writer + hot-replug loop
+│   │   ├── serial.rs                 ← `serial:` open + hot-replug loop wrapping the shared session
 │   │   ├── udp/
 │   │   │   ├── mod.rs                ← submodule declarations
 │   │   │   ├── server.rs             ← `udps:` bind, peer map, idle reap
@@ -438,15 +442,18 @@ rmr/
 ├── tests/                            ← integration tests, transport-grouped under tcp/ and udp/ (each subfolder is one Cargo test binary via its `main.rs`); transport-agnostic tests stay at the top level
 │   ├── common/                       ← shared fixtures (mavlink frame builders, spawn harnesses, shutdown helper); pulled into each test binary via `#[path = "../common/mod.rs"] mod common;`
 │   ├── framer_replay.rs
+│   ├── build_support.rs              ← integration test binary that `include!`s each file under `build_support/` inside its own `mod`, so their `#[cfg(test)] mod tests` blocks run under `cargo test`
 │   ├── tcp/
-│   │   ├── main.rs                   ← aggregator: `mod common; mod roundtrip; mod bind_retry; mod reconnect;`
+│   │   ├── main.rs                   ← aggregator: `mod common; mod bind_retry; mod identity; mod reconnect; mod roundtrip;`
 │   │   ├── roundtrip.rs
 │   │   ├── bind_retry.rs
+│   │   ├── identity.rs               ← asserts every `tcps:` accepted child inherits a clone of the parent listener's `IdentityFlags` via `PeerAdded`
 │   │   └── reconnect.rs
 │   ├── udp/
-│   │   ├── main.rs                   ← aggregator: `mod common; mod roundtrip; mod latch; mod idle_reap; mod bind_retry;`
+│   │   ├── main.rs                   ← aggregator: `mod common; mod bind_retry; mod identity; mod idle_reap; mod latch; mod roundtrip;`
 │   │   ├── roundtrip.rs
 │   │   ├── bind_retry.rs
+│   │   ├── identity.rs               ← asserts every `udps:` learned peer inherits a clone of the parent listener's `IdentityFlags` via `PeerAdded`
 │   │   ├── latch.rs
 │   │   └── idle_reap.rs
 │   ├── serial_replug.rs              ← requires loopback hardware; gated by feature flag
