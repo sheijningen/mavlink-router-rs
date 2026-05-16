@@ -82,6 +82,9 @@ pub struct UdpClientWiring {
     pub cancel: CancellationToken,
 }
 
+/// Overlay applied on top of the configured destination once an accepted
+/// inbound packet has fixed the peer's exact `(ip, port)`. Cleared on idle
+/// revert so the task falls back to the configured `host:port`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LatchInfo {
     addr: SocketAddr,
@@ -111,6 +114,9 @@ impl Destination {
     }
 }
 
+/// Outcome of evaluating one inbound packet against the current latch and
+/// resolved-IP set — whether to admit it (and how to update the latch) or
+/// drop it as unrelated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InboundDecision {
     /// Configured state, source IP is in `resolved_ips`: accept and latch.

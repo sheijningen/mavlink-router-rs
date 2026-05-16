@@ -81,6 +81,9 @@ pub fn peer_endpoint_name(parent_name: &str, addr: SocketAddr) -> String {
     }
 }
 
+/// Per-peer state the listener task carries between packets: the child
+/// routing endpoint's identity, its framer, last-seen timestamp for the LRU
+/// and idle-reap policies, and the handles needed to shut down its writer.
 struct PeerEntry {
     child_id: EndpointId,
     framer: Framer,
@@ -191,6 +194,9 @@ pub async fn run(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), Udp
     }
 }
 
+/// Bundle of references the listener loop hands to its packet-handling
+/// helpers, so each helper takes one parameter instead of seven. Borrowed
+/// for the lifetime of a single accept iteration.
 struct ListenerCtx<'a> {
     socket: Arc<UdpSocket>,
     parent_id: EndpointId,

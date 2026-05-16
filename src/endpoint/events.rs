@@ -39,6 +39,9 @@ pub enum EndpointEvent {
     },
 }
 
+/// Why a child routing endpoint was torn down. Surfaced in logs and (later)
+/// in stats so an operator can tell idle reap apart from peer-cap pressure
+/// or a parent shutdown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerRemovalReason {
     Idle,
