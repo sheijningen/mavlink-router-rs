@@ -60,6 +60,18 @@ pub fn spawn_udps_with_config(
     let listen_addr: SocketAddr = format!("127.0.0.1:{port}")
         .parse()
         .expect("parse listen_addr");
+    spawn_udps_at_with_config(allocator, cancel, listen_addr, cfg, name)
+}
+
+/// Like `spawn_udps_with_config` but binds an explicit address — used by the
+/// bind-retry test to target a pre-held port.
+pub fn spawn_udps_at_with_config(
+    allocator: &Arc<EndpointIdAllocator>,
+    cancel: CancellationToken,
+    listen_addr: SocketAddr,
+    cfg: UdpServerConfig,
+    name: &str,
+) -> UdpsHarness {
     let parent_id = allocator.alloc();
     let parent_name = name.to_string();
     let allocator = allocator.clone();

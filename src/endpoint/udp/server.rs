@@ -7,12 +7,13 @@ use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tokio::time::{Instant, MissedTickBehavior, interval};
+use tokio::time::{Instant, MissedTickBehavior, interval, sleep};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
+use super::super::backoff::Backoff;
 use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
 use super::super::peer_endpoint_name;
 use super::super::socket::bind_udp_dual_stack;
@@ -25,19 +26,26 @@ const DEFAULT_IDLE_SECS: u64 = 60;
 const DEFAULT_PEER_CAPACITY: usize = 256;
 const DEFAULT_READ_BUF_BYTES: usize = 8192;
 const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
+const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
+const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
 const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REAP_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Per-listener runtime configuration. The spec parser hands us a fully-typed
 /// `UdpServerEndpoint`; this struct collapses the optional knobs down to the
 /// concrete values the task actually uses, substituting CLAUDE.md defaults
-/// where the user left a knob unset.
+/// where the user left a knob unset. The `reconnect_*_ms` fields are
+/// hard-coded to the `tcpc:` curve (CLAUDE.md: "`tcps:` bind-retry shares the
+/// `tcpc:` curve, no per-listener override. Same reasoning applies to
+/// `udps:`") — `udps:` does not expose per-listener reconnect overrides in v1.
 #[derive(Debug, Clone, Copy)]
 pub struct UdpServerConfig {
     pub idle_secs: u64,
     pub peer_capacity: usize,
     pub read_buf_bytes: usize,
     pub tx_queue_frames: usize,
+    pub reconnect_initial_ms: u64,
+    pub reconnect_max_ms: u64,
 }
 
 impl Default for UdpServerConfig {
@@ -47,6 +55,8 @@ impl Default for UdpServerConfig {
             peer_capacity: DEFAULT_PEER_CAPACITY,
             read_buf_bytes: DEFAULT_READ_BUF_BYTES,
             tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
+            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
+            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
         }
     }
 }
@@ -58,19 +68,19 @@ impl UdpServerConfig {
             peer_capacity: ep.udps_peer_capacity.unwrap_or(DEFAULT_PEER_CAPACITY),
             read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
             tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
+            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
         }
     }
 }
 
+/// Typed-empty return for `udps:` `run()`. Bind failures enter the same
+/// backoff loop as `tcpc:` reconnects (CLAUDE.md "Bind/open failure at startup
+/// is not fatal"), and per-peer recv errors are logged and the loop continues
+/// — no terminal failure modes remain in v1. Kept as a typed return for
+/// symmetry with the other endpoint modules in case a fatal case shows up.
 #[derive(Debug, Error)]
-pub enum UdpServerError {
-    #[error("udps: bind {addr} failed: {source}")]
-    Bind {
-        addr: SocketAddr,
-        #[source]
-        source: std::io::Error,
-    },
-}
+pub enum UdpServerError {}
 
 /// Per-peer state the listener task carries between packets: the child
 /// routing endpoint's identity, its framer, last-seen timestamp for the LRU
@@ -104,10 +114,13 @@ pub struct UdpServerWiring {
     pub cancel: CancellationToken,
 }
 
-/// Run a `udps:` listener until the cancellation token fires. Binds the
-/// socket synchronously (errors propagated), then loops over `recv_from`,
-/// the idle reaper, and cancellation. Each learned peer becomes a sub-routing
-/// endpoint announced via `event_tx` with its own TxQueue and writer task.
+/// Run a `udps:` listener until the cancellation token fires. Binding is
+/// retried with the shared capped-exp backoff (CLAUDE.md "Initial bind/dial
+/// failure path"), so a port collision at startup logs at WARN and the
+/// listener attaches as soon as the port frees. Once bound, loops over
+/// `recv_from`, the idle reaper, and cancellation. Each learned peer becomes
+/// a sub-routing endpoint announced via `event_tx` with its own TxQueue and
+/// writer task.
 pub async fn run(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), UdpServerError> {
     let UdpServerSpec {
         listen_addr,
@@ -122,13 +135,23 @@ pub async fn run(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), Udp
         cancel,
     } = wiring;
 
-    let socket =
-        Arc::new(
-            bind_udp_dual_stack(listen_addr).map_err(|source| UdpServerError::Bind {
-                addr: listen_addr,
-                source,
-            })?,
-        );
+    let mut backoff = Backoff::new(cfg.reconnect_initial_ms, cfg.reconnect_max_ms);
+
+    let socket = loop {
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+        match bind_udp_dual_stack(listen_addr) {
+            Ok(s) => break Arc::new(s),
+            Err(e) => {
+                warn!(error = %e, %listen_addr, "udps bind failed; retrying after backoff");
+                if !wait_or_cancel(&cancel, backoff.next_delay()).await {
+                    return Ok(());
+                }
+            }
+        }
+    };
+    info!(%listen_addr, parent_id = %parent_id, "udps listening");
 
     let mut peers: HashMap<SocketAddr, PeerEntry> = HashMap::new();
     let mut buf = vec![0u8; MAX_DATAGRAM_BYTES];
@@ -182,6 +205,14 @@ pub async fn run(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), Udp
                 }
             }
         }
+    }
+}
+
+async fn wait_or_cancel(cancel: &CancellationToken, delay: Duration) -> bool {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => false,
+        _ = sleep(delay) => true,
     }
 }
 
@@ -407,10 +438,12 @@ mod tests {
         assert_eq!(cfg.peer_capacity, DEFAULT_PEER_CAPACITY);
         assert_eq!(cfg.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
         assert_eq!(cfg.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
+        assert_eq!(cfg.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
+        assert_eq!(cfg.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     }
 
     #[test]
-    fn config_overrides_from_endpoint() {
+    fn config_overrides_common_fields_but_not_reconnect_curve() {
         use crate::endpoint::spec::CommonQuery;
         let ep = UdpServerEndpoint {
             idle_secs: Some(10),
@@ -427,6 +460,10 @@ mod tests {
         assert_eq!(cfg.peer_capacity, 4);
         assert_eq!(cfg.read_buf_bytes, 1024);
         assert_eq!(cfg.tx_queue_frames, 8);
+        // Reconnect curve stays at the tcpc defaults — CLAUDE.md "udps: bind-
+        // retry shares the tcpc: curve, no per-listener override".
+        assert_eq!(cfg.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
+        assert_eq!(cfg.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     }
 
     fn dummy_peer(child_id: EndpointId, age: Duration) -> PeerEntry {
@@ -502,6 +539,14 @@ mod tests {
         }
         removed.sort();
         assert_eq!(removed, vec![addr(1), addr(3)]);
+    }
+
+    #[tokio::test]
+    async fn wait_or_cancel_returns_false_when_cancelled() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let r = wait_or_cancel(&cancel, Duration::from_secs(60)).await;
+        assert!(!r);
     }
 
     #[tokio::test]
