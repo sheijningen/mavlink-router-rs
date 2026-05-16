@@ -17,8 +17,12 @@ use rmr::endpoint::{
     events::{EndpointEvent, RouterFrame},
     stats::EndpointStats,
     tx_queue::TxQueue,
-    udp_client::{self, UdpClientConfig, UdpClientError, UdpClientSpec, UdpClientWiring},
-    udp_server::{self, UdpServerConfig, UdpServerError, UdpServerSpec, UdpServerWiring},
+    udp::client::{
+        self as udp_client, UdpClientConfig, UdpClientError, UdpClientSpec, UdpClientWiring,
+    },
+    udp::server::{
+        self as udp_server, UdpServerConfig, UdpServerError, UdpServerSpec, UdpServerWiring,
+    },
 };
 
 /// Bundle of channels and the join handle for a spawned `udps:` listener task.

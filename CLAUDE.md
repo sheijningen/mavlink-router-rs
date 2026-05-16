@@ -412,10 +412,15 @@ rmr/
 │   │   ├── stats.rs                  ← per-endpoint counter struct
 │   │   ├── tx_queue.rs               ← bounded queue with drop-oldest
 │   │   ├── serial.rs                 ← `serial:` reader + writer + hot-replug loop
-│   │   ├── udp_server.rs             ← `udps:` bind, peer map, idle reap
-│   │   ├── udp_client.rs             ← `udpc:` initial-remote + reply-source latching, re-resolve on send-fail
-│   │   ├── tcp_server.rs             ← `tcps:` accept loop, child endpoints
-│   │   └── tcp_client.rs             ← `tcpc:` dial + backoff reconnect + DNS re-resolve
+│   │   ├── udp/
+│   │   │   ├── mod.rs                ← submodule declarations
+│   │   │   ├── server.rs             ← `udps:` bind, peer map, idle reap
+│   │   │   └── client.rs             ← `udpc:` initial-remote + reply-source latching, re-resolve on send-fail
+│   │   └── tcp/
+│   │       ├── mod.rs                ← submodule declarations
+│   │       ├── server.rs             ← `tcps:` accept loop, child endpoints
+│   │       ├── client.rs             ← `tcpc:` dial + backoff reconnect + DNS re-resolve
+│   │       └── session.rs            ← shared read/write session used by both `tcps:` children and `tcpc:`
 │   └── router/
 │       ├── mod.rs                    ← Router task entrypoint, mpsc wiring
 │       ├── learn.rs                  ← learned (sysid, compid) table per endpoint/group

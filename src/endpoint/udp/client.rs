@@ -11,12 +11,12 @@ use tokio::time::{Instant, MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
-use super::EndpointId;
-use super::events::RouterFrame;
-use super::socket::bind_udp_dual_stack;
-use super::spec::UdpClientEndpoint;
-use super::stats::EndpointStats;
-use super::tx_queue::TxQueue;
+use super::super::EndpointId;
+use super::super::events::RouterFrame;
+use super::super::socket::bind_udp_dual_stack;
+use super::super::spec::UdpClientEndpoint;
+use super::super::stats::EndpointStats;
+use super::super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_LATCH_IDLE_SECS: u64 = 30;

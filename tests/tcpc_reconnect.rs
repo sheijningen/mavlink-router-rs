@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::endpoint::{EndpointIdAllocator, tcp_client::TcpClientConfig};
+use rmr::endpoint::{EndpointIdAllocator, tcp::client::TcpClientConfig};
 
 use common::shutdown_all;
 use common::tcp::spawn_tcpc;

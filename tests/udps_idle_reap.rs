@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::{EndpointEvent, PeerRemovalReason};
-use rmr::endpoint::udp_server::UdpServerConfig;
+use rmr::endpoint::udp::server::UdpServerConfig;
 
 use common::udp::spawn_udps_with_config;
 use common::{next_peer_added, shutdown_all};

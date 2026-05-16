@@ -8,10 +8,10 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use super::EndpointId;
-use super::events::RouterFrame;
-use super::stats::EndpointStats;
-use super::tx_queue::TxQueue;
+use super::super::EndpointId;
+use super::super::events::RouterFrame;
+use super::super::stats::EndpointStats;
+use super::super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
 
 /// Why a TCP session terminated — controls whether the caller reconnects

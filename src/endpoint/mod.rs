@@ -8,12 +8,9 @@ pub mod serial;
 pub mod socket;
 pub mod spec;
 pub mod stats;
-pub mod tcp_client;
-pub mod tcp_server;
-pub mod tcp_session;
+pub mod tcp;
 pub mod tx_queue;
-pub mod udp_client;
-pub mod udp_server;
+pub mod udp;
 
 use std::net::SocketAddr;
 

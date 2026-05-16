@@ -15,8 +15,10 @@ use rmr::endpoint::{
     EndpointIdAllocator,
     events::{EndpointEvent, RouterFrame},
     stats::EndpointStats,
-    tcp_client::{self, TcpClientConfig, TcpClientSpec, TcpClientWiring},
-    tcp_server::{self, TcpServerConfig, TcpServerError, TcpServerSpec, TcpServerWiring},
+    tcp::client::{self as tcp_client, TcpClientConfig, TcpClientSpec, TcpClientWiring},
+    tcp::server::{
+        self as tcp_server, TcpServerConfig, TcpServerError, TcpServerSpec, TcpServerWiring,
+    },
     tx_queue::TxQueue,
 };
 

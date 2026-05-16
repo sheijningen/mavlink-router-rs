@@ -18,7 +18,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::endpoint::{EndpointIdAllocator, tcp_server::TcpServerConfig};
+use rmr::endpoint::{EndpointIdAllocator, tcp::server::TcpServerConfig};
 
 use common::next_peer_added;
 use common::shutdown_all;

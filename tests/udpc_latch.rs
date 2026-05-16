@@ -7,7 +7,7 @@
 //!   - Idle revert: after `latch_idle_secs` of silence the latch drops and
 //!     outbound returns to the configured `host:port`.
 //!
-//! Unrelated-source-IP rejection is covered by unit tests in `udp_client.rs`
+//! Unrelated-source-IP rejection is covered by unit tests in `udp/client.rs`
 //! (it's not portably testable on macOS/Windows where 127.0.0.0/8 isn't all
 //! loopback).
 
@@ -20,7 +20,7 @@ use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::endpoint::{EndpointIdAllocator, udp_client::UdpClientConfig};
+use rmr::endpoint::{EndpointIdAllocator, udp::client::UdpClientConfig};
 
 use common::shutdown_all;
 use common::udp::{spawn_udpc, udpc_send_and_capture_source};
