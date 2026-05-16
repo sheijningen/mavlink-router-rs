@@ -1,7 +1,4 @@
-/// Discriminator for the supported endpoint schemes. Each variant carries the
-/// fully-typed config struct for that scheme — address, scheme-specific
-/// knobs, and a [`CommonQuery`] substruct holding the knobs that every scheme
-/// understands (filters, sniffer, group, routing table sizes, buffers).
+/// Supported endpoint schemes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EndpointKind {
     Serial(SerialEndpoint),
@@ -59,11 +56,7 @@ impl U8Range {
     }
 }
 
-/// Knobs that every scheme understands, embedded in each `*Endpoint` struct
-/// under the `common` field. Filter lists, sniffer/group flags, routing
-/// table sizes, and read/tx buffer sizes — all the fields that aren't
-/// scheme-specific live here so adding a new scheme means declaring only
-/// the scheme-specific fields plus `pub common: CommonQuery`.
+/// Knobs that every endpoint type understands
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommonQuery {
     pub sniffer: bool,
@@ -86,7 +79,7 @@ pub struct CommonQuery {
     pub block_src_comp_out: Option<Vec<U8Range>>,
 }
 
-/// Fully-typed `serial:` endpoint config.
+/// `serial:` endpoint config.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SerialEndpoint {
     pub path: String,
@@ -95,7 +88,7 @@ pub struct SerialEndpoint {
     pub common: CommonQuery,
 }
 
-/// Fully-typed `udps:` endpoint config.
+/// `udps:` endpoint config.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UdpServerEndpoint {
     pub host: String,
@@ -105,7 +98,7 @@ pub struct UdpServerEndpoint {
     pub common: CommonQuery,
 }
 
-/// Fully-typed `udpc:` endpoint config.
+/// `udpc:` endpoint config.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UdpClientEndpoint {
     pub host: String,
@@ -114,7 +107,7 @@ pub struct UdpClientEndpoint {
     pub common: CommonQuery,
 }
 
-/// Fully-typed `tcps:` endpoint config.
+/// `tcps:` endpoint config.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TcpServerEndpoint {
     pub host: String,
@@ -122,7 +115,7 @@ pub struct TcpServerEndpoint {
     pub common: CommonQuery,
 }
 
-/// Fully-typed `tcpc:` endpoint config.
+/// `tcpc:` endpoint config.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TcpClientEndpoint {
     pub host: String,

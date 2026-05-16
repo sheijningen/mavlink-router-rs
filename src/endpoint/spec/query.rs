@@ -6,10 +6,9 @@ use super::endpoint_kinds::{
 };
 use super::error::SpecError;
 
-// Per-scheme valid key sets. Kept sorted so the levenshtein "did you mean"
-// suggestion is deterministic. Single source of truth for what each scheme
-// understands.
-
+/// Per-scheme valid key sets. Kept sorted so the levenshtein "did you mean"
+/// suggestion is deterministic. Single source of truth for what each scheme
+/// understands.
 pub const COMMON_KEYS: &[&str] = &[
     "allow_msgid_in",
     "allow_msgid_out",
