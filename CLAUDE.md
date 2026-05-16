@@ -427,10 +427,19 @@ rmr/
 │       ├── group.rs                  ← endpoint groups, shared learn-set semantics
 │       ├── decide.rs                 ← per-destination decision (sniffer, target, out-filter)
 │       └── dedup.rs                  ← frame-hash window with TTL eviction
-├── tests/                            ← integration tests (one .rs file per feature area)
+├── tests/                            ← integration tests, transport-grouped under tcp/ and udp/ (each subfolder is one Cargo test binary via its `main.rs`); transport-agnostic tests stay at the top level
+│   ├── common/                       ← shared fixtures (mavlink frame builders, spawn harnesses, shutdown helper); pulled into each test binary via `#[path = "../common/mod.rs"] mod common;`
 │   ├── framer_replay.rs
-│   ├── udp_roundtrip.rs
-│   ├── tcp_reconnect.rs
+│   ├── tcp/
+│   │   ├── main.rs                   ← aggregator: `mod common; mod roundtrip; mod bind_retry; mod reconnect;`
+│   │   ├── roundtrip.rs
+│   │   ├── bind_retry.rs
+│   │   └── reconnect.rs
+│   ├── udp/
+│   │   ├── main.rs                   ← aggregator: `mod common; mod roundtrip; mod latch; mod idle_reap;`
+│   │   ├── roundtrip.rs
+│   │   ├── latch.rs
+│   │   └── idle_reap.rs
 │   ├── serial_replug.rs              ← requires loopback hardware; gated by feature flag
 │   ├── filters.rs
 │   ├── sniffer.rs

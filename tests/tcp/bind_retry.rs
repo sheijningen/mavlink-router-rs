@@ -9,8 +9,6 @@
 
 #![cfg(unix)]
 
-mod common;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,9 +18,10 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::{EndpointIdAllocator, tcp::server::TcpServerConfig};
 
-use common::next_peer_added;
-use common::shutdown_all;
-use common::tcp::{connect_with_retry, spawn_tcps_at_with_config};
+use crate::common;
+use crate::common::next_peer_added;
+use crate::common::shutdown_all;
+use crate::common::tcp::{connect_with_retry, spawn_tcps_at_with_config};
 
 #[tokio::test]
 async fn tcps_attaches_when_pre_held_port_is_freed() {

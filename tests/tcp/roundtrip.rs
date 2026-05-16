@@ -7,8 +7,6 @@
 //!   - holding the `TxQueue` of each accepted child (announced via `event_rx`),
 //!   - pushing inbound frames from A onto B's child queue and vice versa.
 
-mod common;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,8 +17,9 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::EndpointIdAllocator;
 
-use common::tcp::{connect_with_retry, spawn_tcps};
-use common::{next_peer_added, shutdown_all};
+use crate::common;
+use crate::common::tcp::{connect_with_retry, spawn_tcps};
+use crate::common::{next_peer_added, shutdown_all};
 
 const CONNECT_DEADLINE: Duration = Duration::from_secs(3);
 

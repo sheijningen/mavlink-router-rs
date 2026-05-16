@@ -3,8 +3,6 @@
 //! here is the `tcpc:` endpoint task; we drive a real server using
 //! `tokio::net::TcpListener` so we control accept/close timing.
 
-mod common;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,8 +13,9 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::{EndpointIdAllocator, tcp::client::TcpClientConfig};
 
-use common::shutdown_all;
-use common::tcp::spawn_tcpc;
+use crate::common;
+use crate::common::shutdown_all;
+use crate::common::tcp::spawn_tcpc;
 
 #[tokio::test]
 async fn tcpc_reconnects_after_server_disconnect() {

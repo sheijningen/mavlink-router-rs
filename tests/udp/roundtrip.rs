@@ -7,8 +7,6 @@
 //!   - holding the `TxQueue` of each known peer (announced via `event_rx`),
 //!   - pushing inbound frames from A onto B's peer queue and vice versa.
 
-mod common;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,8 +16,9 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::EndpointIdAllocator;
 
-use common::udp::spawn_udps;
-use common::{next_peer_added, shutdown_all};
+use crate::common;
+use crate::common::udp::spawn_udps;
+use crate::common::{next_peer_added, shutdown_all};
 
 #[tokio::test]
 async fn round_trip_between_two_udps_listeners() {

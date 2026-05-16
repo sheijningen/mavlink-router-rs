@@ -11,8 +11,6 @@
 //! (it's not portably testable on macOS/Windows where 127.0.0.0/8 isn't all
 //! loopback).
 
-mod common;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,8 +20,9 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::{EndpointIdAllocator, udp::client::UdpClientConfig};
 
-use common::shutdown_all;
-use common::udp::{spawn_udpc, udpc_send_and_capture_source};
+use crate::common;
+use crate::common::shutdown_all;
+use crate::common::udp::{spawn_udpc, udpc_send_and_capture_source};
 
 #[tokio::test]
 async fn udpc_latches_onto_ephemeral_reply_port() {
