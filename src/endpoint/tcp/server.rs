@@ -146,11 +146,11 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), T
         )
         .await;
 
-        // Accept loop only returns on cancellation; we don't re-bind in normal
-        // operation. (A future enhancement could detect a permanently broken
-        // listener socket and re-bind, but tokio's TcpListener::accept errors
-        // are per-connection in practice.)
-        return Ok(());
+        // Today accept_loop only returns on cancellation, so the top-of-loop
+        // cancel check terminates `run_inner` on the next iteration. Falling
+        // through (rather than an explicit `return`) leaves the door open for
+        // a future listener-fatal exit path to re-enter `bind_tcp_dual_stack`
+        // with the same backoff curve.
     }
 }
 
