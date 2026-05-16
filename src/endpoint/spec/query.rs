@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::endpoint_kinds::{
-    CommonQuery, MsgIdRange, SerialEndpoint, TcpClientEndpoint, TcpServerEndpoint, U8Range,
-    UdpClientEndpoint, UdpServerEndpoint,
+    CommonQuery, MsgIdRange, SerialEndpoint, SerialFlowControl, TcpClientEndpoint,
+    TcpServerEndpoint, U8Range, UdpClientEndpoint, UdpServerEndpoint,
 };
 use super::error::SpecError;
 
@@ -30,7 +30,7 @@ pub const COMMON_KEYS: &[&str] = &[
     "tx_queue_frames",
 ];
 
-const SERIAL_EXTRA: &[&str] = &["serial_reopen_ms"];
+const SERIAL_EXTRA: &[&str] = &["flow_control", "serial_reopen_ms"];
 const UDPS_EXTRA: &[&str] = &["idle_secs", "udps_peer_capacity"];
 const UDPC_EXTRA: &[&str] = &["latch_idle_secs"];
 const TCPS_EXTRA: &[&str] = &[];
@@ -167,11 +167,28 @@ pub trait QueryApplier {
 pub struct SerialApplier<'a>(pub &'a mut SerialEndpoint);
 impl QueryApplier for SerialApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
-        if key == "serial_reopen_ms" {
-            self.0.serial_reopen_ms = Some(parse_u64(value, "serial_reopen_ms")?);
-            return Ok(true);
+        match key {
+            "serial_reopen_ms" => {
+                self.0.serial_reopen_ms = Some(parse_u64(value, "serial_reopen_ms")?);
+                Ok(true)
+            }
+            "flow_control" => {
+                self.0.flow_control = parse_flow_control(value)?;
+                Ok(true)
+            }
+            _ => self.0.common.apply(key, value),
         }
-        self.0.common.apply(key, value)
+    }
+}
+
+fn parse_flow_control(v: &str) -> Result<SerialFlowControl, SpecError> {
+    match v {
+        "none" => Ok(SerialFlowControl::None),
+        "rtscts" => Ok(SerialFlowControl::RtsCts),
+        _ => Err(SpecError::InvalidQueryValue {
+            key: "flow_control",
+            reason: format!("expected 'none' or 'rtscts', got '{v}'"),
+        }),
     }
 }
 
@@ -538,6 +555,52 @@ mod tests {
     fn serial_reopen_ms_typed() {
         let e = as_serial(&parse_ok("serial:/dev/foo:9600?serial_reopen_ms=750")).clone();
         assert_eq!(e.serial_reopen_ms, Some(750));
+    }
+
+    #[test]
+    fn serial_flow_control_default_none() {
+        let e = as_serial(&parse_ok("serial:/dev/foo:9600")).clone();
+        assert_eq!(
+            e.flow_control,
+            crate::endpoint::spec::SerialFlowControl::None
+        );
+    }
+
+    #[test]
+    fn serial_flow_control_rtscts() {
+        let e = as_serial(&parse_ok("serial:/dev/foo:9600?flow_control=rtscts")).clone();
+        assert_eq!(
+            e.flow_control,
+            crate::endpoint::spec::SerialFlowControl::RtsCts
+        );
+    }
+
+    #[test]
+    fn serial_flow_control_explicit_none() {
+        let e = as_serial(&parse_ok("serial:/dev/foo:9600?flow_control=none")).clone();
+        assert_eq!(
+            e.flow_control,
+            crate::endpoint::spec::SerialFlowControl::None
+        );
+    }
+
+    #[test]
+    fn serial_flow_control_invalid_value_rejected() {
+        match parse_err("serial:/dev/foo:9600?flow_control=hw") {
+            SpecError::InvalidQueryValue { key, .. } => assert_eq!(key, "flow_control"),
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serial_flow_control_rejected_on_non_serial_scheme() {
+        match parse_err("udps:0.0.0.0:1?flow_control=rtscts") {
+            SpecError::UnknownQueryKey { key, scheme, .. } => {
+                assert_eq!(key, "flow_control");
+                assert_eq!(scheme, "udps");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
     }
 
     #[test]

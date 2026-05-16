@@ -79,11 +79,23 @@ pub struct CommonQuery {
     pub block_src_comp_out: Option<Vec<U8Range>>,
 }
 
+/// Hardware flow-control mode for `serial:`. The query-key name
+/// `?flow_control=rtscts|none` is locked (CLAUDE.md Phase 4 contract bullet)
+/// — `rtscts` over `hw` keeps the door open for adding DTR/DSR later without
+/// claiming all hardware-handshake names under a single ambiguous knob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SerialFlowControl {
+    #[default]
+    None,
+    RtsCts,
+}
+
 /// `serial:` endpoint config.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SerialEndpoint {
     pub path: String,
     pub baud: u32,
+    pub flow_control: SerialFlowControl,
     pub serial_reopen_ms: Option<u64>,
     pub common: CommonQuery,
 }
