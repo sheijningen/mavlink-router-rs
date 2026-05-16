@@ -108,9 +108,13 @@ pub async fn run(spec: TcpClientSpec, wiring: TcpClientWiring) {
             return;
         }
 
-        let stream = match dial_with_dns(&host, port).await {
-            Some(s) => s,
-            None => {
+        let stream = match dial_with_dns(&host, port, &cancel).await {
+            DialOutcome::Connected(s) => s,
+            DialOutcome::Cancelled => {
+                tx_queue.drain_and_discard();
+                return;
+            }
+            DialOutcome::Failed => {
                 if !wait_or_cancel(&cancel, backoff.next_delay()).await {
                     tx_queue.drain_and_discard();
                     return;
@@ -151,30 +155,56 @@ pub async fn run(spec: TcpClientSpec, wiring: TcpClientWiring) {
     }
 }
 
+/// Outcome of one DNS-resolve + connect-attempt cycle. `Cancelled` is
+/// surfaced as a distinct variant (not a `None` lumped together with connect
+/// failure) so the caller can drain and return immediately instead of waiting
+/// out the backoff sleep.
+enum DialOutcome {
+    Connected(TcpStream),
+    Cancelled,
+    Failed,
+}
+
 /// Resolve `host:port` (parsing IP literals directly so IPv6 literals don't
-/// need bracket gymnastics) and dial the first resolved address, preferring
-/// IPv4 on ties. Returns `None` on resolution or connect failure — the outer
-/// loop retries with backoff.
-async fn dial_with_dns(host: &str, port: u16) -> Option<TcpStream> {
+/// need bracket gymnastics) and try each resolved address in sorted order
+/// (IPv4 first on ties), returning the first connection that succeeds. Each
+/// individual connect is wrapped in a 10s timeout AND races against the
+/// cancellation token so shutdown bounds at the drain budget. Returns `Failed`
+/// only after every resolved address has been tried — the outer loop then
+/// waits a backoff interval before re-resolving.
+async fn dial_with_dns(host: &str, port: u16, cancel: &CancellationToken) -> DialOutcome {
     let resolved = resolve_to_socket_addrs(host, port).await;
     if resolved.is_empty() {
-        return None;
+        return DialOutcome::Failed;
     }
-    let target = resolved[0];
+    for target in resolved {
+        match connect_one(target, cancel).await {
+            DialOutcome::Connected(s) => {
+                trace!(%target, "tcpc connected");
+                return DialOutcome::Connected(s);
+            }
+            DialOutcome::Cancelled => return DialOutcome::Cancelled,
+            DialOutcome::Failed => continue,
+        }
+    }
+    DialOutcome::Failed
+}
 
-    match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(target)).await {
-        Ok(Ok(s)) => {
-            trace!(%target, "tcpc connected");
-            Some(s)
-        }
-        Ok(Err(e)) => {
-            warn!(error = %e, %target, "tcpc connect failed");
-            None
-        }
-        Err(_) => {
-            warn!(%target, "tcpc connect timed out");
-            None
-        }
+async fn connect_one(target: SocketAddr, cancel: &CancellationToken) -> DialOutcome {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => DialOutcome::Cancelled,
+        res = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(target)) => match res {
+            Ok(Ok(s)) => DialOutcome::Connected(s),
+            Ok(Err(e)) => {
+                warn!(error = %e, %target, "tcpc connect failed");
+                DialOutcome::Failed
+            }
+            Err(_) => {
+                warn!(%target, "tcpc connect timed out");
+                DialOutcome::Failed
+            }
+        },
     }
 }
 
@@ -277,5 +307,51 @@ mod tests {
         let r = wait_or_cancel(&cancel, Duration::from_millis(50)).await;
         assert!(r);
         assert!(start.elapsed() >= Duration::from_millis(50));
+    }
+
+    /// Cancellation set before the call must short-circuit `connect_one`
+    /// without dispatching the connect syscall — proves the `cancel.cancelled()`
+    /// arm of the inner `select!` is wired through.
+    #[tokio::test]
+    async fn connect_one_returns_cancelled_when_cancel_already_fired() {
+        // Use a refused port on loopback so that, were the cancel arm broken,
+        // we'd see a fast `DialOutcome::Failed` and the assert below would
+        // still catch the misbehaviour.
+        let target: SocketAddr = "127.0.0.1:1".parse().expect("parse target");
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let outcome = connect_one(target, &cancel).await;
+        assert!(
+            matches!(outcome, DialOutcome::Cancelled),
+            "expected Cancelled when cancel.is_cancelled()"
+        );
+    }
+
+    /// `connect_one` must independently report Failed/Connected back-to-back
+    /// on the same `CancellationToken` — the dial loop relies on a Failed
+    /// outcome being recoverable so iteration over the resolved address list
+    /// can keep going.
+    #[tokio::test]
+    async fn connect_one_failures_and_successes_are_independent() {
+        let refused: SocketAddr = "127.0.0.1:1".parse().expect("parse refused");
+        let cancel = CancellationToken::new();
+        let outcome_failed = connect_one(refused, &cancel).await;
+        assert!(
+            matches!(outcome_failed, DialOutcome::Failed),
+            "expected Failed for connection-refused"
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind probe");
+        let live_addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+        let outcome_ok = connect_one(live_addr, &cancel).await;
+        assert!(
+            matches!(outcome_ok, DialOutcome::Connected(_)),
+            "expected Connected on live loopback"
+        );
     }
 }
