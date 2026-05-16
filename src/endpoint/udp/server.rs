@@ -145,7 +145,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
         parent_id,
         parent_name,
         cfg,
-        identity: _,
+        identity,
     } = spec;
     let UdpServerWiring {
         allocator,
@@ -192,6 +192,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
         parent_id,
         parent_name: &parent_name,
         cfg: &cfg,
+        identity: &identity,
         allocator: &allocator,
         frame_tx: &frame_tx,
         event_tx: &event_tx,
@@ -250,6 +251,7 @@ struct ListenerCtx<'a> {
     parent_id: EndpointId,
     parent_name: &'a str,
     cfg: &'a UdpServerConfig,
+    identity: &'a IdentityFlags,
     allocator: &'a Arc<EndpointIdAllocator>,
     frame_tx: &'a mpsc::Sender<RouterFrame>,
     event_tx: &'a mpsc::Sender<EndpointEvent>,
@@ -274,7 +276,10 @@ async fn handle_packet(
         // Announce PeerAdded before LRU-evicting and before spawning the writer:
         // a closed router event channel here means the router is gone, and
         // destroying an existing peer's state in vain (silent PeerRemoved that
-        // nobody receives) is worse than just dropping the new packet.
+        // nobody receives) is worse than just dropping the new packet. The
+        // peer inherits the parent listener's IdentityFlags by clone per
+        // CLAUDE.md "Sub-endpoints inherit their parent's IdentityFlags by
+        // clone at spawn time".
         if ctx
             .event_tx
             .send(EndpointEvent::PeerAdded {
@@ -284,6 +289,7 @@ async fn handle_packet(
                 name,
                 tx_queue: tx_queue.clone(),
                 stats: stats.clone(),
+                identity: ctx.identity.clone(),
             })
             .await
             .is_err()
@@ -614,11 +620,13 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(8);
         let cancel = CancellationToken::new();
         let parent_name = "test".to_string();
+        let identity = IdentityFlags::default();
         let ctx = ListenerCtx {
             socket: socket.clone(),
             parent_id,
             parent_name: &parent_name,
             cfg: &cfg,
+            identity: &identity,
             allocator: &allocator,
             frame_tx: &frame_tx,
             event_tx: &event_tx,

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use super::EndpointId;
+use super::filters::IdentityFlags;
 use super::stats::EndpointStats;
 use super::tx_queue::TxQueue;
 use crate::mavlink::frame::ParsedHeader;
@@ -18,11 +19,28 @@ pub struct RouterFrame {
     pub header: ParsedHeader,
 }
 
-/// Lifecycle event for a child routing endpoint — a `udps:` learned peer or
-/// (in Phase 3) a `tcps:` accepted client. The router uses these to register
-/// and evict its per-child learn-sets, TxQueue handles, and stats.
+/// Lifecycle event on the shared reader→router event channel. Carries enough
+/// for the router to register an endpoint into its routing tables (or drop it)
+/// without ever allocating a per-endpoint handle itself — the spawner / parent
+/// owns construction of `EndpointId`, `TxQueue`, `Arc<EndpointStats>`, and
+/// `IdentityFlags` and announces them here.
+///
+/// `EndpointAdded` is emitted by the top-level spawner for every CLI/TOML
+/// endpoint. `PeerAdded` / `PeerRemoved` are emitted by `tcps:` listeners (per
+/// accepted client) and `udps:` listeners (per learned peer). There is no
+/// top-level `EndpointRemoved` variant in v1 — top-level endpoints live for the
+/// process; on shutdown the router writes `state = Down` and emits one final
+/// synthetic stats line per CLAUDE.md's "Endpoint registration is symmetric"
+/// decision.
 #[derive(Debug)]
 pub enum EndpointEvent {
+    EndpointAdded {
+        id: EndpointId,
+        name: String,
+        tx_queue: TxQueue,
+        stats: Arc<EndpointStats>,
+        identity: IdentityFlags,
+    },
     PeerAdded {
         parent_id: EndpointId,
         child_id: EndpointId,
@@ -30,6 +48,7 @@ pub enum EndpointEvent {
         name: String,
         tx_queue: TxQueue,
         stats: Arc<EndpointStats>,
+        identity: IdentityFlags,
     },
     PeerRemoved {
         parent_id: EndpointId,

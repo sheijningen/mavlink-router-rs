@@ -82,6 +82,28 @@ pub fn spawn_udps_at_with_config(
     cfg: UdpServerConfig,
     name: &str,
 ) -> UdpsHarness {
+    spawn_udps_at_with_config_and_identity(
+        allocator,
+        cancel,
+        listen_addr,
+        cfg,
+        IdentityFlags::default(),
+        name,
+    )
+}
+
+/// Like `spawn_udps_at_with_config` but also lets the caller install a
+/// non-default `IdentityFlags` on the parent listener. Used by the
+/// inheritance test to assert each learned peer receives a clone of the
+/// parent's identity via `PeerAdded`.
+pub fn spawn_udps_at_with_config_and_identity(
+    allocator: &Arc<EndpointIdAllocator>,
+    cancel: CancellationToken,
+    listen_addr: SocketAddr,
+    cfg: UdpServerConfig,
+    identity: IdentityFlags,
+    name: &str,
+) -> UdpsHarness {
     let parent_id = allocator.alloc();
     let parent_name = name.to_string();
     let allocator = allocator.clone();
@@ -95,7 +117,7 @@ pub fn spawn_udps_at_with_config(
                 parent_id,
                 parent_name,
                 cfg,
-                identity: IdentityFlags::default(),
+                identity,
             },
             UdpServerWiring {
                 allocator,

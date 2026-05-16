@@ -116,7 +116,7 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), T
         parent_id,
         parent_name,
         cfg,
-        identity: _,
+        identity,
     } = spec;
     let TcpServerWiring {
         allocator,
@@ -155,6 +155,7 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), T
             parent_id,
             &parent_name,
             &cfg,
+            &identity,
             &allocator,
             &frame_tx,
             &event_tx,
@@ -176,6 +177,7 @@ async fn run_accept_loop(
     parent_id: EndpointId,
     parent_name: &str,
     cfg: &TcpServerConfig,
+    identity: &IdentityFlags,
     allocator: &Arc<EndpointIdAllocator>,
     frame_tx: &mpsc::Sender<RouterFrame>,
     event_tx: &mpsc::Sender<EndpointEvent>,
@@ -196,6 +198,7 @@ async fn run_accept_loop(
                             parent_id,
                             parent_name,
                             cfg,
+                            identity,
                             allocator,
                             frame_tx,
                             event_tx,
@@ -229,6 +232,7 @@ async fn accept_one_client(
     parent_id: EndpointId,
     parent_name: &str,
     cfg: &TcpServerConfig,
+    identity: &IdentityFlags,
     allocator: &Arc<EndpointIdAllocator>,
     frame_tx: &mpsc::Sender<RouterFrame>,
     event_tx: &mpsc::Sender<EndpointEvent>,
@@ -246,7 +250,9 @@ async fn accept_one_client(
     let child_span = info_span!("tcps_child", name = %name);
 
     // Announce PeerAdded before spawning the child so the router never sees
-    // a RouterFrame for an unknown EndpointId.
+    // a RouterFrame for an unknown EndpointId. The child inherits the parent
+    // listener's IdentityFlags by clone per CLAUDE.md "Sub-endpoints inherit
+    // their parent's IdentityFlags by clone at spawn time".
     if event_tx
         .send(EndpointEvent::PeerAdded {
             parent_id,
@@ -255,6 +261,7 @@ async fn accept_one_client(
             name,
             tx_queue: tx_queue.clone(),
             stats: stats.clone(),
+            identity: identity.clone(),
         })
         .await
         .is_err()
