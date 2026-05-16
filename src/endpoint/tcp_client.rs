@@ -1,15 +1,12 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use bytes::Bytes;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, lookup_host};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace, warn};
+use tracing::{trace, warn};
 
 use super::EndpointId;
 use super::backoff::Backoff;
@@ -17,8 +14,8 @@ use super::events::RouterFrame;
 use super::socket::configure_tcp_stream;
 use super::spec::TcpClientEndpoint;
 use super::stats::EndpointStats;
+use super::tcp_session::{SessionOutcome, run_session};
 use super::tx_queue::TxQueue;
-use crate::mavlink::framer::Framer;
 
 const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
 const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
@@ -80,13 +77,6 @@ pub struct TcpClientWiring {
     pub tx_queue: TxQueue,
     pub stats: Arc<EndpointStats>,
     pub cancel: CancellationToken,
-}
-
-/// Why a TCP session terminated — controls whether the outer loop reconnects
-/// (Disconnected) or returns (Cancelled).
-enum SessionOutcome {
-    Cancelled,
-    Disconnected,
 }
 
 /// Run a `tcpc:` endpoint until the cancellation token fires. Resolves DNS,
@@ -213,102 +203,6 @@ async fn resolve_to_socket_addrs(host: &str, port: u16) -> Vec<SocketAddr> {
     }
 }
 
-async fn run_session(
-    stream: TcpStream,
-    endpoint_id: EndpointId,
-    stats: &Arc<EndpointStats>,
-    frame_tx: &mpsc::Sender<RouterFrame>,
-    tx_queue: &TxQueue,
-    cancel: &CancellationToken,
-    read_buf_bytes: usize,
-) -> SessionOutcome {
-    let (mut rh, mut wh) = stream.into_split();
-    let mut framer = Framer::with_capacity(read_buf_bytes);
-    let mut last_resync_total: u64 = 0;
-    let mut last_crc_total: u64 = 0;
-
-    loop {
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return SessionOutcome::Cancelled,
-            res = rh.read_buf(framer.buffer_mut()) => {
-                match res {
-                    Ok(0) => {
-                        debug!("tcpc peer closed connection");
-                        return SessionOutcome::Disconnected;
-                    }
-                    Ok(_) => {
-                        while let Some((header, frame)) = framer.try_next_frame() {
-                            let frame_len = frame.len();
-                            stats.add_rx_frame(frame_len);
-                            if frame_tx
-                                .send(RouterFrame {
-                                    endpoint_id,
-                                    frame,
-                                    header,
-                                })
-                                .await
-                                .is_err()
-                            {
-                                debug!("tcpc router channel closed; ending");
-                                return SessionOutcome::Cancelled;
-                            }
-                        }
-                        sync_framer_counters(
-                            &framer,
-                            &mut last_resync_total,
-                            &mut last_crc_total,
-                            stats,
-                        );
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "tcpc read failed");
-                        return SessionOutcome::Disconnected;
-                    }
-                }
-            }
-            frame = pop_or_wait(tx_queue) => {
-                if let Err(e) = wh.write_all(&frame).await {
-                    warn!(error = %e, "tcpc write failed");
-                    return SessionOutcome::Disconnected;
-                }
-                stats.add_tx_frame(frame.len());
-            }
-        }
-    }
-}
-
-async fn pop_or_wait(q: &TxQueue) -> Bytes {
-    loop {
-        if let Some(b) = q.pop() {
-            return b;
-        }
-        q.wait_for_push().await;
-    }
-}
-
-fn sync_framer_counters(
-    framer: &Framer,
-    last_resync_total: &mut u64,
-    last_crc_total: &mut u64,
-    stats: &Arc<EndpointStats>,
-) {
-    let now_resync = framer.resync_bytes();
-    let now_crc = framer.crc_errors();
-    let resync_delta = now_resync.saturating_sub(*last_resync_total);
-    let crc_delta = now_crc.saturating_sub(*last_crc_total);
-    if resync_delta > 0 {
-        stats
-            .resync_bytes
-            .fetch_add(resync_delta, Ordering::Relaxed);
-    }
-    if crc_delta > 0 {
-        stats.crc_errors.fetch_add(crc_delta, Ordering::Relaxed);
-    }
-    *last_resync_total = now_resync;
-    *last_crc_total = now_crc;
-}
-
 async fn wait_or_cancel(cancel: &CancellationToken, delay: Duration) -> bool {
     tokio::select! {
         biased;
@@ -366,21 +260,6 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
         assert_eq!(v[0].port(), 5760);
-    }
-
-    #[tokio::test]
-    async fn sync_framer_counters_propagates_deltas() {
-        let stats = Arc::new(EndpointStats::new());
-        let mut framer = Framer::new();
-        framer.buffer_mut().extend_from_slice(&[0, 0, 0, 0]);
-        while framer.try_next_frame().is_some() {}
-        assert_eq!(framer.resync_bytes(), 4);
-        let mut last_resync = 0u64;
-        let mut last_crc = 0u64;
-        sync_framer_counters(&framer, &mut last_resync, &mut last_crc, &stats);
-        assert_eq!(stats.resync_bytes.load(Ordering::Relaxed), 4);
-        sync_framer_counters(&framer, &mut last_resync, &mut last_crc, &stats);
-        assert_eq!(stats.resync_bytes.load(Ordering::Relaxed), 4);
     }
 
     #[tokio::test]

@@ -14,6 +14,7 @@ use tracing::{debug, trace, warn};
 use super::EndpointId;
 use super::EndpointIdAllocator;
 use super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
+use super::peer_endpoint_name;
 use super::socket::bind_udp_dual_stack;
 use super::spec::UdpServerEndpoint;
 use super::stats::EndpointStats;
@@ -69,16 +70,6 @@ pub enum UdpServerError {
         #[source]
         source: std::io::Error,
     },
-}
-
-/// Sub-endpoint name for a learned peer: `<parent>/<ip>-<port>` for IPv4 and
-/// `<parent>/[<ip>]-<port>` for IPv6 (the brackets match the CLI grammar so the
-/// name round-trips visually with an explicit `udps:[::]:N` spec).
-pub fn peer_endpoint_name(parent_name: &str, addr: SocketAddr) -> String {
-    match addr {
-        SocketAddr::V4(v4) => format!("{parent_name}/{}-{}", v4.ip(), v4.port()),
-        SocketAddr::V6(v6) => format!("{parent_name}/[{}]-{}", v6.ip(), v6.port()),
-    }
 }
 
 /// Per-peer state the listener task carries between packets: the child
@@ -406,40 +397,7 @@ async fn run_peer_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, SocketAddrV6};
-
-    #[test]
-    fn peer_name_ipv4() {
-        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 10), 14550));
-        assert_eq!(peer_endpoint_name("bus", addr), "bus/192.168.1.10-14550");
-    }
-
-    #[test]
-    fn peer_name_ipv6() {
-        let addr = SocketAddr::V6(SocketAddrV6::new(
-            "2001:db8::1".parse().unwrap(),
-            14550,
-            0,
-            0,
-        ));
-        assert_eq!(peer_endpoint_name("bus", addr), "bus/[2001:db8::1]-14550");
-    }
-
-    #[test]
-    fn peer_name_v4_mapped_v6_uses_v6_form() {
-        // Dual-stack sockets sometimes deliver IPv4 senders as v4-mapped v6.
-        // The name keeps the v6 form (bracketed) — operators looking at stats
-        // can tell the difference.
-        let addr = SocketAddr::V6(SocketAddrV6::new(
-            Ipv4Addr::LOCALHOST.to_ipv6_mapped(),
-            14550,
-            0,
-            0,
-        ));
-        let name = peer_endpoint_name("bus", addr);
-        assert!(name.starts_with("bus/["), "got {name}");
-        assert!(name.ends_with("]-14550"), "got {name}");
-    }
+    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
     fn config_defaults_when_endpoint_unset() {
