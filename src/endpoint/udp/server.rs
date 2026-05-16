@@ -253,11 +253,32 @@ async fn handle_packet(
         let name = peer_endpoint_name(ctx.parent_name, src);
         let writer_span = info_span!("udps_peer", name = %name);
 
+        // Announce PeerAdded before spawning the writer and inserting the peer
+        // so that on a closed router event channel we don't leak a writer task
+        // or accumulate per-peer state the router will never see.
+        if ctx
+            .event_tx
+            .send(EndpointEvent::PeerAdded {
+                parent_id: ctx.parent_id,
+                child_id,
+                peer_addr: src,
+                name,
+                tx_queue: tx_queue.clone(),
+                stats: stats.clone(),
+            })
+            .await
+            .is_err()
+        {
+            debug!("udps event channel closed; dropping admitted peer");
+            return;
+        }
+        trace!(parent_id = %ctx.parent_id, %src, "udps peer added");
+
         writer_tasks.spawn(
             run_peer_writer(
                 ctx.socket.clone(),
                 src,
-                tx_queue.clone(),
+                tx_queue,
                 stats.clone(),
                 writer_cancel.clone(),
             )
@@ -270,23 +291,10 @@ async fn handle_packet(
             last_seen: Instant::now(),
             last_resync_total: 0,
             last_crc_total: 0,
-            stats: stats.clone(),
+            stats,
             writer_cancel,
         };
         peers.insert(src, entry);
-
-        let _ = ctx
-            .event_tx
-            .send(EndpointEvent::PeerAdded {
-                parent_id: ctx.parent_id,
-                child_id,
-                peer_addr: src,
-                name,
-                tx_queue,
-                stats,
-            })
-            .await;
-        trace!(parent_id = %ctx.parent_id, %src, "udps peer added");
     }
 
     let Some(peer) = peers.get_mut(&src) else {
