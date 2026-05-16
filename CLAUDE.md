@@ -329,10 +329,10 @@ Each phase ends in a usable binary. Don't skip ahead; each phase exposes integra
 
 ### Phase 4 — serial
 
-- [ ] **`tokio-serial` dep + `SerialSpec`/`SerialWiring` contract.** Add `tokio-serial` to `[dependencies]` (version pin chosen at commit time). Define the scheme-typed `SerialSpec`/`SerialWiring` pair following the same shape as `tcp::client` and `udp::client` — `SerialSpec` carries the device path, baud, optional RTS/CTS, `IdentityFlags`, parent `EndpointId`, name, and `serial_reopen_ms`; `SerialWiring` carries the `frame_tx`, `tx_queue`, `stats`, and cancellation token. No `event_tx` (serial has no children). No `bound_addr_tx` (no socket to bind). RTS/CTS query-key name locked as `?flow_control=rtscts|none`, defaulting to `none` (rejected: `hw`, ambiguous against DTR/DSR; rejected: `?rtscts=true`, doesn't leave room for adding DTR/DSR later without a second key).
-- [ ] `serial:` open, baud setting, optional RTS/CTS
-- [ ] Hot-replug recovery: on read error or device removal, periodically attempt re-open (mavlink-router does not do this; we should)
-- [ ] Manual test plan documented (loopback cable, USB-serial unplug/replug)
+- [x] **`tokio-serial` dep + `SerialSpec`/`SerialWiring` contract.** Add `tokio-serial` to `[dependencies]` (version pin chosen at commit time). Define the scheme-typed `SerialSpec`/`SerialWiring` pair following the same shape as `tcp::client` and `udp::client` — `SerialSpec` carries the device path, baud, optional RTS/CTS, `IdentityFlags`, parent `EndpointId`, name, and `serial_reopen_ms`; `SerialWiring` carries the `frame_tx`, `tx_queue`, `stats`, and cancellation token. No `event_tx` (serial has no children). No `bound_addr_tx` (no socket to bind). RTS/CTS query-key name locked as `?flow_control=rtscts|none`, defaulting to `none` (rejected: `hw`, ambiguous against DTR/DSR; rejected: `?rtscts=true`, doesn't leave room for adding DTR/DSR later without a second key).
+- [x] `serial:` open, baud setting, optional RTS/CTS
+- [x] Hot-replug recovery: on read error or device removal, periodically attempt re-open (mavlink-router does not do this; we should)
+- [x] Manual test plan documented (loopback cable, USB-serial unplug/replug)
 
 ### Phase 5 — routing
 
