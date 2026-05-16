@@ -9,104 +9,24 @@
 
 mod common;
 
-use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::endpoint::{
-    EndpointIdAllocator,
-    events::{EndpointEvent, RouterFrame},
-    udp_server::{self, UdpServerConfig, UdpServerSpec, UdpServerWiring},
-};
-use std::sync::Arc;
+use rmr::endpoint::EndpointIdAllocator;
 
-fn ephemeral_localhost_port() -> u16 {
-    // Bind 127.0.0.1:0, capture the kernel-assigned port, drop. Localhost
-    // test runners essentially never recycle the port before our listener
-    // takes it back.
-    let s = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind probe");
-    let port = s.local_addr().expect("local_addr").port();
-    drop(s);
-    port
-}
-
-async fn drain_first_event(
-    rx: &mut mpsc::Receiver<EndpointEvent>,
-) -> Option<(SocketAddr, rmr::endpoint::tx_queue::TxQueue)> {
-    let ev = timeout(Duration::from_secs(2), rx.recv()).await.ok()??;
-    match ev {
-        EndpointEvent::PeerAdded {
-            peer_addr,
-            tx_queue,
-            ..
-        } => Some((peer_addr, tx_queue)),
-        _ => None,
-    }
-}
+use common::udp::{next_peer_added, shutdown_all, spawn_udps};
 
 #[tokio::test]
 async fn round_trip_between_two_udps_listeners() {
     let allocator = Arc::new(EndpointIdAllocator::new());
     let cancel = CancellationToken::new();
 
-    let port_a = ephemeral_localhost_port();
-    let port_b = ephemeral_localhost_port();
-    let listen_a: SocketAddr = format!("127.0.0.1:{port_a}").parse().unwrap();
-    let listen_b: SocketAddr = format!("127.0.0.1:{port_b}").parse().unwrap();
-    let parent_id_a = allocator.alloc();
-    let parent_id_b = allocator.alloc();
-
-    let (frame_tx_a, mut frame_rx_a) = mpsc::channel::<RouterFrame>(32);
-    let (event_tx_a, mut event_rx_a) = mpsc::channel::<EndpointEvent>(32);
-    let (frame_tx_b, mut frame_rx_b) = mpsc::channel::<RouterFrame>(32);
-    let (event_tx_b, mut event_rx_b) = mpsc::channel::<EndpointEvent>(32);
-
-    let a_task = {
-        let allocator = allocator.clone();
-        let cancel = cancel.clone();
-        tokio::spawn(async move {
-            udp_server::run(
-                UdpServerSpec {
-                    listen_addr: listen_a,
-                    parent_id: parent_id_a,
-                    parent_name: "a".to_string(),
-                    cfg: UdpServerConfig::default(),
-                },
-                UdpServerWiring {
-                    allocator,
-                    frame_tx: frame_tx_a,
-                    event_tx: event_tx_a,
-                    cancel,
-                },
-            )
-            .await
-        })
-    };
-    let b_task = {
-        let allocator = allocator.clone();
-        let cancel = cancel.clone();
-        tokio::spawn(async move {
-            udp_server::run(
-                UdpServerSpec {
-                    listen_addr: listen_b,
-                    parent_id: parent_id_b,
-                    parent_name: "b".to_string(),
-                    cfg: UdpServerConfig::default(),
-                },
-                UdpServerWiring {
-                    allocator,
-                    frame_tx: frame_tx_b,
-                    event_tx: event_tx_b,
-                    cancel,
-                },
-            )
-            .await
-        })
-    };
+    let mut a = spawn_udps(&allocator, cancel.clone(), "a");
+    let mut b = spawn_udps(&allocator, cancel.clone(), "b");
 
     // Two synthetic peers — one talks to A, one talks to B.
     let peer_a = UdpSocket::bind("127.0.0.1:0").await.expect("bind peer_a");
@@ -116,31 +36,27 @@ async fn round_trip_between_two_udps_listeners() {
     // and emit PeerAdded.
     let frame_pa = common::build_v2_heartbeat(0);
     peer_a
-        .send_to(&frame_pa, listen_a)
+        .send_to(&frame_pa, a.listen_addr)
         .await
         .expect("peer_a send_to A");
     peer_b
-        .send_to(&frame_pa, listen_b)
+        .send_to(&frame_pa, b.listen_addr)
         .await
         .expect("peer_b send_to B");
 
     // Collect the announced TxQueues.
-    let (peer_a_addr, peer_a_queue_on_a) = drain_first_event(&mut event_rx_a)
-        .await
-        .expect("A PeerAdded");
-    let (peer_b_addr, peer_b_queue_on_b) = drain_first_event(&mut event_rx_b)
-        .await
-        .expect("B PeerAdded");
+    let (peer_a_addr, peer_a_queue_on_a) = next_peer_added(&mut a.event_rx).await;
+    let (peer_b_addr, peer_b_queue_on_b) = next_peer_added(&mut b.event_rx).await;
     assert_eq!(peer_a_addr, peer_a.local_addr().unwrap());
     assert_eq!(peer_b_addr, peer_b.local_addr().unwrap());
 
     // Drain the initial frame from each listener's frame channel.
-    let f_init_a = timeout(Duration::from_secs(2), frame_rx_a.recv())
+    let f_init_a = timeout(Duration::from_secs(2), a.frame_rx.recv())
         .await
         .expect("init A frame timeout")
         .expect("A frame_rx closed");
     assert_eq!(&f_init_a.frame[..], &frame_pa[..]);
-    let f_init_b = timeout(Duration::from_secs(2), frame_rx_b.recv())
+    let f_init_b = timeout(Duration::from_secs(2), b.frame_rx.recv())
         .await
         .expect("init B frame timeout")
         .expect("B frame_rx closed");
@@ -150,11 +66,11 @@ async fn round_trip_between_two_udps_listeners() {
     // peer_b's TxQueue on B, which causes B to forward it out to peer_b.
     let frame_routed = common::build_v2_heartbeat(7);
     peer_a
-        .send_to(&frame_routed, listen_a)
+        .send_to(&frame_routed, a.listen_addr)
         .await
         .expect("peer_a send_to A (routed)");
 
-    let f_a = timeout(Duration::from_secs(2), frame_rx_a.recv())
+    let f_a = timeout(Duration::from_secs(2), a.frame_rx.recv())
         .await
         .expect("frame from A timeout")
         .expect("A frame_rx closed");
@@ -171,16 +87,16 @@ async fn round_trip_between_two_udps_listeners() {
         .await
         .expect("peer_b recv timeout")
         .expect("peer_b recv_from");
-    assert_eq!(src, listen_b);
+    assert_eq!(src, b.listen_addr);
     assert_eq!(&buf[..n], &frame_routed[..]);
 
     // Symmetric direction: peer_b → B → routed → A → peer_a.
     let frame_routed2 = common::build_v2_heartbeat(11);
     peer_b
-        .send_to(&frame_routed2, listen_b)
+        .send_to(&frame_routed2, b.listen_addr)
         .await
         .expect("peer_b send_to B (routed)");
-    let f_b = timeout(Duration::from_secs(2), frame_rx_b.recv())
+    let f_b = timeout(Duration::from_secs(2), b.frame_rx.recv())
         .await
         .expect("frame from B timeout")
         .expect("B frame_rx closed");
@@ -191,10 +107,8 @@ async fn round_trip_between_two_udps_listeners() {
         .await
         .expect("peer_a recv timeout")
         .expect("peer_a recv_from");
-    assert_eq!(src, listen_a);
+    assert_eq!(src, a.listen_addr);
     assert_eq!(&buf[..n], &frame_routed2[..]);
 
-    cancel.cancel();
-    let _ = timeout(Duration::from_secs(3), a_task).await;
-    let _ = timeout(Duration::from_secs(3), b_task).await;
+    shutdown_all(&cancel, [a.task, b.task]).await;
 }

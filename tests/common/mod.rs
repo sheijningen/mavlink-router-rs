@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+pub mod udp;
+
 use rmr::mavlink::frame::{STX_V1, STX_V2};
 
 /// HEARTBEAT (msgid 0) `crc_extra` — known constant; verified by the runtime
