@@ -25,8 +25,8 @@ async fn round_trip_between_two_udps_listeners() {
     let allocator = Arc::new(EndpointIdAllocator::new());
     let cancel = CancellationToken::new();
 
-    let mut a = spawn_udps(&allocator, cancel.clone(), "a");
-    let mut b = spawn_udps(&allocator, cancel.clone(), "b");
+    let mut a = spawn_udps(&allocator, cancel.clone(), "a").await;
+    let mut b = spawn_udps(&allocator, cancel.clone(), "b").await;
 
     // Two synthetic peers — one talks to A, one talks to B.
     let peer_a = UdpSocket::bind("127.0.0.1:0").await.expect("bind peer_a");

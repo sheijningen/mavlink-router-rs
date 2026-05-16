@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -29,42 +29,51 @@ use rmr::endpoint::{
 /// Tests destructure or borrow these fields to play the router-stub role.
 pub struct UdpsHarness {
     /// Address the listener actually bound to — use as the `send_to` target.
+    /// Filled in by `spawn_udps*` once the OS has assigned a port; bind-retry
+    /// tests that drive the spawn manually rely on `bound_addr_rx` instead.
     pub listen_addr: SocketAddr,
     /// Per-frame stream from the listener (ingress as seen by the router).
     pub frame_rx: mpsc::Receiver<RouterFrame>,
     /// Lifecycle stream announcing learned peers and idle reaps.
     pub event_rx: mpsc::Receiver<EndpointEvent>,
+    /// Resolves on the first successful bind. Already consumed by `spawn_udps*`;
+    /// `spawn_udps_at_with_config` leaves it for the caller (bind-retry tests).
+    pub bound_addr_rx: Option<oneshot::Receiver<SocketAddr>>,
     /// Join handle of the spawned task; await after cancelling.
     pub task: JoinHandle<Result<(), UdpServerError>>,
 }
 
-/// Spawn a `udps:` listener bound to an ephemeral 127.0.0.1 port with default
-/// config. Returns the harness with channels and a task handle.
-pub fn spawn_udps(
+/// Spawn a `udps:` listener with default config bound to `127.0.0.1:0`; the
+/// task picks an OS-assigned port and reports it back via `bound_addr_tx`,
+/// closing the bind-then-drop TOCTOU window the older helper had. Awaits the
+/// first successful bind so the returned harness's `listen_addr` is real.
+pub async fn spawn_udps(
     allocator: &Arc<EndpointIdAllocator>,
     cancel: CancellationToken,
     name: &str,
 ) -> UdpsHarness {
-    spawn_udps_with_config(allocator, cancel, name, UdpServerConfig::default())
+    spawn_udps_with_config(allocator, cancel, name, UdpServerConfig::default()).await
 }
 
 /// Like `spawn_udps` but lets the test override the listener's `UdpServerConfig`
 /// — typically to shorten `idle_secs` for fast idle-reap coverage.
-pub fn spawn_udps_with_config(
+pub async fn spawn_udps_with_config(
     allocator: &Arc<EndpointIdAllocator>,
     cancel: CancellationToken,
     name: &str,
     cfg: UdpServerConfig,
 ) -> UdpsHarness {
-    let port = ephemeral_localhost_port();
-    let listen_addr: SocketAddr = format!("127.0.0.1:{port}")
-        .parse()
-        .expect("parse listen_addr");
-    spawn_udps_at_with_config(allocator, cancel, listen_addr, cfg, name)
+    let listen_addr: SocketAddr = "127.0.0.1:0".parse().expect("parse listen_addr");
+    let mut h = spawn_udps_at_with_config(allocator, cancel, listen_addr, cfg, name);
+    let rx = h.bound_addr_rx.take().expect("bound_addr_rx present");
+    h.listen_addr = rx.await.expect("udps bound_addr_tx dropped");
+    h
 }
 
 /// Like `spawn_udps_with_config` but binds an explicit address — used by the
-/// bind-retry test to target a pre-held port.
+/// bind-retry test to target a pre-held port. Returns immediately with
+/// `bound_addr_rx` pending so the test can drive the bind-retry path before
+/// awaiting the eventual bind.
 pub fn spawn_udps_at_with_config(
     allocator: &Arc<EndpointIdAllocator>,
     cancel: CancellationToken,
@@ -77,6 +86,7 @@ pub fn spawn_udps_at_with_config(
     let allocator = allocator.clone();
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(32);
+    let (bound_tx, bound_rx) = oneshot::channel::<SocketAddr>();
     let task = tokio::spawn(async move {
         udp_server::run(
             UdpServerSpec {
@@ -90,6 +100,7 @@ pub fn spawn_udps_at_with_config(
                 frame_tx,
                 event_tx,
                 cancel,
+                bound_addr_tx: Some(bound_tx),
             },
         )
         .await
@@ -98,6 +109,7 @@ pub fn spawn_udps_at_with_config(
         listen_addr,
         frame_rx,
         event_rx,
+        bound_addr_rx: Some(bound_rx),
         task,
     }
 }
@@ -178,9 +190,3 @@ pub async fn udpc_send_and_capture_source(
     src
 }
 
-fn ephemeral_localhost_port() -> u16 {
-    let s = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind probe");
-    let port = s.local_addr().expect("local_addr").port();
-    drop(s);
-    port
-}

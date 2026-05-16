@@ -46,18 +46,30 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
     };
     let mut h = spawn_udps_at_with_config(&allocator, cancel.clone(), listen_addr, cfg, "udps");
 
-    // Let udps attempt at least a couple of binds. We can't directly observe
-    // the retries (no telemetry hook), but if udps propagated the bind error
-    // the task would have ended; the assertion below catches that — and the
-    // post-free path would never succeed.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        !h.task.is_finished(),
-        "udps task ended early — bind failure should have been retried, not propagated"
-    );
+    // Poll for early task termination without an unconditional sleep — if
+    // udps panicked on the first bind error, the task ends and the assertion
+    // fires immediately; otherwise the loop exits once the deadline passes
+    // with the task still running.
+    let probe_deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    while tokio::time::Instant::now() < probe_deadline {
+        assert!(
+            !h.task.is_finished(),
+            "udps task ended early — bind failure should have been retried, not propagated"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     // Free the port. udps's next backoff iteration (≤ ~250 ms) should bind.
     drop(probe);
+
+    // Wait for the bound-addr oneshot — strictly tighter than the
+    // send-and-poll loop below.
+    let bound_addr_rx = h.bound_addr_rx.take().expect("bound_addr_rx present");
+    let bound_listen_addr = timeout(Duration::from_secs(3), bound_addr_rx)
+        .await
+        .expect("bound_addr_rx timeout")
+        .expect("bound_addr_tx dropped");
+    assert_eq!(bound_listen_addr, listen_addr);
 
     // Drive a frame from a synthetic peer until the listener actually picks
     // up the port. Datagrams sent before the bind completes are silently

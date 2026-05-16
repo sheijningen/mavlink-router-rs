@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior, interval, sleep};
 use tokio_util::sync::CancellationToken;
@@ -106,12 +106,16 @@ pub struct UdpServerSpec {
 
 /// Shared wiring every endpoint needs: the global EndpointId allocator,
 /// the reader→router frame channel, the sub-endpoint lifecycle channel,
-/// and the cancellation token.
+/// and the cancellation token. `bound_addr_tx`, if set, fires once on the
+/// first successful bind with the actual `local_addr()` — lets a caller
+/// that requested `127.0.0.1:0` (test harnesses, future systemd-socket
+/// adoption) discover the OS-assigned port.
 pub struct UdpServerWiring {
     pub allocator: Arc<EndpointIdAllocator>,
     pub frame_tx: mpsc::Sender<RouterFrame>,
     pub event_tx: mpsc::Sender<EndpointEvent>,
     pub cancel: CancellationToken,
+    pub bound_addr_tx: Option<oneshot::Sender<SocketAddr>>,
 }
 
 /// Run a `udps:` listener until the cancellation token fires. Binding is
@@ -138,6 +142,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
         frame_tx,
         event_tx,
         cancel,
+        bound_addr_tx,
     } = wiring;
 
     let mut backoff = Backoff::new(cfg.reconnect_initial_ms, cfg.reconnect_max_ms);
@@ -156,7 +161,11 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
             }
         }
     };
-    info!(%listen_addr, parent_id = %parent_id, "udps listening");
+    let bound_addr = socket.local_addr().unwrap_or(listen_addr);
+    if let Some(tx) = bound_addr_tx {
+        let _ = tx.send(bound_addr);
+    }
+    info!(%bound_addr, parent_id = %parent_id, "udps listening");
 
     let mut peers: HashMap<SocketAddr, PeerEntry> = HashMap::new();
     let mut buf = vec![0u8; MAX_DATAGRAM_BYTES];

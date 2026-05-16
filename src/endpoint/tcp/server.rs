@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
@@ -82,12 +82,16 @@ pub struct TcpServerSpec {
 
 /// Shared wiring every endpoint needs: the global EndpointId allocator,
 /// the reader→router frame channel, the sub-endpoint lifecycle channel,
-/// and the cancellation token.
+/// and the cancellation token. `bound_addr_tx`, if set, fires once on the
+/// first successful bind with the actual `local_addr()` — lets a caller
+/// that requested `127.0.0.1:0` (test harnesses, future systemd-socket
+/// adoption) discover the OS-assigned port.
 pub struct TcpServerWiring {
     pub allocator: Arc<EndpointIdAllocator>,
     pub frame_tx: mpsc::Sender<RouterFrame>,
     pub event_tx: mpsc::Sender<EndpointEvent>,
     pub cancel: CancellationToken,
+    pub bound_addr_tx: Option<oneshot::Sender<SocketAddr>>,
 }
 
 /// Run a `tcps:` listener until the cancellation token fires. Binding is
@@ -112,6 +116,7 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), T
         frame_tx,
         event_tx,
         cancel,
+        mut bound_addr_tx,
     } = wiring;
 
     let mut backoff = Backoff::new(cfg.reconnect_initial_ms, cfg.reconnect_max_ms);
@@ -132,7 +137,11 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), T
             }
         };
         backoff.reset();
-        info!(%listen_addr, parent_id = %parent_id, "tcps listening");
+        let bound_addr = listener.local_addr().unwrap_or(listen_addr);
+        if let Some(tx) = bound_addr_tx.take() {
+            let _ = tx.send(bound_addr);
+        }
+        info!(%bound_addr, parent_id = %parent_id, "tcps listening");
 
         run_accept_loop(
             listener,

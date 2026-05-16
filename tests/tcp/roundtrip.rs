@@ -38,8 +38,8 @@ async fn round_trip_between_two_tcps_listeners() {
     let allocator = Arc::new(EndpointIdAllocator::new());
     let cancel = CancellationToken::new();
 
-    let mut a = spawn_tcps(&allocator, cancel.clone(), "a");
-    let mut b = spawn_tcps(&allocator, cancel.clone(), "b");
+    let mut a = spawn_tcps(&allocator, cancel.clone(), "a").await;
+    let mut b = spawn_tcps(&allocator, cancel.clone(), "b").await;
 
     // Two synthetic peers — raw TcpStreams that connect to A and B respectively.
     let mut peer_a = connect_with_retry(a.listen_addr, CONNECT_DEADLINE).await;
@@ -113,7 +113,7 @@ async fn tcps_handles_multiple_clients_and_per_client_disconnect() {
     let allocator = Arc::new(EndpointIdAllocator::new());
     let cancel = CancellationToken::new();
 
-    let mut a = spawn_tcps(&allocator, cancel.clone(), "a");
+    let mut a = spawn_tcps(&allocator, cancel.clone(), "a").await;
 
     let mut c1 = connect_with_retry(a.listen_addr, CONNECT_DEADLINE).await;
     let mut c2 = connect_with_retry(a.listen_addr, CONNECT_DEADLINE).await;

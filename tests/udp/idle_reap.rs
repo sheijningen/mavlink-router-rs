@@ -32,7 +32,7 @@ async fn udps_reaps_peer_after_idle_secs() {
         idle_secs: 1,
         ..UdpServerConfig::default()
     };
-    let mut a = spawn_udps_with_config(&allocator, cancel.clone(), "a", cfg);
+    let mut a = spawn_udps_with_config(&allocator, cancel.clone(), "a", cfg).await;
 
     // Synthetic peer sends one HEARTBEAT so the listener learns it, then stays
     // silent so the reaper can pick it up.

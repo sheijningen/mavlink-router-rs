@@ -45,18 +45,30 @@ async fn tcps_attaches_when_pre_held_port_is_freed() {
     };
     let mut h = spawn_tcps_at_with_config(&allocator, cancel.clone(), listen_addr, cfg, "tcps");
 
-    // Let tcps attempt at least a couple of binds. We can't directly observe
-    // the retries (no telemetry hook), but if tcps panicked on the first
-    // bind error, the task would have ended; the assertion below catches
-    // that — and the post-free path would never succeed.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        !h.task.is_finished(),
-        "tcps task ended early — bind failure should have been retried, not propagated"
-    );
+    // While the probe holds the port, the bound_addr oneshot stays pending.
+    // Poll for early task termination without an unconditional sleep — if
+    // tcps panicked on the first bind error, the task ends and the assertion
+    // fires immediately; otherwise the loop exits once the deadline passes.
+    let probe_deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    while tokio::time::Instant::now() < probe_deadline {
+        assert!(
+            !h.task.is_finished(),
+            "tcps task ended early — bind failure should have been retried, not propagated"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     // Free the port. tcps's next backoff iteration (≤ ~250 ms) should bind.
     drop(probe);
+
+    // The bound-addr oneshot fires once tcps's retry loop catches the freed
+    // port — strictly tighter than waiting on a frame round-trip below.
+    let bound_addr_rx = h.bound_addr_rx.take().expect("bound_addr_rx present");
+    let bound_listen_addr = timeout(Duration::from_secs(3), bound_addr_rx)
+        .await
+        .expect("bound_addr_rx timeout")
+        .expect("bound_addr_tx dropped");
+    assert_eq!(bound_listen_addr, listen_addr);
 
     // connect_with_retry tolerates the short window before tcps re-binds.
     let mut client = connect_with_retry(listen_addr, Duration::from_secs(3)).await;
