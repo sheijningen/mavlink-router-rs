@@ -12,11 +12,13 @@ pub(crate) struct MsgEntry {
     /// zero-trim ceiling.
     pub min_payload_len: u16,
     /// Payload-relative offset of the `target_system` field if this msgid
-    /// carries one, else `None`.
-    pub target_sys_offset: Option<u16>,
+    /// carries one, else `None`. MAVLink wire payload length is u8 (≤ 255),
+    /// so the offset fits in u8.
+    pub target_sys_offset: Option<u8>,
     /// Payload-relative offset of the `target_component` field if this msgid
-    /// carries one, else `None`.
-    pub target_comp_offset: Option<u16>,
+    /// carries one, else `None`. MAVLink wire payload length is u8 (≤ 255),
+    /// so the offset fits in u8.
+    pub target_comp_offset: Option<u8>,
 }
 
 pub(crate) fn lookup(msgid: u32) -> Option<&'static MsgEntry> {
@@ -134,26 +136,18 @@ mod tests {
         for (id, entry) in SORTED {
             if let Some(off) = entry.target_sys_offset {
                 assert!(
-                    off < entry.min_payload_len,
+                    u16::from(off) < entry.min_payload_len,
                     "msgid {id} ({}): target_sys_offset {off} >= min_payload_len {}",
                     entry.name,
                     entry.min_payload_len
                 );
-                assert!(
-                    off < 256,
-                    "msgid {id} target_sys_offset {off} does not fit in u8"
-                );
             }
             if let Some(off) = entry.target_comp_offset {
                 assert!(
-                    off < entry.min_payload_len,
+                    u16::from(off) < entry.min_payload_len,
                     "msgid {id} ({}): target_comp_offset {off} >= min_payload_len {}",
                     entry.name,
                     entry.min_payload_len
-                );
-                assert!(
-                    off < 256,
-                    "msgid {id} target_comp_offset {off} does not fit in u8"
                 );
             }
         }

@@ -247,7 +247,7 @@ fn extract_targets(
     };
     let payload_start = header.payload_start();
     let payload_len = header.payload_len as usize;
-    let read_at = |off: u16| -> Option<u8> {
+    let read_at = |off: u8| -> Option<u8> {
         let off = off as usize;
         if off < payload_len {
             Some(frame[payload_start + off])

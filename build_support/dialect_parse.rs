@@ -28,8 +28,8 @@ pub(crate) struct MsgEntryGen {
     pub name: String,
     pub crc_extra: u8,
     pub min_payload_len: u16,
-    pub target_sys_offset: Option<u16>,
-    pub target_comp_offset: Option<u16>,
+    pub target_sys_offset: Option<u8>,
+    pub target_comp_offset: Option<u8>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -112,8 +112,8 @@ pub(crate) fn merge_entry(
     msg_name: String,
     crc_extra: u8,
     min_payload_len: u16,
-    target_sys_offset: Option<u16>,
-    target_comp_offset: Option<u16>,
+    target_sys_offset: Option<u8>,
+    target_comp_offset: Option<u8>,
     entries: &mut std::collections::HashMap<u32, MsgEntryGen>,
 ) -> Result<(), MergeError> {
     if let Some(prev) = entries.get(&msg_id) {

@@ -285,7 +285,7 @@ fn parse_field_attrs(e: &BytesStart<'_>) -> (String, String) {
     (type_name, field_name)
 }
 
-fn compute_offsets(fields: &[ParsedField]) -> (u16, Option<u16>, Option<u16>) {
+fn compute_offsets(fields: &[ParsedField]) -> (u16, Option<u8>, Option<u8>) {
     let mut base: Vec<&ParsedField> = fields.iter().filter(|f| !f.is_extension).collect();
     base.sort_by(|a, b| type_size(&b.type_name).cmp(&type_size(&a.type_name)));
 
@@ -294,10 +294,19 @@ fn compute_offsets(fields: &[ParsedField]) -> (u16, Option<u16>, Option<u16>) {
     let mut tcomp = None;
     for f in &base {
         if f.array_length == 0 && f.type_name == "uint8_t" {
+            // MAVLink wire payload length is u8 (max 255), so any valid target
+            // field offset fits in u8. Panic on a malformed dialect that places
+            // it past byte 255 rather than silently truncating.
+            let target_off = u8::try_from(off).unwrap_or_else(|_| {
+                panic!(
+                    "target field '{}' at offset {} exceeds u8 — payload too large",
+                    f.name, off
+                )
+            });
             if f.name == "target_system" {
-                tsys = Some(off);
+                tsys = Some(target_off);
             } else if f.name == "target_component" {
-                tcomp = Some(off);
+                tcomp = Some(target_off);
             }
         }
         let elem = type_size(&f.type_name) as u16;
