@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace, warn};
+use tracing::{Instrument, debug, info, info_span, trace, warn};
 
 use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
@@ -96,6 +96,11 @@ pub struct TcpServerWiring {
 /// listener attaches as soon as the port frees. Each accepted client becomes
 /// its own routing endpoint announced via `event_tx`.
 pub async fn run(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), TcpServerError> {
+    let span = info_span!("tcps", name = %spec.parent_name);
+    run_inner(spec, wiring).instrument(span).await
+}
+
+async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), TcpServerError> {
     let TcpServerSpec {
         listen_addr,
         parent_id,
@@ -222,6 +227,7 @@ async fn accept_one_client(
     let stats = Arc::new(EndpointStats::new());
     let tx_queue = TxQueue::new(cfg.tx_queue_frames, stats.clone());
     let name = peer_endpoint_name(parent_name, peer_addr);
+    let child_span = info_span!("tcps_child", name = %name);
 
     // Announce PeerAdded before spawning the child so the router never sees
     // a RouterFrame for an unknown EndpointId.
@@ -242,18 +248,21 @@ async fn accept_one_client(
     }
     trace!(parent_id = %parent_id, %peer_addr, %child_id, "tcps client accepted");
 
-    children.spawn(run_client_session(
-        stream,
-        peer_addr,
-        parent_id,
-        child_id,
-        stats,
-        frame_tx.clone(),
-        tx_queue,
-        event_tx.clone(),
-        cancel.clone(),
-        cfg.read_buf_bytes,
-    ));
+    children.spawn(
+        run_client_session(
+            stream,
+            peer_addr,
+            parent_id,
+            child_id,
+            stats,
+            frame_tx.clone(),
+            tx_queue,
+            event_tx.clone(),
+            cancel.clone(),
+            cfg.read_buf_bytes,
+        )
+        .instrument(child_span),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior, interval, sleep};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace, warn};
+use tracing::{Instrument, debug, info, info_span, trace, warn};
 
 use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
@@ -122,6 +122,11 @@ pub struct UdpServerWiring {
 /// a sub-routing endpoint announced via `event_tx` with its own TxQueue and
 /// writer task.
 pub async fn run(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), UdpServerError> {
+    let span = info_span!("udps", name = %spec.parent_name);
+    run_inner(spec, wiring).instrument(span).await
+}
+
+async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), UdpServerError> {
     let UdpServerSpec {
         listen_addr,
         parent_id,
@@ -246,14 +251,18 @@ async fn handle_packet(
         let tx_queue = TxQueue::new(ctx.cfg.tx_queue_frames, stats.clone());
         let writer_cancel = ctx.cancel.child_token();
         let name = peer_endpoint_name(ctx.parent_name, src);
+        let writer_span = info_span!("udps_peer", name = %name);
 
-        writer_tasks.spawn(run_peer_writer(
-            ctx.socket.clone(),
-            src,
-            tx_queue.clone(),
-            stats.clone(),
-            writer_cancel.clone(),
-        ));
+        writer_tasks.spawn(
+            run_peer_writer(
+                ctx.socket.clone(),
+                src,
+                tx_queue.clone(),
+                stats.clone(),
+                writer_cancel.clone(),
+            )
+            .instrument(writer_span),
+        );
 
         let entry = PeerEntry {
             child_id,

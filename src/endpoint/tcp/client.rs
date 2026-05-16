@@ -7,7 +7,7 @@ use tokio::net::{TcpStream, lookup_host};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
-use tracing::{trace, warn};
+use tracing::{Instrument, info_span, trace, warn};
 
 use super::super::EndpointId;
 use super::super::backoff::Backoff;
@@ -95,6 +95,11 @@ pub struct TcpClientWiring {
 /// session reads inbound bytes through a fresh `Framer` and writes outbound
 /// frames pulled from the TxQueue.
 pub async fn run(spec: TcpClientSpec, wiring: TcpClientWiring) -> Result<(), TcpClientError> {
+    let span = info_span!("tcpc", name = %spec.name);
+    run_inner(spec, wiring).instrument(span).await
+}
+
+async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) -> Result<(), TcpClientError> {
     let TcpClientSpec {
         host,
         port,

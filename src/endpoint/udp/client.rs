@@ -9,7 +9,7 @@ use tokio::net::{UdpSocket, lookup_host};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace, warn};
+use tracing::{Instrument, debug, info_span, trace, warn};
 
 use super::super::EndpointId;
 use super::super::events::RouterFrame;
@@ -187,6 +187,11 @@ async fn resolve_host(host: &str, port: u16) -> Vec<IpAddr> {
 /// resolution (failure is non-fatal — retried on first send/inbound), then
 /// loops over inbound, the revert tick, the TX queue, and cancellation.
 pub async fn run(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), UdpClientError> {
+    let span = info_span!("udpc", name = %spec.name);
+    run_inner(spec, wiring).instrument(span).await
+}
+
+async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), UdpClientError> {
     let UdpClientSpec {
         host,
         port,
