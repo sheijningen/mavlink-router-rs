@@ -1,3 +1,46 @@
+//! `serial:` endpoint.
+//!
+//! # Manual hardware test plan
+//!
+//! Phase 4 ships unit + pty-pair coverage that runs in CI, but the
+//! USB-serial replug story and the hardware flow-control path cannot be
+//! exercised without real hardware (CLAUDE.md "Serial framer ... where
+//! available; hot-replug behaviour (manual test plan documented in repo if
+//! hardware-only)"). Re-run the procedures below on the integrator's bench
+//! whenever this module's open path, session loop, or `tokio-serial` pin
+//! changes.
+//!
+//! ## 1. Loopback round-trip (USB-serial dongle with TX↔RX jumpered)
+//! 1. Loop pin 2 ↔ pin 3 on a USB-serial dongle (a single jumper or a
+//!    loopback plug). Note the device path (Linux: `/dev/ttyUSB0` or a
+//!    `by-id/` symlink; Windows: `COM3`).
+//! 2. Start rmr: `rmr serial:/dev/ttyUSB0:115200#loop --stats`
+//! 3. Inject a HEARTBEAT into the device with any MAVLink-aware tool (the
+//!    frame echoes back through the jumper).
+//! 4. Expect the `loop` stats line to show `rx_frames` and `tx_frames`
+//!    both incrementing 1:1; `crc_errors` and `resync_bytes` stay at 0.
+//!
+//! ## 2. Hot-replug recovery (USB-serial unplug → replug)
+//! 1. Plug in a USB-serial dongle, start `rmr serial:<path>:115200`.
+//! 2. Physically unplug the dongle.
+//! 3. Expect either a `serial read failed` WARN or a `serial read returned
+//!    EOF (device closed)` DEBUG (the specific signal depends on the
+//!    driver), followed by repeated `serial open failed; retrying after
+//!    serial_reopen_ms` WARNs at the configured cadence (default 1s).
+//! 4. Replug the dongle. Expect the WARNs to stop and a TRACE
+//!    `serial opened` line; counters resume on the next inbound frame. The
+//!    TxQueue's `dropped_tx` reflects any frames buffered during the outage.
+//!
+//! ## 3. Hardware flow-control sanity (RTS/CTS over a full-handshake cable)
+//! 1. Wire two dongles with a 7-wire cable (TX↔RX, RX↔TX, RTS↔CTS, CTS↔RTS,
+//!    GND↔GND).
+//! 2. Start two rmr instances, each `?flow_control=rtscts`.
+//! 3. Saturate one side with frames while pausing the other (`kill -STOP`).
+//! 4. Expect the sender's writes to block (paused side deasserts RTS, sender's
+//!    CTS halts the write) without spinning or erroring; once the TxQueue
+//!    fills, `dropped_tx` increments. Resume the paused side; counters
+//!    drain.
+
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
