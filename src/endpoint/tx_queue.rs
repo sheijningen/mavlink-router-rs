@@ -48,6 +48,19 @@ impl TxQueue {
         self.notify.notified().await;
     }
 
+    /// Block until a frame is available, then return it. Spins through
+    /// `pop`/`wait_for_push` so a writer task can `select!` on
+    /// `queue.pop_or_wait()` without re-implementing the loop in every
+    /// endpoint module.
+    pub async fn pop_or_wait(&self) -> Bytes {
+        loop {
+            if let Some(b) = self.inner.pop() {
+                return b;
+            }
+            self.notify.notified().await;
+        }
+    }
+
     /// Drain everything currently queued and count the drained frames as
     /// `dropped_tx`. Called by the writer before reconnecting so a fresh link
     /// never carries telemetry that aged out during the outage.

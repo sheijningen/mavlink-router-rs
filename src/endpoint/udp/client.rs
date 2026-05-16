@@ -299,19 +299,10 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
                     }
                 }
             }
-            frame = pop_or_wait(&tx_queue) => {
+            frame = tx_queue.pop_or_wait() => {
                 send_frame(&socket, &mut dest, frame, &stats).await;
             }
         }
-    }
-}
-
-async fn pop_or_wait(q: &TxQueue) -> Bytes {
-    loop {
-        if let Some(b) = q.pop() {
-            return b;
-        }
-        q.wait_for_push().await;
     }
 }
 

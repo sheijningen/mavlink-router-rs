@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -85,7 +84,7 @@ pub async fn run_session(
                     }
                 }
             }
-            frame = pop_or_wait(tx_queue) => {
+            frame = tx_queue.pop_or_wait() => {
                 if let Err(e) = wh.write_all(&frame).await {
                     warn!(error = %e, "tcp write failed");
                     return SessionOutcome::Disconnected;
@@ -93,15 +92,6 @@ pub async fn run_session(
                 stats.add_tx_frame(frame.len());
             }
         }
-    }
-}
-
-async fn pop_or_wait(q: &TxQueue) -> Bytes {
-    loop {
-        if let Some(b) = q.pop() {
-            return b;
-        }
-        q.wait_for_push().await;
     }
 }
 

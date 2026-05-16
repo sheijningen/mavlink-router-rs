@@ -455,7 +455,7 @@ async fn run_peer_writer(
                 queue.drain_and_discard();
                 return;
             }
-            frame = pop_or_wait(&queue) => {
+            frame = queue.pop_or_wait() => {
                 match socket.send_to(&frame, peer_addr).await {
                     Ok(n) => stats.add_tx_frame(n),
                     Err(e) => {
@@ -464,15 +464,6 @@ async fn run_peer_writer(
                 }
             }
         }
-    }
-}
-
-async fn pop_or_wait(q: &TxQueue) -> bytes::Bytes {
-    loop {
-        if let Some(b) = q.pop() {
-            return b;
-        }
-        q.wait_for_push().await;
     }
 }
 

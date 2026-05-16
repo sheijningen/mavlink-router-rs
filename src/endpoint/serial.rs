@@ -45,7 +45,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use bytes::Bytes;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -353,7 +352,7 @@ pub async fn run_session(
                     }
                 }
             }
-            frame = pop_or_wait(tx_queue) => {
+            frame = tx_queue.pop_or_wait() => {
                 if let Err(e) = wh.write_all(&frame).await {
                     warn!(error = %e, "serial write failed");
                     return SessionOutcome::Disconnected;
@@ -361,15 +360,6 @@ pub async fn run_session(
                 stats.add_tx_frame(frame.len());
             }
         }
-    }
-}
-
-async fn pop_or_wait(q: &TxQueue) -> Bytes {
-    loop {
-        if let Some(b) = q.pop() {
-            return b;
-        }
-        q.wait_for_push().await;
     }
 }
 
@@ -400,6 +390,7 @@ mod tests {
     use super::*;
     use crate::endpoint::EndpointIdAllocator;
     use crate::endpoint::spec::{CommonQuery, SerialEndpoint};
+    use bytes::Bytes;
     use std::time::Duration;
     use tokio::time::timeout;
 
