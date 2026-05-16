@@ -11,7 +11,7 @@ use super::stats::EndpointStats;
 /// frames as `Bytes` clones; the writer task pops in a loop and awaits
 /// `wait_for_push` when empty. Each push that displaces an older entry
 /// increments `dropped_tx` on the shared stats.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TxQueue {
     inner: Arc<ArrayQueue<Bytes>>,
     notify: Arc<Notify>,
