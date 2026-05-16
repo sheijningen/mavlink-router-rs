@@ -87,7 +87,7 @@ Lifecycle:
 
 | Scheme       | Description                          | Notes                                          |
 |--------------|--------------------------------------|------------------------------------------------|
-| `serial:`    | UART, form `path:baud` or `path,baud` | Hardware flow control, hot-replug recovery, optional multi-baud autodetect |
+| `serial:`    | UART, form `path:baud` or `path,baud` | Hardware flow control, hot-replug recovery |
 | `udps:`      | UDP server (bind, learn peers)       | Multiple peers per socket; idle-reap peers. Dual-stack on `[::]` (forced `IPV6_V6ONLY=0` on Windows + Linux for parity). `SO_REUSEADDR` on (no TIME_WAIT delay on restart); `SO_REUSEPORT` off. |
 | `udpc:`      | UDP client (initial send to configured remote, then latch onto reply source) | First sends go to the configured `host:port`. On the first inbound packet **whose source IP matches the resolved configured host** (port may differ — handles ephemeral-port GCSes), destination is updated to that packet's `(ip, port)`. Packets from any other source IP are dropped at the socket and counted. If the latched peer is silent for `?latch_idle_secs=N` (default 30s), the router re-resolves DNS and reverts to the configured `host:port`. |
 | `tcps:`      | TCP server (listen, accept many)     | Each accepted client is its own logical endpoint (own learn-set, own stats). `SO_KEEPALIVE` on (OS defaults). Dual-stack on `[::]`. `SO_REUSEADDR` on (no TIME_WAIT delay on restart); `SO_REUSEPORT` off. |
@@ -332,7 +332,6 @@ Each phase ends in a usable binary. Don't skip ahead; each phase exposes integra
 - [ ] **`tokio-serial` dep + `SerialSpec`/`SerialWiring` contract.** Add `tokio-serial` to `[dependencies]` (version pin chosen at commit time). Define the scheme-typed `SerialSpec`/`SerialWiring` pair following the same shape as `tcp::client` and `udp::client` — `SerialSpec` carries the device path, baud, optional RTS/CTS, `IdentityFlags`, parent `EndpointId`, name, and `serial_reopen_ms`; `SerialWiring` carries the `frame_tx`, `tx_queue`, `stats`, and cancellation token. No `event_tx` (serial has no children). No `bound_addr_tx` (no socket to bind). RTS/CTS query-key name locked as `?flow_control=rtscts|none`, defaulting to `none` (rejected: `hw`, ambiguous against DTR/DSR; rejected: `?rtscts=true`, doesn't leave room for adding DTR/DSR later without a second key).
 - [ ] `serial:` open, baud setting, optional RTS/CTS
 - [ ] Hot-replug recovery: on read error or device removal, periodically attempt re-open (mavlink-router does not do this; we should)
-- [ ] Optional multi-baud autodetect (cycle through a list until a valid frame arrives)
 - [ ] Manual test plan documented (loopback cable, USB-serial unplug/replug)
 
 ### Phase 5 — routing
