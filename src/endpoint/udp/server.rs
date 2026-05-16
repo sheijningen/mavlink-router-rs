@@ -13,7 +13,7 @@ use tracing::{Instrument, debug, info, info_span, trace, warn};
 
 use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
-use super::super::backoff::Backoff;
+use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
     DEFAULT_TX_QUEUE_FRAMES,
@@ -25,7 +25,6 @@ use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpServerEndpoint;
 use super::super::stats::{EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
-use super::super::wait_or_cancel;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_IDLE_SECS: u64 = 60;
@@ -157,19 +156,13 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
 
     let mut backoff = Backoff::new(cfg.reconnect_initial_ms, cfg.reconnect_max_ms);
 
-    let socket = loop {
-        if cancel.is_cancelled() {
-            return Ok(());
-        }
-        match bind_udp_dual_stack(listen_addr) {
-            Ok(s) => break Arc::new(s),
-            Err(e) => {
-                warn!(error = %e, %listen_addr, "udps bind failed; retrying after backoff");
-                if !wait_or_cancel(&cancel, backoff.next_delay()).await {
-                    return Ok(());
-                }
-            }
-        }
+    let socket = match bind_with_backoff(&cancel, &mut backoff, "udps", listen_addr, || {
+        bind_udp_dual_stack(listen_addr)
+    })
+    .await
+    {
+        BindOutcome::Bound(s) => Arc::new(s),
+        BindOutcome::Cancelled => return Ok(()),
     };
     let bound_addr = socket.local_addr().unwrap_or(listen_addr);
     if let Some(tx) = bound_addr_tx {

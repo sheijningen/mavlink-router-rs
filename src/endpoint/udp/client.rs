@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info_span, trace, warn};
 
 use super::super::EndpointId;
-use super::super::backoff::Backoff;
+use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
     DEFAULT_TX_QUEUE_FRAMES,
@@ -23,7 +23,6 @@ use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
 use super::super::stats::{EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
-use super::super::wait_or_cancel;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_LATCH_IDLE_SECS: u64 = 30;
@@ -243,19 +242,13 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
 
     let mut backoff = Backoff::new(cfg.reconnect_initial_ms, cfg.reconnect_max_ms);
     let local_bind = pick_local_bind(&dest.resolved_ips);
-    let socket = loop {
-        if cancel.is_cancelled() {
-            return Ok(());
-        }
-        match bind_udp_dual_stack(local_bind) {
-            Ok(s) => break s,
-            Err(e) => {
-                warn!(error = %e, %local_bind, "udpc local bind failed; retrying after backoff");
-                if !wait_or_cancel(&cancel, backoff.next_delay()).await {
-                    return Ok(());
-                }
-            }
-        }
+    let socket = match bind_with_backoff(&cancel, &mut backoff, "udpc local", local_bind, || {
+        bind_udp_dual_stack(local_bind)
+    })
+    .await
+    {
+        BindOutcome::Bound(s) => s,
+        BindOutcome::Cancelled => return Ok(()),
     };
 
     let mut framer = Framer::with_capacity(cfg.read_buf_bytes);

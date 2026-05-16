@@ -10,7 +10,7 @@ use tracing::{Instrument, debug, info, info_span, trace, warn};
 
 use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
-use super::super::backoff::Backoff;
+use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
     DEFAULT_TX_QUEUE_FRAMES,
@@ -23,7 +23,6 @@ use super::super::socket::{bind_tcp_dual_stack, configure_tcp_stream};
 use super::super::spec::TcpServerEndpoint;
 use super::super::stats::EndpointStats;
 use super::super::tx_queue::TxQueue;
-use super::super::wait_or_cancel;
 
 /// Per-listener runtime configuration. The spec parser hands us a fully-typed
 /// `TcpServerEndpoint`; this struct collapses the optional knobs down to the
@@ -127,21 +126,14 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), T
     let mut backoff = Backoff::new(cfg.reconnect_initial_ms, cfg.reconnect_max_ms);
 
     loop {
-        if cancel.is_cancelled() {
-            return Ok(());
-        }
-
-        let listener = match bind_tcp_dual_stack(listen_addr) {
-            Ok(l) => l,
-            Err(e) => {
-                warn!(error = %e, %listen_addr, "tcps bind failed; retrying after backoff");
-                if !wait_or_cancel(&cancel, backoff.next_delay()).await {
-                    return Ok(());
-                }
-                continue;
-            }
+        let listener = match bind_with_backoff(&cancel, &mut backoff, "tcps", listen_addr, || {
+            bind_tcp_dual_stack(listen_addr)
+        })
+        .await
+        {
+            BindOutcome::Bound(l) => l,
+            BindOutcome::Cancelled => return Ok(()),
         };
-        backoff.reset();
         let bound_addr = listener.local_addr().unwrap_or(listen_addr);
         if let Some(tx) = bound_addr_tx.take() {
             let _ = tx.send(bound_addr);

@@ -1,4 +1,10 @@
+use std::fmt::Display;
 use std::time::Duration;
+
+use tokio_util::sync::CancellationToken;
+use tracing::warn;
+
+use super::wait_or_cancel;
 
 /// Capped-exponential reconnect backoff with ±20% jitter, shared by `tcpc:`
 /// reconnect attempts and `tcps:` initial-bind retries
@@ -8,6 +14,52 @@ pub struct Backoff {
     max: Duration,
     current: Duration,
     rng: Xorshift,
+}
+
+/// Outcome of [`bind_with_backoff`]. `Bound` carries the successfully-opened
+/// resource (socket, listener); `Cancelled` means the cancel token tripped
+/// while waiting or before the next attempt — the caller should unwind
+/// without attempting further work.
+pub enum BindOutcome<T> {
+    Bound(T),
+    Cancelled,
+}
+
+/// Drive a fallible bind/open through `Backoff`'s capped-exponential curve
+/// until it succeeds or the cancel token trips. On each failure, logs at
+/// WARN with `<label> bind failed; retrying after backoff` and the formatted
+/// `addr` for context, then sleeps `backoff.next_delay()` against the cancel
+/// token. Resets the backoff on first success so the next failure starts at
+/// the floor again. Used by `tcps:` / `udps:` / `udpc:` to share one bind-
+/// retry shape (CLAUDE.md "Bind/open failure at startup is not fatal").
+pub async fn bind_with_backoff<T, E, F>(
+    cancel: &CancellationToken,
+    backoff: &mut Backoff,
+    label: &str,
+    addr: impl Display,
+    mut bind_fn: F,
+) -> BindOutcome<T>
+where
+    F: FnMut() -> Result<T, E>,
+    E: Display,
+{
+    loop {
+        if cancel.is_cancelled() {
+            return BindOutcome::Cancelled;
+        }
+        match bind_fn() {
+            Ok(t) => {
+                backoff.reset();
+                return BindOutcome::Bound(t);
+            }
+            Err(e) => {
+                warn!(error = %e, addr = %addr, "{label} bind failed; retrying after backoff");
+                if !wait_or_cancel(cancel, backoff.next_delay()).await {
+                    return BindOutcome::Cancelled;
+                }
+            }
+        }
+    }
 }
 
 impl Backoff {
