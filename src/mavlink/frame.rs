@@ -73,8 +73,4 @@ impl ParsedHeader {
             Version::V2 => V2_HEADER_LEN,
         }
     }
-
-    pub fn is_signed(&self) -> bool {
-        self.version == Version::V2 && (self.incompat_flags & V2_IFLAG_SIGNED) != 0
-    }
 }

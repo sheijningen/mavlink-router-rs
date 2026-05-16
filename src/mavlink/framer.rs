@@ -268,6 +268,14 @@ mod tests {
     use crate::mavlink::msgid_table;
     use bytes::BufMut;
 
+    // Test-only predicate: production code never asks whether a frame is
+    // signed (CLAUDE.md "MAVLink v2 signing: pass-through only").
+    impl ParsedHeader {
+        fn is_signed(&self) -> bool {
+            self.version == Version::V2 && (self.incompat_flags & V2_IFLAG_SIGNED) != 0
+        }
+    }
+
     fn build_v1(msgid: u32, payload: &[u8], crc_extra: u8) -> Vec<u8> {
         let mut frame = Vec::with_capacity(8 + payload.len());
         frame.push(STX_V1);

@@ -6,8 +6,12 @@ mod common;
 
 use bytes::BufMut;
 use common::mavlink::{Heartbeat, MavPayload, Ping, SysStatus, TestFrame};
-use rmr::mavlink::frame::Version;
+use rmr::mavlink::frame::{ParsedHeader, V2_IFLAG_SIGNED, Version};
 use rmr::mavlink::framer::Framer;
+
+fn is_signed(h: &ParsedHeader) -> bool {
+    h.version == Version::V2 && (h.incompat_flags & V2_IFLAG_SIGNED) != 0
+}
 
 #[test]
 fn capture_replay_mixed_frames_in_chunks() {
@@ -110,7 +114,7 @@ fn capture_replay_mixed_frames_in_chunks() {
     assert_eq!(h.version, Version::V2);
     assert_eq!(h.msgid, SysStatus::MSGID);
     assert_eq!(h.payload_len, 31);
-    assert!(!h.is_signed());
+    assert!(!is_signed(h));
     assert_eq!(h.target_system, None);
     assert_eq!(&b[..], &f2[..]);
 
@@ -132,7 +136,7 @@ fn capture_replay_mixed_frames_in_chunks() {
 
     // 5. Signed v2 HEARTBEAT — signature trailer at the tail, byte-for-byte.
     let (h, b) = &parsed[4];
-    assert!(h.is_signed());
+    assert!(is_signed(h));
     assert_eq!(h.msgid, Heartbeat::MSGID);
     assert_eq!(&b[..], &f5[..]);
     assert_eq!(&b[b.len() - sig.len()..], &sig[..]);
