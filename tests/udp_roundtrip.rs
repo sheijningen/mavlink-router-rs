@@ -18,7 +18,8 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::EndpointIdAllocator;
 
-use common::udp::{next_peer_added, shutdown_all, spawn_udps};
+use common::udp::spawn_udps;
+use common::{next_peer_added, shutdown_all};
 
 #[tokio::test]
 async fn round_trip_between_two_udps_listeners() {

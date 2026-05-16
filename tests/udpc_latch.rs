@@ -22,7 +22,8 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::{EndpointIdAllocator, udp_client::UdpClientConfig};
 
-use common::udp::{shutdown_all, spawn_udpc, udpc_send_and_capture_source};
+use common::shutdown_all;
+use common::udp::{spawn_udpc, udpc_send_and_capture_source};
 
 #[tokio::test]
 async fn udpc_latches_onto_ephemeral_reply_port() {

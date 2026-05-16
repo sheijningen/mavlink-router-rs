@@ -19,7 +19,8 @@ use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::{EndpointEvent, PeerRemovalReason};
 use rmr::endpoint::udp_server::UdpServerConfig;
 
-use common::udp::{next_peer_added, shutdown_all, spawn_udps_with_config};
+use common::udp::spawn_udps_with_config;
+use common::{next_peer_added, shutdown_all};
 
 #[tokio::test]
 async fn udps_reaps_peer_after_idle_secs() {

@@ -86,23 +86,6 @@ pub fn spawn_udps_with_config(
     }
 }
 
-/// Await the next `PeerAdded` event on the given channel, panicking with a
-/// descriptive message on timeout, channel close, or wrong event type.
-pub async fn next_peer_added(rx: &mut mpsc::Receiver<EndpointEvent>) -> (SocketAddr, TxQueue) {
-    let ev = timeout(Duration::from_secs(2), rx.recv())
-        .await
-        .expect("event_rx timeout waiting for PeerAdded")
-        .expect("event_rx closed before PeerAdded");
-    match ev {
-        EndpointEvent::PeerAdded {
-            peer_addr,
-            tx_queue,
-            ..
-        } => (peer_addr, tx_queue),
-        other => panic!("expected PeerAdded, got {other:?}"),
-    }
-}
-
 /// Bundle of channels and the join handle for a spawned `udpc:` client task.
 /// Tests destructure or borrow these fields to play the router-stub role.
 pub struct UdpcHarness {
@@ -177,18 +160,6 @@ pub async fn udpc_send_and_capture_source(
         "udpc frame bytes mismatch at configured peer"
     );
     src
-}
-
-/// Trigger cancellation and await every harness task with a 3s timeout each.
-/// Mirrors the per-task drain budget the production tasks honour.
-pub async fn shutdown_all<I, T>(cancel: &CancellationToken, tasks: I)
-where
-    I: IntoIterator<Item = JoinHandle<T>>,
-{
-    cancel.cancel();
-    for task in tasks {
-        let _ = timeout(Duration::from_secs(3), task).await;
-    }
 }
 
 fn ephemeral_localhost_port() -> u16 {
