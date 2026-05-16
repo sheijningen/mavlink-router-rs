@@ -15,7 +15,7 @@ use bytes::Bytes;
 use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::RouterFrame;
 use rmr::endpoint::identity_flags::IdentityFlags;
-use rmr::endpoint::serial::{SerialConfig, SerialSpec, SerialWiring, run};
+use rmr::endpoint::serial::{SerialSpec, SerialWiring, run};
 use rmr::endpoint::session::{SessionOutcome, run_session};
 use rmr::endpoint::spec::SerialFlowControl;
 use rmr::endpoint::stats::EndpointStats;
@@ -45,10 +45,9 @@ async fn run_returns_when_cancelled_while_open_retrying() {
         flow_control: SerialFlowControl::None,
         endpoint_id,
         name: "test-serial".to_string(),
-        cfg: SerialConfig {
-            serial_reopen_ms: 1000,
-            ..SerialConfig::default()
-        },
+        serial_reopen_ms: 1000,
+        read_buf_bytes: 8192,
+        tx_queue_frames: 256,
         identity: IdentityFlags::default(),
     };
     let wiring = SerialWiring {

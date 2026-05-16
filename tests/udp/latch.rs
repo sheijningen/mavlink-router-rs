@@ -18,7 +18,7 @@ use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::endpoint::{EndpointIdAllocator, udp::client::UdpClientConfig};
+use rmr::endpoint::{EndpointIdAllocator, spec::UdpClientEndpoint};
 
 use crate::common;
 use crate::common::shutdown_all;
@@ -39,7 +39,7 @@ async fn udpc_latches_onto_ephemeral_reply_port() {
         &allocator,
         cancel.clone(),
         configured_addr,
-        UdpClientConfig::default(),
+        UdpClientEndpoint::default(),
         "gcs",
     );
 
@@ -99,12 +99,12 @@ async fn udpc_reverts_to_configured_after_latch_idle() {
     let configured_addr = configured.local_addr().expect("local_addr");
 
     // Short latch_idle_secs so the test doesn't have to wait 30s.
-    let cfg = UdpClientConfig {
-        latch_idle_secs: 1,
-        ..UdpClientConfig::default()
+    let endpoint = UdpClientEndpoint {
+        latch_idle_secs: Some(1),
+        ..UdpClientEndpoint::default()
     };
 
-    let mut h = spawn_udpc(&allocator, cancel.clone(), configured_addr, cfg, "gcs");
+    let mut h = spawn_udpc(&allocator, cancel.clone(), configured_addr, endpoint, "gcs");
 
     // Step 1: send first outbound, learn udpc's source.
     let f0 = common::build_v2_heartbeat(0);

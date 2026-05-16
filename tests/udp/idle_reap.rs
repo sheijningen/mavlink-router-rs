@@ -15,10 +15,10 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::{EndpointEvent, PeerRemovalReason};
-use rmr::endpoint::udp::server::UdpServerConfig;
+use rmr::endpoint::spec::UdpServerEndpoint;
 
 use crate::common;
-use crate::common::udp::spawn_udps_with_config;
+use crate::common::udp::spawn_udps_with_endpoint;
 use crate::common::{next_peer_added, shutdown_all};
 
 #[tokio::test]
@@ -28,11 +28,11 @@ async fn udps_reaps_peer_after_idle_secs() {
 
     // idle_secs = 1 + reap interval = 1s → reap fires ~2s after the peer is
     // last seen. Bound the overall test at ~5s.
-    let cfg = UdpServerConfig {
-        idle_secs: 1,
-        ..UdpServerConfig::default()
+    let endpoint = UdpServerEndpoint {
+        idle_secs: Some(1),
+        ..UdpServerEndpoint::default()
     };
-    let mut a = spawn_udps_with_config(&allocator, cancel.clone(), "a", cfg).await;
+    let mut a = spawn_udps_with_endpoint(&allocator, cancel.clone(), "a", endpoint).await;
 
     // Synthetic peer sends one HEARTBEAT so the listener learns it, then stays
     // silent so the reaper can pick it up.

@@ -24,43 +24,6 @@ use super::super::spec::TcpServerEndpoint;
 use super::super::stats::EndpointStats;
 use super::super::tx_queue::TxQueue;
 
-/// Per-listener runtime configuration. The spec parser hands us a fully-typed
-/// `TcpServerEndpoint`; this struct collapses the optional knobs down to the
-/// concrete values the task actually uses, substituting CLAUDE.md defaults
-/// where the user left a knob unset. The `reconnect_*_ms` fields are
-/// hard-coded to the `tcpc:` curve (CLAUDE.md: "TCP/UDP server bind reuses
-/// the `tcpc:` backoff curve") — `tcps:` does not expose per-listener
-/// reconnect overrides in v1.
-#[derive(Debug, Clone, Copy)]
-pub struct TcpServerConfig {
-    pub read_buf_bytes: usize,
-    pub tx_queue_frames: usize,
-    pub reconnect_initial_ms: u64,
-    pub reconnect_max_ms: u64,
-}
-
-impl Default for TcpServerConfig {
-    fn default() -> Self {
-        Self {
-            read_buf_bytes: DEFAULT_READ_BUF_BYTES,
-            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
-            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
-            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
-        }
-    }
-}
-
-impl TcpServerConfig {
-    pub fn from_endpoint(ep: &TcpServerEndpoint) -> Self {
-        Self {
-            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
-            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
-            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
-            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
-        }
-    }
-}
-
 /// Typed-empty return for `tcps:` `run()`. Bind failures enter the same
 /// backoff loop as `tcpc:` reconnects, accept errors are logged and the loop
 /// continues, and per-child disconnects are routine — no terminal failure
@@ -70,17 +33,48 @@ impl TcpServerConfig {
 pub enum TcpServerError {}
 
 /// Inputs that distinguish one `tcps:` listener from another: where to bind,
-/// what to call it, and the per-listener knobs from the query string.
-/// `identity` carries the filter / sniffer / group / capacity bundle —
-/// inherited by every accepted child at admission time (CLAUDE.md "Sub-
-/// endpoints inherit their parent's `IdentityFlags` by clone at spawn
-/// time"). Unused until Phase 5 wires it through the reader and the router.
+/// what to call it, and the per-listener knobs from the query string with
+/// CLAUDE.md defaults already substituted. The `reconnect_*_ms` fields are
+/// always the `tcpc:` curve (CLAUDE.md: "TCP/UDP server bind reuses the
+/// `tcpc:` backoff curve") — `tcps:` does not expose per-listener reconnect
+/// overrides in v1. `identity` carries the filter / sniffer / group /
+/// capacity bundle — inherited by every accepted child at admission time
+/// (CLAUDE.md "Sub-endpoints inherit their parent's `IdentityFlags` by clone
+/// at spawn time"). Unused until Phase 5 wires it through the reader and
+/// the router.
 pub struct TcpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,
     pub parent_name: String,
-    pub cfg: TcpServerConfig,
+    pub read_buf_bytes: usize,
+    pub tx_queue_frames: usize,
+    pub reconnect_initial_ms: u64,
+    pub reconnect_max_ms: u64,
     pub identity: IdentityFlags,
+}
+
+impl TcpServerSpec {
+    /// Build a runtime `TcpServerSpec` from the parsed-but-not-defaulted
+    /// `TcpServerEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
+    /// defaults for any unset knob. The spawner supplies `parent_id` and
+    /// `parent_name` because the parser doesn't allocate IDs.
+    pub fn from_endpoint(
+        ep: TcpServerEndpoint,
+        listen_addr: SocketAddr,
+        parent_id: EndpointId,
+        parent_name: String,
+    ) -> Self {
+        Self {
+            listen_addr,
+            parent_id,
+            parent_name,
+            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
+            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
+            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
+            identity: ep.identity,
+        }
+    }
 }
 
 /// Shared wiring every endpoint needs: the global EndpointId allocator,
@@ -112,7 +106,10 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), T
         listen_addr,
         parent_id,
         parent_name,
-        cfg,
+        read_buf_bytes,
+        tx_queue_frames,
+        reconnect_initial_ms,
+        reconnect_max_ms,
         identity,
     } = spec;
     let TcpServerWiring {
@@ -123,7 +120,7 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), T
         mut bound_addr_tx,
     } = wiring;
 
-    let mut backoff = Backoff::new(cfg.reconnect_initial_ms, cfg.reconnect_max_ms);
+    let mut backoff = Backoff::new(reconnect_initial_ms, reconnect_max_ms);
 
     loop {
         let listener = match bind_with_backoff(&cancel, &mut backoff, "tcps", listen_addr, || {
@@ -144,7 +141,8 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), T
             listener,
             parent_id,
             &parent_name,
-            &cfg,
+            read_buf_bytes,
+            tx_queue_frames,
             &identity,
             &allocator,
             &frame_tx,
@@ -166,7 +164,8 @@ async fn run_accept_loop(
     listener: TcpListener,
     parent_id: EndpointId,
     parent_name: &str,
-    cfg: &TcpServerConfig,
+    read_buf_bytes: usize,
+    tx_queue_frames: usize,
     identity: &IdentityFlags,
     allocator: &Arc<EndpointIdAllocator>,
     frame_tx: &mpsc::Sender<RouterFrame>,
@@ -187,7 +186,8 @@ async fn run_accept_loop(
                             peer_addr,
                             parent_id,
                             parent_name,
-                            cfg,
+                            read_buf_bytes,
+                            tx_queue_frames,
                             identity,
                             allocator,
                             frame_tx,
@@ -221,7 +221,8 @@ async fn accept_one_client(
     peer_addr: SocketAddr,
     parent_id: EndpointId,
     parent_name: &str,
-    cfg: &TcpServerConfig,
+    read_buf_bytes: usize,
+    tx_queue_frames: usize,
     identity: &IdentityFlags,
     allocator: &Arc<EndpointIdAllocator>,
     frame_tx: &mpsc::Sender<RouterFrame>,
@@ -235,7 +236,7 @@ async fn accept_one_client(
 
     let child_id = allocator.alloc();
     let stats = Arc::new(EndpointStats::default());
-    let tx_queue = TxQueue::new(cfg.tx_queue_frames, stats.clone());
+    let tx_queue = TxQueue::new(tx_queue_frames, stats.clone());
     let name = peer_endpoint_name(parent_name, peer_addr);
     let child_span = info_span!("tcps_child", name = %name);
 
@@ -272,7 +273,7 @@ async fn accept_one_client(
             tx_queue,
             event_tx.clone(),
             cancel.clone(),
-            cfg.read_buf_bytes,
+            read_buf_bytes,
         )
         .instrument(child_span),
     );
@@ -325,18 +326,23 @@ async fn run_client_session(
 mod tests {
     use super::*;
 
-    #[test]
-    fn config_defaults_when_endpoint_unset() {
-        let ep = TcpServerEndpoint::default();
-        let cfg = TcpServerConfig::from_endpoint(&ep);
-        assert_eq!(cfg.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
-        assert_eq!(cfg.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
-        assert_eq!(cfg.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
-        assert_eq!(cfg.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
+    fn dummy_listen_addr() -> SocketAddr {
+        use std::net::{IpAddr, Ipv4Addr};
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)
     }
 
     #[test]
-    fn config_overrides_common_fields() {
+    fn spec_defaults_when_endpoint_unset() {
+        let ep = TcpServerEndpoint::default();
+        let spec = TcpServerSpec::from_endpoint(ep, dummy_listen_addr(), EndpointId(0), "n".into());
+        assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
+        assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
+        assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
+        assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
+    }
+
+    #[test]
+    fn spec_overrides_common_fields() {
         use crate::endpoint::spec::CommonQuery;
         let ep = TcpServerEndpoint {
             common: CommonQuery {
@@ -345,13 +351,13 @@ mod tests {
             },
             ..TcpServerEndpoint::default()
         };
-        let cfg = TcpServerConfig::from_endpoint(&ep);
-        assert_eq!(cfg.read_buf_bytes, 1024);
-        assert_eq!(cfg.tx_queue_frames, 8);
+        let spec = TcpServerSpec::from_endpoint(ep, dummy_listen_addr(), EndpointId(0), "n".into());
+        assert_eq!(spec.read_buf_bytes, 1024);
+        assert_eq!(spec.tx_queue_frames, 8);
         // Reconnect curve stays at the tcpc defaults — CLAUDE.md "TCP/UDP
         // server bind reuses the `tcpc:` backoff curve" and tcps does not
         // expose per-endpoint reconnect overrides in v1.
-        assert_eq!(cfg.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
-        assert_eq!(cfg.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
+        assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
+        assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     }
 }

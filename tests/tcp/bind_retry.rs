@@ -16,12 +16,12 @@ use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::endpoint::{EndpointIdAllocator, tcp::server::TcpServerConfig};
+use rmr::endpoint::{EndpointIdAllocator, spec::TcpServerEndpoint, tcp::server::TcpServerSpec};
 
 use crate::common;
 use crate::common::next_peer_added;
 use crate::common::shutdown_all;
-use crate::common::tcp::{connect_with_retry, spawn_tcps_at_with_config};
+use crate::common::tcp::{connect_with_retry, spawn_tcps_with_spec};
 
 #[tokio::test]
 async fn tcps_attaches_when_pre_held_port_is_freed() {
@@ -37,13 +37,20 @@ async fn tcps_attaches_when_pre_held_port_is_freed() {
     let listen_addr: std::net::SocketAddr =
         format!("127.0.0.1:{port}").parse().expect("parse addr");
 
-    // Short backoff so we don't have to wait long for tcps to attach.
-    let cfg = TcpServerConfig {
-        reconnect_initial_ms: 50,
-        reconnect_max_ms: 250,
-        ..TcpServerConfig::default()
-    };
-    let mut h = spawn_tcps_at_with_config(&allocator, cancel.clone(), listen_addr, cfg, "tcps");
+    // Short backoff so we don't have to wait long for tcps to attach. The
+    // reconnect curve isn't exposed as a `*Endpoint` query knob (CLAUDE.md
+    // "TCP/UDP server bind reuses the `tcpc:` backoff curve, no per-listener
+    // override"), so we build the Spec from defaults then mutate.
+    let parent_id = allocator.alloc();
+    let mut spec = TcpServerSpec::from_endpoint(
+        TcpServerEndpoint::default(),
+        listen_addr,
+        parent_id,
+        "tcps".to_string(),
+    );
+    spec.reconnect_initial_ms = 50;
+    spec.reconnect_max_ms = 250;
+    let mut h = spawn_tcps_with_spec(&allocator, cancel.clone(), spec);
 
     // While the probe holds the port, the bound_addr oneshot stays pending.
     // Poll for early task termination without an unconditional sleep — if

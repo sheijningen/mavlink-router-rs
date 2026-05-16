@@ -14,14 +14,10 @@ use tokio_util::sync::CancellationToken;
 use rmr::endpoint::{
     EndpointIdAllocator,
     events::{EndpointEvent, RouterFrame},
-    identity_flags::IdentityFlags,
+    spec::{TcpClientEndpoint, TcpServerEndpoint},
     stats::EndpointStats,
-    tcp::client::{
-        self as tcp_client, TcpClientConfig, TcpClientError, TcpClientSpec, TcpClientWiring,
-    },
-    tcp::server::{
-        self as tcp_server, TcpServerConfig, TcpServerError, TcpServerSpec, TcpServerWiring,
-    },
+    tcp::client::{self as tcp_client, TcpClientError, TcpClientSpec, TcpClientWiring},
+    tcp::server::{self as tcp_server, TcpServerError, TcpServerSpec, TcpServerWiring},
     tx_queue::TxQueue,
 };
 
@@ -37,7 +33,7 @@ pub struct TcpsHarness {
     /// Lifecycle stream announcing accepted clients and disconnects.
     pub event_rx: mpsc::Receiver<EndpointEvent>,
     /// Resolves on the first successful bind. Already consumed by `spawn_tcps`;
-    /// `spawn_tcps_at_with_config` leaves it for the caller (bind-retry tests).
+    /// `spawn_tcps_with_spec` leaves it for the caller (bind-retry tests).
     pub bound_addr_rx: Option<oneshot::Receiver<SocketAddr>>,
     /// Join handle of the spawned task; await after cancelling.
     pub task: JoinHandle<Result<(), TcpServerError>>,
@@ -54,66 +50,39 @@ pub async fn spawn_tcps(
     name: &str,
 ) -> TcpsHarness {
     let listen_addr: SocketAddr = "127.0.0.1:0".parse().expect("parse listen_addr");
-    let mut h = spawn_tcps_at_with_config(
-        allocator,
-        cancel,
+    let parent_id = allocator.alloc();
+    let spec = TcpServerSpec::from_endpoint(
+        TcpServerEndpoint::default(),
         listen_addr,
-        TcpServerConfig::default(),
-        name,
+        parent_id,
+        name.to_string(),
     );
+    let mut h = spawn_tcps_with_spec(allocator, cancel, spec);
     let rx = h.bound_addr_rx.take().expect("bound_addr_rx present");
     h.listen_addr = rx.await.expect("tcps bound_addr_tx dropped");
     h
 }
 
-/// Like `spawn_tcps` but binds an explicit address and accepts a config
-/// override — used by the bind-retry test to target a pre-held port. Returns
-/// immediately with `bound_addr_rx` pending so the test can drive the
-/// bind-retry path before awaiting the eventual bind.
-pub fn spawn_tcps_at_with_config(
+/// Spawn a `tcps:` listener with a fully-constructed `TcpServerSpec`. The
+/// caller pre-allocates `parent_id` (which they place inside `spec`) and is
+/// responsible for mutating any knobs that aren't reachable through the
+/// parsed `TcpServerEndpoint` (e.g. the reconnect curve, which `tcps:` does
+/// not expose as a query override). Returns immediately with `bound_addr_rx`
+/// pending so bind-retry tests can drive the bind path before awaiting the
+/// eventual bind.
+pub fn spawn_tcps_with_spec(
     allocator: &Arc<EndpointIdAllocator>,
     cancel: CancellationToken,
-    listen_addr: SocketAddr,
-    cfg: TcpServerConfig,
-    name: &str,
+    spec: TcpServerSpec,
 ) -> TcpsHarness {
-    spawn_tcps_at_with_config_and_identity(
-        allocator,
-        cancel,
-        listen_addr,
-        cfg,
-        IdentityFlags::default(),
-        name,
-    )
-}
-
-/// Like `spawn_tcps_at_with_config` but also lets the caller install a
-/// non-default `IdentityFlags` on the parent listener. Used by the
-/// inheritance test to assert each accepted child receives a clone of the
-/// parent's identity via `PeerAdded`.
-pub fn spawn_tcps_at_with_config_and_identity(
-    allocator: &Arc<EndpointIdAllocator>,
-    cancel: CancellationToken,
-    listen_addr: SocketAddr,
-    cfg: TcpServerConfig,
-    identity: IdentityFlags,
-    name: &str,
-) -> TcpsHarness {
-    let parent_id = allocator.alloc();
-    let parent_name = name.to_string();
+    let listen_addr = spec.listen_addr;
     let allocator = allocator.clone();
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(32);
     let (bound_tx, bound_rx) = oneshot::channel::<SocketAddr>();
     let task = tokio::spawn(async move {
         tcp_server::run(
-            TcpServerSpec {
-                listen_addr,
-                parent_id,
-                parent_name,
-                cfg,
-                identity,
-            },
+            spec,
             TcpServerWiring {
                 allocator,
                 frame_tx,
@@ -145,34 +114,33 @@ pub struct TcpcHarness {
     pub task: JoinHandle<Result<(), TcpClientError>>,
 }
 
-/// Spawn a `tcpc:` client targeting `target_addr`. The address's IP is passed
-/// verbatim as the configured host (no DNS), so tests can use IPv4 or IPv6
-/// loopback interchangeably.
+/// Spawn a `tcpc:` client targeting `target_addr`, configured by a parsed
+/// `TcpClientEndpoint` (the helper bolts the host/port from `target_addr`
+/// on top so the test can pass `TcpClientEndpoint::default()` and reach IPv4
+/// or IPv6 loopback interchangeably).
 pub fn spawn_tcpc(
     allocator: &EndpointIdAllocator,
     cancel: CancellationToken,
     target_addr: SocketAddr,
-    cfg: TcpClientConfig,
+    endpoint: TcpClientEndpoint,
     name: &str,
 ) -> TcpcHarness {
     let endpoint_id = allocator.alloc();
     let stats = Arc::new(EndpointStats::default());
-    let tx_queue = TxQueue::new(cfg.tx_queue_frames.max(8), stats.clone());
+    let endpoint = TcpClientEndpoint {
+        host: target_addr.ip().to_string(),
+        port: target_addr.port(),
+        ..endpoint
+    };
+    let spec = TcpClientSpec::from_endpoint(endpoint, endpoint_id, name.to_string());
+    let tx_queue = TxQueue::new(spec.tx_queue_frames.max(8), stats.clone());
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let task = {
         let tx_queue = tx_queue.clone();
         let stats = stats.clone();
-        let name = name.to_string();
         tokio::spawn(async move {
             tcp_client::run(
-                TcpClientSpec {
-                    host: target_addr.ip().to_string(),
-                    port: target_addr.port(),
-                    endpoint_id,
-                    name,
-                    cfg,
-                    identity: IdentityFlags::default(),
-                },
+                spec,
                 TcpClientWiring {
                     frame_tx,
                     tx_queue,

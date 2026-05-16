@@ -15,15 +15,11 @@ use tokio_util::sync::CancellationToken;
 use rmr::endpoint::{
     EndpointIdAllocator,
     events::{EndpointEvent, RouterFrame},
-    identity_flags::IdentityFlags,
+    spec::{UdpClientEndpoint, UdpServerEndpoint},
     stats::EndpointStats,
     tx_queue::TxQueue,
-    udp::client::{
-        self as udp_client, UdpClientConfig, UdpClientError, UdpClientSpec, UdpClientWiring,
-    },
-    udp::server::{
-        self as udp_server, UdpServerConfig, UdpServerError, UdpServerSpec, UdpServerWiring,
-    },
+    udp::client::{self as udp_client, UdpClientError, UdpClientSpec, UdpClientWiring},
+    udp::server::{self as udp_server, UdpServerError, UdpServerSpec, UdpServerWiring},
 };
 
 /// Bundle of channels and the join handle for a spawned `udps:` listener task.
@@ -38,7 +34,7 @@ pub struct UdpsHarness {
     /// Lifecycle stream announcing learned peers and idle reaps.
     pub event_rx: mpsc::Receiver<EndpointEvent>,
     /// Resolves on the first successful bind. Already consumed by `spawn_udps*`;
-    /// `spawn_udps_at_with_config` leaves it for the caller (bind-retry tests).
+    /// `spawn_udps_with_spec` leaves it for the caller (bind-retry tests).
     pub bound_addr_rx: Option<oneshot::Receiver<SocketAddr>>,
     /// Join handle of the spawned task; await after cancelling.
     pub task: JoinHandle<Result<(), UdpServerError>>,
@@ -53,72 +49,47 @@ pub async fn spawn_udps(
     cancel: CancellationToken,
     name: &str,
 ) -> UdpsHarness {
-    spawn_udps_with_config(allocator, cancel, name, UdpServerConfig::default()).await
+    spawn_udps_with_endpoint(allocator, cancel, name, UdpServerEndpoint::default()).await
 }
 
-/// Like `spawn_udps` but lets the test override the listener's `UdpServerConfig`
-/// — typically to shorten `idle_secs` for fast idle-reap coverage.
-pub async fn spawn_udps_with_config(
+/// Like `spawn_udps` but lets the test pass a parsed `UdpServerEndpoint` with
+/// `Option<…>` knob overrides — typically to shorten `idle_secs` for fast
+/// idle-reap coverage.
+pub async fn spawn_udps_with_endpoint(
     allocator: &Arc<EndpointIdAllocator>,
     cancel: CancellationToken,
     name: &str,
-    cfg: UdpServerConfig,
+    endpoint: UdpServerEndpoint,
 ) -> UdpsHarness {
     let listen_addr: SocketAddr = "127.0.0.1:0".parse().expect("parse listen_addr");
-    let mut h = spawn_udps_at_with_config(allocator, cancel, listen_addr, cfg, name);
+    let parent_id = allocator.alloc();
+    let spec = UdpServerSpec::from_endpoint(endpoint, listen_addr, parent_id, name.to_string());
+    let mut h = spawn_udps_with_spec(allocator, cancel, spec);
     let rx = h.bound_addr_rx.take().expect("bound_addr_rx present");
     h.listen_addr = rx.await.expect("udps bound_addr_tx dropped");
     h
 }
 
-/// Like `spawn_udps_with_config` but binds an explicit address — used by the
-/// bind-retry test to target a pre-held port. Returns immediately with
-/// `bound_addr_rx` pending so the test can drive the bind-retry path before
-/// awaiting the eventual bind.
-pub fn spawn_udps_at_with_config(
+/// Spawn a `udps:` listener with a fully-constructed `UdpServerSpec`. The
+/// caller pre-allocates `parent_id` (which they place inside `spec`) and is
+/// responsible for mutating any knobs that aren't reachable through the
+/// parsed `UdpServerEndpoint` (e.g. the reconnect curve, which `udps:` does
+/// not expose as a query override). Returns immediately with `bound_addr_rx`
+/// pending so bind-retry tests can drive the bind path before awaiting the
+/// eventual bind.
+pub fn spawn_udps_with_spec(
     allocator: &Arc<EndpointIdAllocator>,
     cancel: CancellationToken,
-    listen_addr: SocketAddr,
-    cfg: UdpServerConfig,
-    name: &str,
+    spec: UdpServerSpec,
 ) -> UdpsHarness {
-    spawn_udps_at_with_config_and_identity(
-        allocator,
-        cancel,
-        listen_addr,
-        cfg,
-        IdentityFlags::default(),
-        name,
-    )
-}
-
-/// Like `spawn_udps_at_with_config` but also lets the caller install a
-/// non-default `IdentityFlags` on the parent listener. Used by the
-/// inheritance test to assert each learned peer receives a clone of the
-/// parent's identity via `PeerAdded`.
-pub fn spawn_udps_at_with_config_and_identity(
-    allocator: &Arc<EndpointIdAllocator>,
-    cancel: CancellationToken,
-    listen_addr: SocketAddr,
-    cfg: UdpServerConfig,
-    identity: IdentityFlags,
-    name: &str,
-) -> UdpsHarness {
-    let parent_id = allocator.alloc();
-    let parent_name = name.to_string();
+    let listen_addr = spec.listen_addr;
     let allocator = allocator.clone();
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(32);
     let (bound_tx, bound_rx) = oneshot::channel::<SocketAddr>();
     let task = tokio::spawn(async move {
         udp_server::run(
-            UdpServerSpec {
-                listen_addr,
-                parent_id,
-                parent_name,
-                cfg,
-                identity,
-            },
+            spec,
             UdpServerWiring {
                 allocator,
                 frame_tx,
@@ -156,26 +127,24 @@ pub fn spawn_udpc(
     allocator: &EndpointIdAllocator,
     cancel: CancellationToken,
     configured_addr: SocketAddr,
-    cfg: UdpClientConfig,
+    endpoint: UdpClientEndpoint,
     name: &str,
 ) -> UdpcHarness {
     let endpoint_id = allocator.alloc();
     let stats = Arc::new(EndpointStats::default());
     let tx_queue = TxQueue::new(8, stats.clone());
+    let endpoint = UdpClientEndpoint {
+        host: configured_addr.ip().to_string(),
+        port: configured_addr.port(),
+        ..endpoint
+    };
+    let spec = UdpClientSpec::from_endpoint(endpoint, endpoint_id, name.to_string());
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let task = {
         let tx_queue = tx_queue.clone();
-        let name = name.to_string();
         tokio::spawn(async move {
             udp_client::run(
-                UdpClientSpec {
-                    host: configured_addr.ip().to_string(),
-                    port: configured_addr.port(),
-                    endpoint_id,
-                    name,
-                    cfg,
-                    identity: IdentityFlags::default(),
-                },
+                spec,
                 UdpClientWiring {
                     frame_tx,
                     tx_queue,

@@ -22,37 +22,6 @@ use super::wait_or_cancel;
 
 const DEFAULT_SERIAL_REOPEN_MS: u64 = 1000;
 
-/// Per-endpoint runtime configuration. The spec parser hands us a fully-typed
-/// `SerialEndpoint`; this struct collapses the optional knobs down to the
-/// concrete values the task actually uses, substituting CLAUDE.md defaults
-/// where the user left a knob unset.
-#[derive(Debug, Clone, Copy)]
-pub struct SerialConfig {
-    pub serial_reopen_ms: u64,
-    pub read_buf_bytes: usize,
-    pub tx_queue_frames: usize,
-}
-
-impl Default for SerialConfig {
-    fn default() -> Self {
-        Self {
-            serial_reopen_ms: DEFAULT_SERIAL_REOPEN_MS,
-            read_buf_bytes: DEFAULT_READ_BUF_BYTES,
-            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
-        }
-    }
-}
-
-impl SerialConfig {
-    pub fn from_endpoint(ep: &SerialEndpoint) -> Self {
-        Self {
-            serial_reopen_ms: ep.serial_reopen_ms.unwrap_or(DEFAULT_SERIAL_REOPEN_MS),
-            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
-            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
-        }
-    }
-}
-
 /// Typed-empty return for `serial:` `run()`. Open failures and disconnects
 /// are non-terminal — they trip the hot-replug poll loop, so the task never
 /// surfaces a fatal error to the spawner in v1. Kept as a typed return for
@@ -63,19 +32,42 @@ pub enum SerialError {}
 
 /// Inputs that distinguish one `serial:` endpoint from another: which device
 /// to open at what baud (with optional hardware flow control), what to call
-/// it, and the per-endpoint knobs from the query string. `identity` carries
-/// the filter / sniffer / group / capacity bundle — unused today, threaded
-/// here so Phase 5 readers and the router can consume it without a spawner
-/// rework (CLAUDE.md "Filters, group, sniffer, and learn/seq capacities
-/// travel with the `*Spec`").
+/// it, and the per-endpoint knobs from the query string with CLAUDE.md
+/// defaults already substituted. `identity` carries the filter / sniffer /
+/// group / capacity bundle — unused today, threaded here so Phase 5 readers
+/// and the router can consume it without a spawner rework (CLAUDE.md
+/// "Filters, group, sniffer, and learn/seq capacities travel with the
+/// `*Spec`").
 pub struct SerialSpec {
     pub path: String,
     pub baud: u32,
     pub flow_control: SerialFlowControl,
     pub endpoint_id: EndpointId,
     pub name: String,
-    pub cfg: SerialConfig,
+    pub serial_reopen_ms: u64,
+    pub read_buf_bytes: usize,
+    pub tx_queue_frames: usize,
     pub identity: IdentityFlags,
+}
+
+impl SerialSpec {
+    /// Build a runtime `SerialSpec` from the parsed-but-not-defaulted
+    /// `SerialEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
+    /// defaults for any unset knob. The spawner supplies `endpoint_id` and
+    /// `name` because the parser doesn't allocate IDs.
+    pub fn from_endpoint(ep: SerialEndpoint, endpoint_id: EndpointId, name: String) -> Self {
+        Self {
+            path: ep.path,
+            baud: ep.baud,
+            flow_control: ep.flow_control,
+            endpoint_id,
+            name,
+            serial_reopen_ms: ep.serial_reopen_ms.unwrap_or(DEFAULT_SERIAL_REOPEN_MS),
+            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
+            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+            identity: ep.identity,
+        }
+    }
 }
 
 /// Shared wiring a `serial:` task needs. Mirrors `TcpClientWiring` /
@@ -111,7 +103,9 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialE
         flow_control,
         endpoint_id,
         name: _,
-        cfg,
+        serial_reopen_ms,
+        read_buf_bytes,
+        tx_queue_frames: _,
         identity: _,
     } = spec;
     let SerialWiring {
@@ -121,7 +115,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialE
         cancel,
     } = wiring;
 
-    let reopen_delay = Duration::from_millis(cfg.serial_reopen_ms);
+    let reopen_delay = Duration::from_millis(serial_reopen_ms);
 
     loop {
         if cancel.is_cancelled() {
@@ -153,7 +147,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialE
             &frame_tx,
             &tx_queue,
             &cancel,
-            cfg.read_buf_bytes,
+            read_buf_bytes,
         )
         .await
         {
@@ -237,16 +231,16 @@ mod tests {
     use tokio::time::timeout;
 
     #[test]
-    fn config_defaults_when_endpoint_unset() {
+    fn spec_defaults_when_endpoint_unset() {
         let ep = SerialEndpoint::default();
-        let cfg = SerialConfig::from_endpoint(&ep);
-        assert_eq!(cfg.serial_reopen_ms, DEFAULT_SERIAL_REOPEN_MS);
-        assert_eq!(cfg.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
-        assert_eq!(cfg.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
+        let spec = SerialSpec::from_endpoint(ep, EndpointId(0), "n".into());
+        assert_eq!(spec.serial_reopen_ms, DEFAULT_SERIAL_REOPEN_MS);
+        assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
+        assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
     }
 
     #[test]
-    fn config_overrides_from_endpoint() {
+    fn spec_overrides_from_endpoint() {
         let ep = SerialEndpoint {
             serial_reopen_ms: Some(250),
             common: CommonQuery {
@@ -255,10 +249,10 @@ mod tests {
             },
             ..SerialEndpoint::default()
         };
-        let cfg = SerialConfig::from_endpoint(&ep);
-        assert_eq!(cfg.serial_reopen_ms, 250);
-        assert_eq!(cfg.read_buf_bytes, 1024);
-        assert_eq!(cfg.tx_queue_frames, 16);
+        let spec = SerialSpec::from_endpoint(ep, EndpointId(0), "n".into());
+        assert_eq!(spec.serial_reopen_ms, 250);
+        assert_eq!(spec.read_buf_bytes, 1024);
+        assert_eq!(spec.tx_queue_frames, 16);
     }
 
     #[tokio::test]

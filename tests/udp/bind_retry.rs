@@ -19,11 +19,11 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::events::EndpointEvent;
-use rmr::endpoint::{EndpointIdAllocator, udp::server::UdpServerConfig};
+use rmr::endpoint::{EndpointIdAllocator, spec::UdpServerEndpoint, udp::server::UdpServerSpec};
 
 use crate::common;
 use crate::common::shutdown_all;
-use crate::common::udp::spawn_udps_at_with_config;
+use crate::common::udp::spawn_udps_with_spec;
 
 #[tokio::test]
 async fn udps_attaches_when_pre_held_port_is_freed() {
@@ -38,13 +38,20 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
     let listen_addr: std::net::SocketAddr =
         format!("127.0.0.1:{port}").parse().expect("parse addr");
 
-    // Short backoff so we don't have to wait long for udps to attach.
-    let cfg = UdpServerConfig {
-        reconnect_initial_ms: 50,
-        reconnect_max_ms: 250,
-        ..UdpServerConfig::default()
-    };
-    let mut h = spawn_udps_at_with_config(&allocator, cancel.clone(), listen_addr, cfg, "udps");
+    // Short backoff so we don't have to wait long for udps to attach. The
+    // reconnect curve isn't exposed as a `*Endpoint` query knob (CLAUDE.md
+    // "udps: bind-retry shares the tcpc: curve, no per-listener override"),
+    // so we build the Spec from defaults then mutate.
+    let parent_id = allocator.alloc();
+    let mut spec = UdpServerSpec::from_endpoint(
+        UdpServerEndpoint::default(),
+        listen_addr,
+        parent_id,
+        "udps".to_string(),
+    );
+    spec.reconnect_initial_ms = 50;
+    spec.reconnect_max_ms = 250;
+    let mut h = spawn_udps_with_spec(&allocator, cancel.clone(), spec);
 
     // Poll for early task termination without an unconditional sleep — if
     // udps panicked on the first bind error, the task ends and the assertion

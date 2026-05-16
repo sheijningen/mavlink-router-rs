@@ -35,49 +35,6 @@ const DEFAULT_PEER_CAPACITY: usize = 256;
 const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REAP_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Per-listener runtime configuration. The spec parser hands us a fully-typed
-/// `UdpServerEndpoint`; this struct collapses the optional knobs down to the
-/// concrete values the task actually uses, substituting CLAUDE.md defaults
-/// where the user left a knob unset. The `reconnect_*_ms` fields are
-/// hard-coded to the `tcpc:` curve (CLAUDE.md: "`tcps:` bind-retry shares the
-/// `tcpc:` curve, no per-listener override. Same reasoning applies to
-/// `udps:`") — `udps:` does not expose per-listener reconnect overrides in v1.
-#[derive(Debug, Clone, Copy)]
-pub struct UdpServerConfig {
-    pub idle_secs: u64,
-    pub peer_capacity: usize,
-    pub read_buf_bytes: usize,
-    pub tx_queue_frames: usize,
-    pub reconnect_initial_ms: u64,
-    pub reconnect_max_ms: u64,
-}
-
-impl Default for UdpServerConfig {
-    fn default() -> Self {
-        Self {
-            idle_secs: DEFAULT_IDLE_SECS,
-            peer_capacity: DEFAULT_PEER_CAPACITY,
-            read_buf_bytes: DEFAULT_READ_BUF_BYTES,
-            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
-            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
-            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
-        }
-    }
-}
-
-impl UdpServerConfig {
-    pub fn from_endpoint(ep: &UdpServerEndpoint) -> Self {
-        Self {
-            idle_secs: ep.idle_secs.unwrap_or(DEFAULT_IDLE_SECS),
-            peer_capacity: ep.udps_peer_capacity.unwrap_or(DEFAULT_PEER_CAPACITY),
-            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
-            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
-            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
-            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
-        }
-    }
-}
-
 /// Typed-empty return for `udps:` `run()`. Bind failures enter the same
 /// backoff loop as `tcpc:` reconnects (CLAUDE.md "Bind/open failure at startup
 /// is not fatal"), and per-peer recv errors are logged and the loop continues
@@ -99,8 +56,12 @@ struct PeerEntry {
 }
 
 /// Inputs that distinguish one `udps:` listener from another: where to bind,
-/// what to call it, and the per-listener knobs from the query string.
-/// `identity` carries the filter / sniffer / group / capacity bundle —
+/// what to call it, and the per-listener knobs from the query string with
+/// CLAUDE.md defaults already substituted. The `reconnect_*_ms` fields are
+/// always the `tcpc:` curve (CLAUDE.md: "`tcps:` bind-retry shares the
+/// `tcpc:` curve, no per-listener override. Same reasoning applies to
+/// `udps:`") — `udps:` does not expose per-listener reconnect overrides in
+/// v1. `identity` carries the filter / sniffer / group / capacity bundle —
 /// inherited by every learned peer at admission time (CLAUDE.md "Sub-
 /// endpoints inherit their parent's `IdentityFlags` by clone at spawn
 /// time"). Unused until Phase 5 wires it through the reader and the router.
@@ -108,8 +69,39 @@ pub struct UdpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,
     pub parent_name: String,
-    pub cfg: UdpServerConfig,
+    pub idle_secs: u64,
+    pub peer_capacity: usize,
+    pub read_buf_bytes: usize,
+    pub tx_queue_frames: usize,
+    pub reconnect_initial_ms: u64,
+    pub reconnect_max_ms: u64,
     pub identity: IdentityFlags,
+}
+
+impl UdpServerSpec {
+    /// Build a runtime `UdpServerSpec` from the parsed-but-not-defaulted
+    /// `UdpServerEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
+    /// defaults for any unset knob. The spawner supplies `parent_id` and
+    /// `parent_name` because the parser doesn't allocate IDs.
+    pub fn from_endpoint(
+        ep: UdpServerEndpoint,
+        listen_addr: SocketAddr,
+        parent_id: EndpointId,
+        parent_name: String,
+    ) -> Self {
+        Self {
+            listen_addr,
+            parent_id,
+            parent_name,
+            idle_secs: ep.idle_secs.unwrap_or(DEFAULT_IDLE_SECS),
+            peer_capacity: ep.udps_peer_capacity.unwrap_or(DEFAULT_PEER_CAPACITY),
+            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
+            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
+            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
+            identity: ep.identity,
+        }
+    }
 }
 
 /// Shared wiring every endpoint needs: the global EndpointId allocator,
@@ -143,7 +135,12 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
         listen_addr,
         parent_id,
         parent_name,
-        cfg,
+        idle_secs,
+        peer_capacity,
+        read_buf_bytes,
+        tx_queue_frames,
+        reconnect_initial_ms,
+        reconnect_max_ms,
         identity,
     } = spec;
     let UdpServerWiring {
@@ -154,7 +151,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
         bound_addr_tx,
     } = wiring;
 
-    let mut backoff = Backoff::new(cfg.reconnect_initial_ms, cfg.reconnect_max_ms);
+    let mut backoff = Backoff::new(reconnect_initial_ms, reconnect_max_ms);
 
     let socket = match bind_with_backoff(&cancel, &mut backoff, "udps", listen_addr, || {
         bind_udp_dual_stack(listen_addr)
@@ -184,7 +181,9 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
         socket: socket.clone(),
         parent_id,
         parent_name: &parent_name,
-        cfg: &cfg,
+        peer_capacity,
+        read_buf_bytes,
+        tx_queue_frames,
         identity: &identity,
         allocator: &allocator,
         frame_tx: &frame_tx,
@@ -209,7 +208,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
                 reap_idle_peers(
                     &mut peers,
                     parent_id,
-                    Duration::from_secs(cfg.idle_secs),
+                    Duration::from_secs(idle_secs),
                     &event_tx,
                 )
                 .await;
@@ -235,7 +234,9 @@ struct ListenerCtx<'a> {
     socket: Arc<UdpSocket>,
     parent_id: EndpointId,
     parent_name: &'a str,
-    cfg: &'a UdpServerConfig,
+    peer_capacity: usize,
+    read_buf_bytes: usize,
+    tx_queue_frames: usize,
     identity: &'a IdentityFlags,
     allocator: &'a Arc<EndpointIdAllocator>,
     frame_tx: &'a mpsc::Sender<RouterFrame>,
@@ -253,7 +254,7 @@ async fn handle_packet(
     if !peers.contains_key(&src) {
         let child_id = ctx.allocator.alloc();
         let stats = Arc::new(EndpointStats::default());
-        let tx_queue = TxQueue::new(ctx.cfg.tx_queue_frames, stats.clone());
+        let tx_queue = TxQueue::new(ctx.tx_queue_frames, stats.clone());
         let writer_cancel = ctx.cancel.child_token();
         let name = peer_endpoint_name(ctx.parent_name, src);
         let writer_span = info_span!("udps_peer", name = %name);
@@ -284,7 +285,7 @@ async fn handle_packet(
         }
         trace!(parent_id = %ctx.parent_id, %src, "udps peer added");
 
-        if peers.len() >= ctx.cfg.peer_capacity {
+        if peers.len() >= ctx.peer_capacity {
             evict_lru_peer(peers, ctx.parent_id, ctx.event_tx).await;
         }
 
@@ -301,7 +302,7 @@ async fn handle_packet(
 
         let entry = PeerEntry {
             child_id,
-            framer: Framer::with_capacity(ctx.cfg.read_buf_bytes),
+            framer: Framer::with_capacity(ctx.read_buf_bytes),
             last_seen: Instant::now(),
             framer_counters: FramerCounters::new(),
             stats,
@@ -437,20 +438,24 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
-    #[test]
-    fn config_defaults_when_endpoint_unset() {
-        let ep = UdpServerEndpoint::default();
-        let cfg = UdpServerConfig::from_endpoint(&ep);
-        assert_eq!(cfg.idle_secs, DEFAULT_IDLE_SECS);
-        assert_eq!(cfg.peer_capacity, DEFAULT_PEER_CAPACITY);
-        assert_eq!(cfg.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
-        assert_eq!(cfg.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
-        assert_eq!(cfg.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
-        assert_eq!(cfg.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
+    fn dummy_listen_addr() -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)
     }
 
     #[test]
-    fn config_overrides_common_fields_but_not_reconnect_curve() {
+    fn spec_defaults_when_endpoint_unset() {
+        let ep = UdpServerEndpoint::default();
+        let spec = UdpServerSpec::from_endpoint(ep, dummy_listen_addr(), EndpointId(0), "n".into());
+        assert_eq!(spec.idle_secs, DEFAULT_IDLE_SECS);
+        assert_eq!(spec.peer_capacity, DEFAULT_PEER_CAPACITY);
+        assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
+        assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
+        assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
+        assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
+    }
+
+    #[test]
+    fn spec_overrides_common_fields_but_not_reconnect_curve() {
         use crate::endpoint::spec::CommonQuery;
         let ep = UdpServerEndpoint {
             idle_secs: Some(10),
@@ -461,15 +466,15 @@ mod tests {
             },
             ..UdpServerEndpoint::default()
         };
-        let cfg = UdpServerConfig::from_endpoint(&ep);
-        assert_eq!(cfg.idle_secs, 10);
-        assert_eq!(cfg.peer_capacity, 4);
-        assert_eq!(cfg.read_buf_bytes, 1024);
-        assert_eq!(cfg.tx_queue_frames, 8);
+        let spec = UdpServerSpec::from_endpoint(ep, dummy_listen_addr(), EndpointId(0), "n".into());
+        assert_eq!(spec.idle_secs, 10);
+        assert_eq!(spec.peer_capacity, 4);
+        assert_eq!(spec.read_buf_bytes, 1024);
+        assert_eq!(spec.tx_queue_frames, 8);
         // Reconnect curve stays at the tcpc defaults — CLAUDE.md "udps: bind-
         // retry shares the tcpc: curve, no per-listener override".
-        assert_eq!(cfg.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
-        assert_eq!(cfg.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
+        assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
+        assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     }
 
     fn dummy_peer(child_id: EndpointId, age: Duration) -> PeerEntry {
@@ -559,10 +564,6 @@ mod tests {
         );
         let allocator = Arc::new(EndpointIdAllocator::new());
         let parent_id = allocator.alloc();
-        let cfg = UdpServerConfig {
-            peer_capacity: 2,
-            ..UdpServerConfig::default()
-        };
         let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
         let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(8);
         let cancel = CancellationToken::new();
@@ -572,7 +573,9 @@ mod tests {
             socket: socket.clone(),
             parent_id,
             parent_name: &parent_name,
-            cfg: &cfg,
+            peer_capacity: 2,
+            read_buf_bytes: DEFAULT_READ_BUF_BYTES,
+            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
             identity: &identity,
             allocator: &allocator,
             frame_tx: &frame_tx,

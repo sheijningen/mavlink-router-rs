@@ -25,42 +25,6 @@ use super::super::wait_or_cancel;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Per-endpoint runtime configuration. The spec parser hands us a fully-typed
-/// `TcpClientEndpoint`; this struct collapses the optional knobs down to the
-/// concrete values the task actually uses, substituting CLAUDE.md defaults
-/// where the user left a knob unset.
-#[derive(Debug, Clone, Copy)]
-pub struct TcpClientConfig {
-    pub reconnect_initial_ms: u64,
-    pub reconnect_max_ms: u64,
-    pub read_buf_bytes: usize,
-    pub tx_queue_frames: usize,
-}
-
-impl Default for TcpClientConfig {
-    fn default() -> Self {
-        Self {
-            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
-            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
-            read_buf_bytes: DEFAULT_READ_BUF_BYTES,
-            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
-        }
-    }
-}
-
-impl TcpClientConfig {
-    pub fn from_endpoint(ep: &TcpClientEndpoint) -> Self {
-        Self {
-            reconnect_initial_ms: ep
-                .reconnect_initial_ms
-                .unwrap_or(DEFAULT_RECONNECT_INITIAL_MS),
-            reconnect_max_ms: ep.reconnect_max_ms.unwrap_or(DEFAULT_RECONNECT_MAX_MS),
-            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
-            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
-        }
-    }
-}
-
 /// Typed-empty return for `tcpc:` `run()`. Connect failures enter the
 /// capped-exp backoff loop, DNS failures log and retry, and disconnects are
 /// handled by the session — no terminal failure modes remain in v1. Kept as
@@ -70,18 +34,43 @@ impl TcpClientConfig {
 pub enum TcpClientError {}
 
 /// Inputs that distinguish one `tcpc:` endpoint from another: where to dial,
-/// what to call it, and the per-endpoint knobs from the query string.
-/// `identity` carries the filter / sniffer / group / capacity bundle —
-/// unused today, threaded so Phase 5 can wire it up without a spawner
-/// rework (CLAUDE.md "Filters, group, sniffer, and learn/seq capacities
-/// travel with the `*Spec`").
+/// what to call it, and the per-endpoint knobs from the query string with
+/// CLAUDE.md defaults already substituted. `identity` carries the filter /
+/// sniffer / group / capacity bundle — unused today, threaded so Phase 5 can
+/// wire it up without a spawner rework (CLAUDE.md "Filters, group, sniffer,
+/// and learn/seq capacities travel with the `*Spec`").
 pub struct TcpClientSpec {
     pub host: String,
     pub port: u16,
     pub endpoint_id: EndpointId,
     pub name: String,
-    pub cfg: TcpClientConfig,
+    pub reconnect_initial_ms: u64,
+    pub reconnect_max_ms: u64,
+    pub read_buf_bytes: usize,
+    pub tx_queue_frames: usize,
     pub identity: IdentityFlags,
+}
+
+impl TcpClientSpec {
+    /// Build a runtime `TcpClientSpec` from the parsed-but-not-defaulted
+    /// `TcpClientEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
+    /// defaults for any unset knob. The spawner supplies `endpoint_id` and
+    /// `name` because the parser doesn't allocate IDs.
+    pub fn from_endpoint(ep: TcpClientEndpoint, endpoint_id: EndpointId, name: String) -> Self {
+        Self {
+            host: ep.host,
+            port: ep.port,
+            endpoint_id,
+            name,
+            reconnect_initial_ms: ep
+                .reconnect_initial_ms
+                .unwrap_or(DEFAULT_RECONNECT_INITIAL_MS),
+            reconnect_max_ms: ep.reconnect_max_ms.unwrap_or(DEFAULT_RECONNECT_MAX_MS),
+            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
+            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+            identity: ep.identity,
+        }
+    }
 }
 
 /// Shared wiring a `tcpc:` task needs. The TxQueue and stats are constructed
@@ -111,7 +100,10 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) -> Result<(), T
         port,
         endpoint_id,
         name: _,
-        cfg,
+        reconnect_initial_ms,
+        reconnect_max_ms,
+        read_buf_bytes,
+        tx_queue_frames: _,
         identity: _,
     } = spec;
     let TcpClientWiring {
@@ -121,7 +113,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) -> Result<(), T
         cancel,
     } = wiring;
 
-    let mut backoff = Backoff::new(cfg.reconnect_initial_ms, cfg.reconnect_max_ms);
+    let mut backoff = Backoff::new(reconnect_initial_ms, reconnect_max_ms);
 
     loop {
         if cancel.is_cancelled() {
@@ -161,7 +153,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) -> Result<(), T
             &frame_tx,
             &tx_queue,
             &cancel,
-            cfg.read_buf_bytes,
+            read_buf_bytes,
         )
         .await
         {
@@ -260,17 +252,17 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
-    fn config_defaults_when_endpoint_unset() {
+    fn spec_defaults_when_endpoint_unset() {
         let ep = TcpClientEndpoint::default();
-        let cfg = TcpClientConfig::from_endpoint(&ep);
-        assert_eq!(cfg.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
-        assert_eq!(cfg.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
-        assert_eq!(cfg.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
-        assert_eq!(cfg.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
+        let spec = TcpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
+        assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
+        assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
+        assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
+        assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
     }
 
     #[test]
-    fn config_overrides_from_endpoint() {
+    fn spec_overrides_from_endpoint() {
         use crate::endpoint::spec::CommonQuery;
         let ep = TcpClientEndpoint {
             reconnect_initial_ms: Some(50),
@@ -281,11 +273,11 @@ mod tests {
             },
             ..TcpClientEndpoint::default()
         };
-        let cfg = TcpClientConfig::from_endpoint(&ep);
-        assert_eq!(cfg.reconnect_initial_ms, 50);
-        assert_eq!(cfg.reconnect_max_ms, 2000);
-        assert_eq!(cfg.read_buf_bytes, 1024);
-        assert_eq!(cfg.tx_queue_frames, 8);
+        let spec = TcpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
+        assert_eq!(spec.reconnect_initial_ms, 50);
+        assert_eq!(spec.reconnect_max_ms, 2000);
+        assert_eq!(spec.read_buf_bytes, 1024);
+        assert_eq!(spec.tx_queue_frames, 8);
     }
 
     #[tokio::test]

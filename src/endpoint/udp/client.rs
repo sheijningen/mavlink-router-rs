@@ -31,46 +31,6 @@ const DEFAULT_LATCH_IDLE_SECS: u64 = 30;
 const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REVERT_TICK: Duration = Duration::from_secs(1);
 
-/// Per-endpoint runtime configuration. The spec parser hands us a fully-typed
-/// `UdpClientEndpoint`; this struct collapses the optional knobs down to the
-/// concrete values the task actually uses, substituting CLAUDE.md defaults
-/// where the user left a knob unset. The `reconnect_*_ms` fields are
-/// hard-coded to the `tcpc:` curve (CLAUDE.md "Bind/open failure at startup is
-/// not fatal" + "Same reasoning applies to `udps:`" — `udpc:` follows the same
-/// rule) — `udpc:` does not expose per-endpoint bind-retry overrides in v1.
-#[derive(Debug, Clone, Copy)]
-pub struct UdpClientConfig {
-    pub latch_idle_secs: u64,
-    pub tx_queue_frames: usize,
-    pub read_buf_bytes: usize,
-    pub reconnect_initial_ms: u64,
-    pub reconnect_max_ms: u64,
-}
-
-impl Default for UdpClientConfig {
-    fn default() -> Self {
-        Self {
-            latch_idle_secs: DEFAULT_LATCH_IDLE_SECS,
-            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
-            read_buf_bytes: DEFAULT_READ_BUF_BYTES,
-            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
-            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
-        }
-    }
-}
-
-impl UdpClientConfig {
-    pub fn from_endpoint(ep: &UdpClientEndpoint) -> Self {
-        Self {
-            latch_idle_secs: ep.latch_idle_secs.unwrap_or(DEFAULT_LATCH_IDLE_SECS),
-            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
-            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
-            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
-            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
-        }
-    }
-}
-
 /// Typed-empty return for `udpc:` `run()`. Local bind failures enter the same
 /// backoff loop as `tcpc:` reconnects (CLAUDE.md "Bind/open failure at startup
 /// is not fatal"); inbound recv errors and outbound send errors are logged and
@@ -81,7 +41,11 @@ impl UdpClientConfig {
 pub enum UdpClientError {}
 
 /// Inputs that distinguish one `udpc:` endpoint from another: where to send,
-/// what to call it, and the per-endpoint knobs from the query string.
+/// what to call it, and the per-endpoint knobs from the query string with
+/// CLAUDE.md defaults already substituted. The `reconnect_*_ms` fields are
+/// always the `tcpc:` curve (CLAUDE.md "Bind/open failure at startup is not
+/// fatal" + "Same reasoning applies to `udps:`" — `udpc:` follows the same
+/// rule) — `udpc:` does not expose per-endpoint bind-retry overrides in v1.
 /// `identity` carries the filter / sniffer / group / capacity bundle —
 /// unused today, threaded so Phase 5 can wire it up without a spawner
 /// rework (CLAUDE.md "Filters, group, sniffer, and learn/seq capacities
@@ -91,8 +55,33 @@ pub struct UdpClientSpec {
     pub port: u16,
     pub endpoint_id: EndpointId,
     pub name: String,
-    pub cfg: UdpClientConfig,
+    pub latch_idle_secs: u64,
+    pub tx_queue_frames: usize,
+    pub read_buf_bytes: usize,
+    pub reconnect_initial_ms: u64,
+    pub reconnect_max_ms: u64,
     pub identity: IdentityFlags,
+}
+
+impl UdpClientSpec {
+    /// Build a runtime `UdpClientSpec` from the parsed-but-not-defaulted
+    /// `UdpClientEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
+    /// defaults for any unset knob. The spawner supplies `endpoint_id` and
+    /// `name` because the parser doesn't allocate IDs.
+    pub fn from_endpoint(ep: UdpClientEndpoint, endpoint_id: EndpointId, name: String) -> Self {
+        Self {
+            host: ep.host,
+            port: ep.port,
+            endpoint_id,
+            name,
+            latch_idle_secs: ep.latch_idle_secs.unwrap_or(DEFAULT_LATCH_IDLE_SECS),
+            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
+            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
+            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
+            identity: ep.identity,
+        }
+    }
 }
 
 /// Shared wiring a `udpc:` task needs. The TxQueue and stats are constructed
@@ -222,7 +211,11 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
         port,
         endpoint_id,
         name: _,
-        cfg,
+        latch_idle_secs,
+        tx_queue_frames: _,
+        read_buf_bytes,
+        reconnect_initial_ms,
+        reconnect_max_ms,
         identity: _,
     } = spec;
     let UdpClientWiring {
@@ -240,7 +233,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
         latch: None,
     };
 
-    let mut backoff = Backoff::new(cfg.reconnect_initial_ms, cfg.reconnect_max_ms);
+    let mut backoff = Backoff::new(reconnect_initial_ms, reconnect_max_ms);
     let local_bind = pick_local_bind(&dest.resolved_ips);
     let socket = match bind_with_backoff(&cancel, &mut backoff, "udpc local", local_bind, || {
         bind_udp_dual_stack(local_bind)
@@ -251,7 +244,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
         BindOutcome::Cancelled => return Ok(()),
     };
 
-    let mut framer = Framer::with_capacity(cfg.read_buf_bytes);
+    let mut framer = Framer::with_capacity(read_buf_bytes);
     let mut framer_counters = FramerCounters::new();
     let mut buf = vec![0u8; MAX_DATAGRAM_BYTES];
 
@@ -269,7 +262,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
                 return Ok(());
             }
             _ = revert_tick.tick() => {
-                check_latch_idle(&mut dest, Duration::from_secs(cfg.latch_idle_secs)).await;
+                check_latch_idle(&mut dest, Duration::from_secs(latch_idle_secs)).await;
             }
             res = socket.recv_from(&mut buf) => {
                 match res {
@@ -412,18 +405,18 @@ mod tests {
     }
 
     #[test]
-    fn config_defaults_when_endpoint_unset() {
+    fn spec_defaults_when_endpoint_unset() {
         let ep = UdpClientEndpoint::default();
-        let cfg = UdpClientConfig::from_endpoint(&ep);
-        assert_eq!(cfg.latch_idle_secs, DEFAULT_LATCH_IDLE_SECS);
-        assert_eq!(cfg.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
-        assert_eq!(cfg.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
-        assert_eq!(cfg.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
-        assert_eq!(cfg.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
+        let spec = UdpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
+        assert_eq!(spec.latch_idle_secs, DEFAULT_LATCH_IDLE_SECS);
+        assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
+        assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
+        assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
+        assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     }
 
     #[test]
-    fn config_overrides_from_endpoint() {
+    fn spec_overrides_from_endpoint() {
         use crate::endpoint::spec::CommonQuery;
         let ep = UdpClientEndpoint {
             latch_idle_secs: Some(5),
@@ -433,10 +426,10 @@ mod tests {
             },
             ..UdpClientEndpoint::default()
         };
-        let cfg = UdpClientConfig::from_endpoint(&ep);
-        assert_eq!(cfg.latch_idle_secs, 5);
-        assert_eq!(cfg.tx_queue_frames, 8);
-        assert_eq!(cfg.read_buf_bytes, 1024);
+        let spec = UdpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
+        assert_eq!(spec.latch_idle_secs, 5);
+        assert_eq!(spec.tx_queue_frames, 8);
+        assert_eq!(spec.read_buf_bytes, 1024);
     }
 
     #[test]

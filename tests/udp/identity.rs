@@ -13,11 +13,12 @@ use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::EndpointEvent;
 use rmr::endpoint::filters::{Filters, MsgIdRange, U8Range};
 use rmr::endpoint::identity_flags::IdentityFlags;
-use rmr::endpoint::udp::server::UdpServerConfig;
+use rmr::endpoint::spec::UdpServerEndpoint;
+use rmr::endpoint::udp::server::UdpServerSpec;
 
 use crate::common;
 use crate::common::shutdown_all;
-use crate::common::udp::spawn_udps_at_with_config_and_identity;
+use crate::common::udp::spawn_udps_with_spec;
 
 #[tokio::test]
 async fn udps_peer_inherits_parent_identity() {
@@ -39,14 +40,16 @@ async fn udps_peer_inherits_parent_identity() {
         },
     };
 
-    let mut harness = spawn_udps_at_with_config_and_identity(
-        &allocator,
-        cancel.clone(),
-        "127.0.0.1:0".parse().expect("parse listen_addr"),
-        UdpServerConfig::default(),
-        parent_identity.clone(),
-        "udps-id",
+    let listen_addr = "127.0.0.1:0".parse().expect("parse listen_addr");
+    let parent_id = allocator.alloc();
+    let mut spec = UdpServerSpec::from_endpoint(
+        UdpServerEndpoint::default(),
+        listen_addr,
+        parent_id,
+        "udps-id".to_string(),
     );
+    spec.identity = parent_identity.clone();
+    let mut harness = spawn_udps_with_spec(&allocator, cancel.clone(), spec);
     let bound = harness
         .bound_addr_rx
         .take()
