@@ -48,7 +48,6 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
-use tokio::time::sleep;
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info_span, trace, warn};
@@ -59,6 +58,7 @@ use super::identity_flags::IdentityFlags;
 use super::spec::{SerialEndpoint, SerialFlowControl};
 use super::stats::EndpointStats;
 use super::tx_queue::TxQueue;
+use super::wait_or_cancel;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_SERIAL_REOPEN_MS: u64 = 1000;
@@ -264,14 +264,6 @@ async fn open_until_cancel(
                 }
             }
         }
-    }
-}
-
-async fn wait_or_cancel(cancel: &CancellationToken, delay: Duration) -> bool {
-    tokio::select! {
-        biased;
-        _ = cancel.cancelled() => false,
-        _ = sleep(delay) => true,
     }
 }
 
@@ -490,23 +482,6 @@ mod tests {
             .expect("open_until_cancel did not return")
             .expect("join");
         assert!(matches!(outcome, OpenOutcome::Cancelled));
-    }
-
-    #[tokio::test]
-    async fn wait_or_cancel_returns_false_when_cancelled() {
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let r = wait_or_cancel(&cancel, Duration::from_secs(60)).await;
-        assert!(!r);
-    }
-
-    #[tokio::test]
-    async fn wait_or_cancel_returns_true_after_delay() {
-        let cancel = CancellationToken::new();
-        let start = tokio::time::Instant::now();
-        let r = wait_or_cancel(&cancel, Duration::from_millis(20)).await;
-        assert!(r);
-        assert!(start.elapsed() >= Duration::from_millis(20));
     }
 
     #[cfg(unix)]

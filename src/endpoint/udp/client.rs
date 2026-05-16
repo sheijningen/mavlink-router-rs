@@ -7,7 +7,7 @@ use bytes::Bytes;
 use thiserror::Error;
 use tokio::net::{UdpSocket, lookup_host};
 use tokio::sync::mpsc;
-use tokio::time::{Instant, MissedTickBehavior, interval, sleep};
+use tokio::time::{Instant, MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info_span, trace, warn};
 
@@ -19,6 +19,7 @@ use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
 use super::super::stats::EndpointStats;
 use super::super::tx_queue::TxQueue;
+use super::super::wait_or_cancel;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_LATCH_IDLE_SECS: u64 = 30;
@@ -303,14 +304,6 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
                 send_frame(&socket, &mut dest, frame, &stats).await;
             }
         }
-    }
-}
-
-async fn wait_or_cancel(cancel: &CancellationToken, delay: Duration) -> bool {
-    tokio::select! {
-        biased;
-        _ = cancel.cancelled() => false,
-        _ = sleep(delay) => true,
     }
 }
 
@@ -607,21 +600,6 @@ mod tests {
         });
         check_latch_idle(&mut dest, Duration::from_secs(30)).await;
         assert!(dest.latch.is_some());
-    }
-
-    #[tokio::test]
-    async fn wait_or_cancel_returns_false_when_cancelled() {
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let r = wait_or_cancel(&cancel, Duration::from_secs(60)).await;
-        assert!(!r);
-    }
-
-    #[tokio::test]
-    async fn wait_or_cancel_returns_true_after_delay() {
-        let cancel = CancellationToken::new();
-        let r = wait_or_cancel(&cancel, Duration::from_millis(50)).await;
-        assert!(r);
     }
 
     #[tokio::test]

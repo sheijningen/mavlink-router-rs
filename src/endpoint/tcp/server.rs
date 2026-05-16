@@ -1,12 +1,10 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
-use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, trace, warn};
 
@@ -20,6 +18,7 @@ use super::super::socket::{bind_tcp_dual_stack, configure_tcp_stream};
 use super::super::spec::TcpServerEndpoint;
 use super::super::stats::EndpointStats;
 use super::super::tx_queue::TxQueue;
+use super::super::wait_or_cancel;
 use super::session::{SessionOutcome, run_session};
 
 const DEFAULT_READ_BUF_BYTES: usize = 8192;
@@ -331,14 +330,6 @@ async fn run_client_session(
     trace!(parent_id = %parent_id, %peer_addr, %child_id, ?reason, "tcps client session ended");
 }
 
-async fn wait_or_cancel(cancel: &CancellationToken, delay: Duration) -> bool {
-    tokio::select! {
-        biased;
-        _ = cancel.cancelled() => false,
-        _ = sleep(delay) => true,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,13 +362,5 @@ mod tests {
         // expose per-endpoint reconnect overrides in v1.
         assert_eq!(cfg.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(cfg.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
-    }
-
-    #[tokio::test]
-    async fn wait_or_cancel_returns_false_when_cancelled() {
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let r = wait_or_cancel(&cancel, Duration::from_secs(60)).await;
-        assert!(!r);
     }
 }

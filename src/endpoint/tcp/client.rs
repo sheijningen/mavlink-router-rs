@@ -5,7 +5,6 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::net::{TcpStream, lookup_host};
 use tokio::sync::mpsc;
-use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info_span, trace, warn};
 
@@ -17,6 +16,7 @@ use super::super::socket::configure_tcp_stream;
 use super::super::spec::TcpClientEndpoint;
 use super::super::stats::EndpointStats;
 use super::super::tx_queue::TxQueue;
+use super::super::wait_or_cancel;
 use super::session::{SessionOutcome, run_session};
 
 const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
@@ -254,14 +254,6 @@ async fn resolve_to_socket_addrs(host: &str, port: u16) -> Vec<SocketAddr> {
     }
 }
 
-async fn wait_or_cancel(cancel: &CancellationToken, delay: Duration) -> bool {
-    tokio::select! {
-        biased;
-        _ = cancel.cancelled() => false,
-        _ = sleep(delay) => true,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,23 +302,6 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
         assert_eq!(v[0].port(), 5760);
-    }
-
-    #[tokio::test]
-    async fn wait_or_cancel_returns_false_when_cancelled() {
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let r = wait_or_cancel(&cancel, Duration::from_secs(60)).await;
-        assert!(!r);
-    }
-
-    #[tokio::test]
-    async fn wait_or_cancel_returns_true_after_delay() {
-        let cancel = CancellationToken::new();
-        let start = tokio::time::Instant::now();
-        let r = wait_or_cancel(&cancel, Duration::from_millis(50)).await;
-        assert!(r);
-        assert!(start.elapsed() >= Duration::from_millis(50));
     }
 
     /// Cancellation set before the call must short-circuit `connect_one`

@@ -1,5 +1,9 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use tokio::time::sleep;
+use tokio_util::sync::CancellationToken;
 
 pub mod backoff;
 pub mod events;
@@ -14,6 +18,18 @@ pub mod tx_queue;
 pub mod udp;
 
 use std::net::SocketAddr;
+
+/// Sleep for `delay` unless cancelled first. Returns `true` if the full delay
+/// elapsed, `false` if the cancellation token fired. Used by every endpoint
+/// task's reconnect / reopen / bind-retry sleep so shutdown is bounded by the
+/// drain budget rather than the longest configured backoff.
+pub async fn wait_or_cancel(cancel: &CancellationToken, delay: Duration) -> bool {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => false,
+        _ = sleep(delay) => true,
+    }
+}
 
 /// Sub-endpoint name for a `tcps:` accepted client or a `udps:` learned peer:
 /// `<parent>/<ip>-<port>` for IPv4, `<parent>/[<ip>]-<port>` for IPv6 (the
@@ -121,5 +137,22 @@ mod tests {
         let a = EndpointIdAllocator::new();
         let id = a.alloc();
         assert_eq!(format!("{id}"), "0");
+    }
+
+    #[tokio::test]
+    async fn wait_or_cancel_returns_false_when_cancelled() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let r = wait_or_cancel(&cancel, Duration::from_secs(60)).await;
+        assert!(!r);
+    }
+
+    #[tokio::test]
+    async fn wait_or_cancel_returns_true_after_delay() {
+        let cancel = CancellationToken::new();
+        let start = tokio::time::Instant::now();
+        let r = wait_or_cancel(&cancel, Duration::from_millis(20)).await;
+        assert!(r);
+        assert!(start.elapsed() >= Duration::from_millis(20));
     }
 }

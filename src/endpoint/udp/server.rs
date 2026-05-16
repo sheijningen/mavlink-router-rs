@@ -7,7 +7,7 @@ use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
-use tokio::time::{Instant, MissedTickBehavior, interval, sleep};
+use tokio::time::{Instant, MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, trace, warn};
 
@@ -21,6 +21,7 @@ use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpServerEndpoint;
 use super::super::stats::EndpointStats;
 use super::super::tx_queue::TxQueue;
+use super::super::wait_or_cancel;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_IDLE_SECS: u64 = 60;
@@ -232,14 +233,6 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
                 }
             }
         }
-    }
-}
-
-async fn wait_or_cancel(cancel: &CancellationToken, delay: Duration) -> bool {
-    tokio::select! {
-        biased;
-        _ = cancel.cancelled() => false,
-        _ = sleep(delay) => true,
     }
 }
 
@@ -580,14 +573,6 @@ mod tests {
         }
         removed.sort();
         assert_eq!(removed, vec![addr(1), addr(3)]);
-    }
-
-    #[tokio::test]
-    async fn wait_or_cancel_returns_false_when_cancelled() {
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let r = wait_or_cancel(&cancel, Duration::from_secs(60)).await;
-        assert!(!r);
     }
 
     /// Regression: when the router event channel is already closed and a
