@@ -19,7 +19,7 @@ use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpServerEndpoint;
-use super::super::stats::EndpointStats;
+use super::super::stats::{EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
 use super::super::wait_or_cancel;
 use crate::mavlink::framer::Framer;
@@ -94,8 +94,7 @@ struct PeerEntry {
     child_id: EndpointId,
     framer: Framer,
     last_seen: Instant,
-    last_resync_total: u64,
-    last_crc_total: u64,
+    framer_counters: FramerCounters,
     stats: Arc<EndpointStats>,
     writer_cancel: CancellationToken,
 }
@@ -311,8 +310,7 @@ async fn handle_packet(
             child_id,
             framer: Framer::with_capacity(ctx.cfg.read_buf_bytes),
             last_seen: Instant::now(),
-            last_resync_total: 0,
-            last_crc_total: 0,
+            framer_counters: FramerCounters::new(),
             stats,
             writer_cancel,
         };
@@ -342,26 +340,7 @@ async fn handle_packet(
             return;
         }
     }
-    sync_framer_counters(peer);
-}
-
-fn sync_framer_counters(peer: &mut PeerEntry) {
-    let now_resync = peer.framer.resync_bytes();
-    let now_crc = peer.framer.crc_errors();
-    let resync_delta = now_resync.saturating_sub(peer.last_resync_total);
-    let crc_delta = now_crc.saturating_sub(peer.last_crc_total);
-    if resync_delta > 0 {
-        peer.stats
-            .resync_bytes
-            .fetch_add(resync_delta, std::sync::atomic::Ordering::Relaxed);
-    }
-    if crc_delta > 0 {
-        peer.stats
-            .crc_errors
-            .fetch_add(crc_delta, std::sync::atomic::Ordering::Relaxed);
-    }
-    peer.last_resync_total = now_resync;
-    peer.last_crc_total = now_crc;
+    peer.framer_counters.sync(&peer.framer, &peer.stats);
 }
 
 async fn evict_lru_peer(
@@ -506,8 +485,7 @@ mod tests {
             child_id,
             framer: Framer::new(),
             last_seen: Instant::now() - age,
-            last_resync_total: 0,
-            last_crc_total: 0,
+            framer_counters: FramerCounters::new(),
             stats,
             writer_cancel: CancellationToken::new(),
         }
@@ -625,33 +603,6 @@ mod tests {
         assert!(
             writer_tasks.is_empty(),
             "no writer task should have spawned for the dropped peer"
-        );
-    }
-
-    #[tokio::test]
-    async fn sync_framer_counters_propagates_deltas() {
-        // Feed deliberate garbage into a fresh framer and verify resync_bytes
-        // makes it into the per-peer stats. The framer itself is unit-tested
-        // separately; here we only assert plumbing.
-        let mut peer = dummy_peer(EndpointId(0), Duration::ZERO);
-        peer.framer.buffer_mut().extend_from_slice(&[0, 0, 0, 0]);
-        // Drain (will count 4 resync bytes and return None).
-        while peer.framer.try_next_frame().is_some() {}
-        assert_eq!(peer.framer.resync_bytes(), 4);
-        sync_framer_counters(&mut peer);
-        assert_eq!(
-            peer.stats
-                .resync_bytes
-                .load(std::sync::atomic::Ordering::Relaxed),
-            4
-        );
-        // Second call without further framer activity is a no-op.
-        sync_framer_counters(&mut peer);
-        assert_eq!(
-            peer.stats
-                .resync_bytes
-                .load(std::sync::atomic::Ordering::Relaxed),
-            4
         );
     }
 }

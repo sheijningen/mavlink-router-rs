@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -9,7 +8,7 @@ use tracing::{debug, warn};
 
 use super::super::EndpointId;
 use super::super::events::RouterFrame;
-use super::super::stats::EndpointStats;
+use super::super::stats::{EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
 
@@ -41,8 +40,7 @@ pub async fn run_session(
 ) -> SessionOutcome {
     let (mut rh, mut wh) = stream.into_split();
     let mut framer = Framer::with_capacity(read_buf_bytes);
-    let mut last_resync_total: u64 = 0;
-    let mut last_crc_total: u64 = 0;
+    let mut framer_counters = FramerCounters::new();
 
     loop {
         tokio::select! {
@@ -71,12 +69,7 @@ pub async fn run_session(
                                 return SessionOutcome::RouterGone;
                             }
                         }
-                        sync_framer_counters(
-                            &framer,
-                            &mut last_resync_total,
-                            &mut last_crc_total,
-                            stats,
-                        );
+                        framer_counters.sync(&framer, stats);
                     }
                     Err(e) => {
                         warn!(error = %e, "tcp read failed");
@@ -93,26 +86,4 @@ pub async fn run_session(
             }
         }
     }
-}
-
-fn sync_framer_counters(
-    framer: &Framer,
-    last_resync_total: &mut u64,
-    last_crc_total: &mut u64,
-    stats: &Arc<EndpointStats>,
-) {
-    let now_resync = framer.resync_bytes();
-    let now_crc = framer.crc_errors();
-    let resync_delta = now_resync.saturating_sub(*last_resync_total);
-    let crc_delta = now_crc.saturating_sub(*last_crc_total);
-    if resync_delta > 0 {
-        stats
-            .resync_bytes
-            .fetch_add(resync_delta, Ordering::Relaxed);
-    }
-    if crc_delta > 0 {
-        stats.crc_errors.fetch_add(crc_delta, Ordering::Relaxed);
-    }
-    *last_resync_total = now_resync;
-    *last_crc_total = now_crc;
 }

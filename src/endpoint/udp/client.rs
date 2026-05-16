@@ -17,7 +17,7 @@ use super::super::events::RouterFrame;
 use super::super::identity_flags::IdentityFlags;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
-use super::super::stats::EndpointStats;
+use super::super::stats::{EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
 use super::super::wait_or_cancel;
 use crate::mavlink::framer::Framer;
@@ -259,8 +259,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
     };
 
     let mut framer = Framer::with_capacity(cfg.read_buf_bytes);
-    let mut last_resync_total: u64 = 0;
-    let mut last_crc_total: u64 = 0;
+    let mut framer_counters = FramerCounters::new();
     let mut buf = vec![0u8; MAX_DATAGRAM_BYTES];
 
     let mut revert_tick = interval(REVERT_TICK);
@@ -287,8 +286,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
                             src,
                             &mut dest,
                             &mut framer,
-                            &mut last_resync_total,
-                            &mut last_crc_total,
+                            &mut framer_counters,
                             endpoint_id,
                             &stats,
                             &frame_tx,
@@ -313,8 +311,7 @@ async fn handle_inbound(
     src: SocketAddr,
     dest: &mut Destination,
     framer: &mut Framer,
-    last_resync_total: &mut u64,
-    last_crc_total: &mut u64,
+    framer_counters: &mut FramerCounters,
     endpoint_id: EndpointId,
     stats: &Arc<EndpointStats>,
     frame_tx: &mpsc::Sender<RouterFrame>,
@@ -357,29 +354,7 @@ async fn handle_inbound(
             return;
         }
     }
-    sync_framer_counters(framer, last_resync_total, last_crc_total, stats);
-}
-
-fn sync_framer_counters(
-    framer: &Framer,
-    last_resync_total: &mut u64,
-    last_crc_total: &mut u64,
-    stats: &Arc<EndpointStats>,
-) {
-    let now_resync = framer.resync_bytes();
-    let now_crc = framer.crc_errors();
-    let resync_delta = now_resync.saturating_sub(*last_resync_total);
-    let crc_delta = now_crc.saturating_sub(*last_crc_total);
-    if resync_delta > 0 {
-        stats
-            .resync_bytes
-            .fetch_add(resync_delta, Ordering::Relaxed);
-    }
-    if crc_delta > 0 {
-        stats.crc_errors.fetch_add(crc_delta, Ordering::Relaxed);
-    }
-    *last_resync_total = now_resync;
-    *last_crc_total = now_crc;
+    framer_counters.sync(framer, stats);
 }
 
 async fn send_frame(
@@ -600,20 +575,5 @@ mod tests {
         });
         check_latch_idle(&mut dest, Duration::from_secs(30)).await;
         assert!(dest.latch.is_some());
-    }
-
-    #[tokio::test]
-    async fn sync_framer_counters_propagates_deltas() {
-        let stats = Arc::new(EndpointStats::default());
-        let mut framer = Framer::new();
-        framer.buffer_mut().extend_from_slice(&[0, 0, 0, 0]);
-        while framer.try_next_frame().is_some() {}
-        assert_eq!(framer.resync_bytes(), 4);
-        let mut last_resync = 0u64;
-        let mut last_crc = 0u64;
-        sync_framer_counters(&framer, &mut last_resync, &mut last_crc, &stats);
-        assert_eq!(stats.resync_bytes.load(Ordering::Relaxed), 4);
-        sync_framer_counters(&framer, &mut last_resync, &mut last_crc, &stats);
-        assert_eq!(stats.resync_bytes.load(Ordering::Relaxed), 4);
     }
 }

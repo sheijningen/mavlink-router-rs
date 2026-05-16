@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
+use crate::mavlink::framer::Framer;
+
 /// User-visible health of one routing endpoint. Stored on
 /// [`EndpointStats::state`] as a raw `u8` so the stats task can cheaply
 /// `load → match` on a hot interval; the named enum keeps writers honest
@@ -119,6 +121,42 @@ impl EndpointStats {
     }
 }
 
+/// Last-seen values of [`Framer::resync_bytes`] and [`Framer::crc_errors`],
+/// used by callers (TCP/serial session loops, the `udps:` per-peer state)
+/// to compute deltas and forward them to the shared [`EndpointStats`]. The
+/// framer keeps running totals; this struct remembers what we last
+/// published so each sync only adds the new bytes.
+#[derive(Debug, Default)]
+pub struct FramerCounters {
+    last_resync_total: u64,
+    last_crc_total: u64,
+}
+
+impl FramerCounters {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Forward any new `resync_bytes` / `crc_errors` accumulated since the
+    /// last call to the shared stats. No-op when neither has advanced.
+    pub fn sync(&mut self, framer: &Framer, stats: &EndpointStats) {
+        let now_resync = framer.resync_bytes();
+        let now_crc = framer.crc_errors();
+        let resync_delta = now_resync.saturating_sub(self.last_resync_total);
+        let crc_delta = now_crc.saturating_sub(self.last_crc_total);
+        if resync_delta > 0 {
+            stats
+                .resync_bytes
+                .fetch_add(resync_delta, Ordering::Relaxed);
+        }
+        if crc_delta > 0 {
+            stats.crc_errors.fetch_add(crc_delta, Ordering::Relaxed);
+        }
+        self.last_resync_total = now_resync;
+        self.last_crc_total = now_crc;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +230,21 @@ mod tests {
         // panic rather than silently returning a junk variant.
         s.state.store(99, Ordering::Relaxed);
         let _ = s.load_state();
+    }
+
+    #[test]
+    fn framer_counters_propagates_deltas_then_no_ops() {
+        let stats = EndpointStats::default();
+        let mut framer = Framer::new();
+        framer.buffer_mut().extend_from_slice(&[0, 0, 0, 0]);
+        // Drain (will count 4 resync bytes and return None).
+        while framer.try_next_frame().is_some() {}
+        assert_eq!(framer.resync_bytes(), 4);
+        let mut counters = FramerCounters::new();
+        counters.sync(&framer, &stats);
+        assert_eq!(stats.resync_bytes.load(Ordering::Relaxed), 4);
+        // Second call without further framer activity is a no-op.
+        counters.sync(&framer, &stats);
+        assert_eq!(stats.resync_bytes.load(Ordering::Relaxed), 4);
     }
 }
