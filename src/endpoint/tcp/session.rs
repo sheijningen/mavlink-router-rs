@@ -15,11 +15,15 @@ use super::super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
 
 /// Why a TCP session terminated — controls whether the caller reconnects
-/// (Disconnected) or unwinds toward shutdown (Cancelled / router-channel
-/// gone).
+/// (Disconnected) or unwinds toward shutdown (Cancelled / RouterGone). The
+/// `Cancelled` and `RouterGone` variants are handled identically by callers,
+/// but kept distinct so tracing/logs can tell "the cancel token fired" apart
+/// from "the router task exited and dropped the frame channel" during
+/// debugging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionOutcome {
     Cancelled,
+    RouterGone,
     Disconnected,
 }
 
@@ -65,7 +69,7 @@ pub async fn run_session(
                                 .is_err()
                             {
                                 debug!("tcp router channel closed; ending session");
-                                return SessionOutcome::Cancelled;
+                                return SessionOutcome::RouterGone;
                             }
                         }
                         sync_framer_counters(

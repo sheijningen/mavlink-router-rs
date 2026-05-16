@@ -292,7 +292,9 @@ async fn run_client_session(
     tx_queue.drain_and_discard();
 
     let reason = match outcome {
-        SessionOutcome::Cancelled => PeerRemovalReason::ListenerShutdown,
+        SessionOutcome::Cancelled | SessionOutcome::RouterGone => {
+            PeerRemovalReason::ListenerShutdown
+        }
         SessionOutcome::Disconnected => PeerRemovalReason::Disconnected,
     };
     let _ = event_tx
