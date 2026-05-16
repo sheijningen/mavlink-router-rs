@@ -7,11 +7,12 @@ use bytes::Bytes;
 use thiserror::Error;
 use tokio::net::{UdpSocket, lookup_host};
 use tokio::sync::mpsc;
-use tokio::time::{Instant, MissedTickBehavior, interval};
+use tokio::time::{Instant, MissedTickBehavior, interval, sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info_span, trace, warn};
 
 use super::super::EndpointId;
+use super::super::backoff::Backoff;
 use super::super::events::RouterFrame;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
@@ -22,18 +23,25 @@ use crate::mavlink::framer::Framer;
 const DEFAULT_LATCH_IDLE_SECS: u64 = 30;
 const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
 const DEFAULT_READ_BUF_BYTES: usize = 8192;
+const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
+const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
 const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REVERT_TICK: Duration = Duration::from_secs(1);
 
 /// Per-endpoint runtime configuration. The spec parser hands us a fully-typed
 /// `UdpClientEndpoint`; this struct collapses the optional knobs down to the
 /// concrete values the task actually uses, substituting CLAUDE.md defaults
-/// where the user left a knob unset.
+/// where the user left a knob unset. The `reconnect_*_ms` fields are
+/// hard-coded to the `tcpc:` curve (CLAUDE.md "Bind/open failure at startup is
+/// not fatal" + "Same reasoning applies to `udps:`" — `udpc:` follows the same
+/// rule) — `udpc:` does not expose per-endpoint bind-retry overrides in v1.
 #[derive(Debug, Clone, Copy)]
 pub struct UdpClientConfig {
     pub latch_idle_secs: u64,
     pub tx_queue_frames: usize,
     pub read_buf_bytes: usize,
+    pub reconnect_initial_ms: u64,
+    pub reconnect_max_ms: u64,
 }
 
 impl Default for UdpClientConfig {
@@ -42,6 +50,8 @@ impl Default for UdpClientConfig {
             latch_idle_secs: DEFAULT_LATCH_IDLE_SECS,
             tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
             read_buf_bytes: DEFAULT_READ_BUF_BYTES,
+            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
+            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
         }
     }
 }
@@ -52,15 +62,20 @@ impl UdpClientConfig {
             latch_idle_secs: ep.latch_idle_secs.unwrap_or(DEFAULT_LATCH_IDLE_SECS),
             tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
             read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
+            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
+            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
         }
     }
 }
 
+/// Typed-empty return for `udpc:` `run()`. Local bind failures enter the same
+/// backoff loop as `tcpc:` reconnects (CLAUDE.md "Bind/open failure at startup
+/// is not fatal"); inbound recv errors and outbound send errors are logged and
+/// the loop continues — no terminal failure modes remain in v1. Kept as a
+/// typed return for symmetry with the other endpoint modules in case a fatal
+/// case shows up.
 #[derive(Debug, Error)]
-pub enum UdpClientError {
-    #[error("udpc: local bind failed: {0}")]
-    Bind(#[source] std::io::Error),
-}
+pub enum UdpClientError {}
 
 /// Inputs that distinguish one `udpc:` endpoint from another: where to send,
 /// what to call it, and the per-endpoint knobs from the query string.
@@ -183,9 +198,11 @@ async fn resolve_host(host: &str, port: u16) -> Vec<IpAddr> {
 }
 
 /// Run a `udpc:` endpoint until the cancellation token fires. Binds a local
-/// socket suitable for the host's resolved family, performs an initial DNS
-/// resolution (failure is non-fatal — retried on first send/inbound), then
-/// loops over inbound, the revert tick, the TX queue, and cancellation.
+/// socket suitable for the host's resolved family, retrying with the shared
+/// capped-exp backoff on failure (CLAUDE.md "Bind/open failure at startup is
+/// not fatal"); performs an initial DNS resolution (failure is non-fatal —
+/// retried on first send/inbound); then loops over inbound, the revert tick,
+/// the TX queue, and cancellation.
 pub async fn run(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), UdpClientError> {
     let span = info_span!("udpc", name = %spec.name);
     run_inner(spec, wiring).instrument(span).await
@@ -214,8 +231,22 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
         latch: None,
     };
 
-    let socket =
-        bind_udp_dual_stack(pick_local_bind(&dest.resolved_ips)).map_err(UdpClientError::Bind)?;
+    let mut backoff = Backoff::new(cfg.reconnect_initial_ms, cfg.reconnect_max_ms);
+    let local_bind = pick_local_bind(&dest.resolved_ips);
+    let socket = loop {
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+        match bind_udp_dual_stack(local_bind) {
+            Ok(s) => break s,
+            Err(e) => {
+                warn!(error = %e, %local_bind, "udpc local bind failed; retrying after backoff");
+                if !wait_or_cancel(&cancel, backoff.next_delay()).await {
+                    return Ok(());
+                }
+            }
+        }
+    };
 
     let mut framer = Framer::with_capacity(cfg.read_buf_bytes);
     let mut last_resync_total: u64 = 0;
@@ -270,6 +301,14 @@ async fn pop_or_wait(q: &TxQueue) -> Bytes {
             return b;
         }
         q.wait_for_push().await;
+    }
+}
+
+async fn wait_or_cancel(cancel: &CancellationToken, delay: Duration) -> bool {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => false,
+        _ = sleep(delay) => true,
     }
 }
 
@@ -416,6 +455,8 @@ mod tests {
         assert_eq!(cfg.latch_idle_secs, DEFAULT_LATCH_IDLE_SECS);
         assert_eq!(cfg.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
         assert_eq!(cfg.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
+        assert_eq!(cfg.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
+        assert_eq!(cfg.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     }
 
     #[test]
@@ -565,6 +606,21 @@ mod tests {
         });
         check_latch_idle(&mut dest, Duration::from_secs(30)).await;
         assert!(dest.latch.is_some());
+    }
+
+    #[tokio::test]
+    async fn wait_or_cancel_returns_false_when_cancelled() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let r = wait_or_cancel(&cancel, Duration::from_secs(60)).await;
+        assert!(!r);
+    }
+
+    #[tokio::test]
+    async fn wait_or_cancel_returns_true_after_delay() {
+        let cancel = CancellationToken::new();
+        let r = wait_or_cancel(&cancel, Duration::from_millis(50)).await;
+        assert!(r);
     }
 
     #[tokio::test]
