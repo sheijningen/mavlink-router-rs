@@ -1,45 +1,5 @@
-//! `serial:` endpoint.
-//!
-//! # Manual hardware test plan
-//!
-//! Phase 4 ships unit + pty-pair coverage that runs in CI, but the
-//! USB-serial replug story and the hardware flow-control path cannot be
-//! exercised without real hardware (CLAUDE.md "Serial framer ... where
-//! available; hot-replug behaviour (manual test plan documented in repo if
-//! hardware-only)"). Re-run the procedures below on the integrator's bench
-//! whenever this module's open path, session loop, or `tokio-serial` pin
-//! changes.
-//!
-//! ## 1. Loopback round-trip (USB-serial dongle with TX↔RX jumpered)
-//! 1. Loop pin 2 ↔ pin 3 on a USB-serial dongle (a single jumper or a
-//!    loopback plug). Note the device path (Linux: `/dev/ttyUSB0` or a
-//!    `by-id/` symlink; Windows: `COM3`).
-//! 2. Start rmr: `rmr serial:/dev/ttyUSB0:115200#loop --stats`
-//! 3. Inject a HEARTBEAT into the device with any MAVLink-aware tool (the
-//!    frame echoes back through the jumper).
-//! 4. Expect the `loop` stats line to show `rx_frames` and `tx_frames`
-//!    both incrementing 1:1; `crc_errors` and `resync_bytes` stay at 0.
-//!
-//! ## 2. Hot-replug recovery (USB-serial unplug → replug)
-//! 1. Plug in a USB-serial dongle, start `rmr serial:<path>:115200`.
-//! 2. Physically unplug the dongle.
-//! 3. Expect either a `serial read failed` WARN or a `serial read returned
-//!    EOF (device closed)` DEBUG (the specific signal depends on the
-//!    driver), followed by repeated `serial open failed; retrying after
-//!    serial_reopen_ms` WARNs at the configured cadence (default 1s).
-//! 4. Replug the dongle. Expect the WARNs to stop and a TRACE
-//!    `serial opened` line; counters resume on the next inbound frame. The
-//!    TxQueue's `dropped_tx` reflects any frames buffered during the outage.
-//!
-//! ## 3. Hardware flow-control sanity (RTS/CTS over a full-handshake cable)
-//! 1. Wire two dongles with a 7-wire cable (TX↔RX, RX↔TX, RTS↔CTS, CTS↔RTS,
-//!    GND↔GND).
-//! 2. Start two rmr instances, each `?flow_control=rtscts`.
-//! 3. Saturate one side with frames while pausing the other (`kill -STOP`).
-//! 4. Expect the sender's writes to block (paused side deasserts RTS, sender's
-//!    CTS halts the write) without spinning or erroring; once the TxQueue
-//!    fills, `dropped_tx` increments. Resume the paused side; counters
-//!    drain.
+//! `serial:` endpoint: open the device, run the shared session loop, and
+//! reopen on disconnect via a fixed `serial_reopen_ms` poll.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -272,10 +232,7 @@ fn try_open(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::EndpointIdAllocator;
     use crate::endpoint::spec::{CommonQuery, SerialEndpoint};
-    use bytes::Bytes;
-    use std::sync::atomic::Ordering;
     use std::time::Duration;
     use tokio::time::timeout;
 
@@ -305,55 +262,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_returns_when_cancelled_while_open_retrying() {
-        // /dev/null is not a tty so the open call fails immediately; the
-        // hot-replug loop then sleeps `serial_reopen_ms` and retries forever
-        // until cancellation. This proves the open-retry arm honours the
-        // cancel token from inside its `wait_or_cancel` sleep.
-        let allocator = EndpointIdAllocator::new();
-        let endpoint_id = allocator.alloc();
-        let stats = Arc::new(EndpointStats::default());
-        let tx_queue = TxQueue::new(8, stats.clone());
-        let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
-        let cancel = CancellationToken::new();
-
-        let spec = SerialSpec {
-            path: "/dev/null".to_string(),
-            baud: 115200,
-            flow_control: SerialFlowControl::None,
-            endpoint_id,
-            name: "test-serial".to_string(),
-            cfg: SerialConfig {
-                serial_reopen_ms: 1000,
-                ..SerialConfig::default()
-            },
-            identity: IdentityFlags::default(),
-        };
-        let wiring = SerialWiring {
-            frame_tx,
-            tx_queue: tx_queue.clone(),
-            stats,
-            cancel: cancel.clone(),
-        };
-
-        let handle = tokio::spawn(async move { run(spec, wiring).await });
-        // Cancel while the task is inside the reopen sleep.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        cancel.cancel();
-        timeout(Duration::from_secs(2), handle)
-            .await
-            .expect("serial run did not return after cancel")
-            .expect("join")
-            .expect("run result");
-    }
-
-    #[tokio::test]
     async fn open_until_cancel_retries_then_yields_on_cancel() {
         // Bad path + 5ms reopen → loop retries multiple times before cancel
         // takes effect. We can't observe the attempt count directly without
         // instrumentation, but cancelling the loop after 50ms with a 5ms
         // poll proves both halves of the loop (retry + cancel-during-sleep)
-        // are reachable and well-formed.
+        // are reachable and well-formed. Tests a private function — must
+        // live next to it; the public-API equivalents are in `tests/serial.rs`.
         let cancel = CancellationToken::new();
         let task = {
             let cancel = cancel.clone();
@@ -375,153 +290,5 @@ mod tests {
             .expect("open_until_cancel did not return")
             .expect("join");
         assert!(matches!(outcome, OpenOutcome::Cancelled));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn pty_pair_round_trips_frame() {
-        // Use a Unix pty pair to drive both halves of the session without
-        // needing real hardware: rmr's `run_session` reads/writes the master,
-        // the test plays the role of the device on the slave end.
-        use crate::endpoint::events::RouterFrame;
-        use tokio::io::AsyncWriteExt;
-
-        let (master, mut slave) = tokio_serial::SerialStream::pair().expect("pty pair");
-
-        let allocator = EndpointIdAllocator::new();
-        let endpoint_id = allocator.alloc();
-        let stats = Arc::new(EndpointStats::default());
-        let tx_queue = TxQueue::new(8, stats.clone());
-        let (frame_tx, mut frame_rx) = mpsc::channel::<RouterFrame>(8);
-        let cancel = CancellationToken::new();
-
-        let session = {
-            let stats = stats.clone();
-            let tx_queue = tx_queue.clone();
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                run_session(
-                    master,
-                    endpoint_id,
-                    &stats,
-                    &frame_tx,
-                    &tx_queue,
-                    &cancel,
-                    4096,
-                )
-                .await
-            })
-        };
-
-        // Build a real v2 HEARTBEAT, write it from slave→master; rmr should
-        // emit one RouterFrame on frame_rx with identical bytes.
-        let frame = build_test_v2_heartbeat();
-        slave.write_all(&frame).await.expect("slave write");
-        let rf = timeout(Duration::from_secs(2), frame_rx.recv())
-            .await
-            .expect("frame_rx timeout")
-            .expect("frame_rx closed");
-        assert_eq!(rf.endpoint_id, endpoint_id);
-        assert_eq!(&rf.frame[..], &frame[..]);
-        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 1);
-        assert_eq!(stats.rx_bytes.load(Ordering::Relaxed), frame.len() as u64);
-
-        // Symmetric: push a frame onto the TxQueue; the slave end reads it.
-        tx_queue.push(Bytes::from(frame.clone()));
-        let mut buf = vec![0u8; frame.len()];
-        let mut got = 0;
-        while got < frame.len() {
-            let n = timeout(
-                Duration::from_secs(2),
-                tokio::io::AsyncReadExt::read(&mut slave, &mut buf[got..]),
-            )
-            .await
-            .expect("slave read timeout")
-            .expect("slave read");
-            assert!(n > 0, "EOF before full frame arrived");
-            got += n;
-        }
-        assert_eq!(buf, frame);
-        assert_eq!(stats.tx_frames.load(Ordering::Relaxed), 1);
-
-        cancel.cancel();
-        let outcome = timeout(Duration::from_secs(2), session)
-            .await
-            .expect("session join timeout")
-            .expect("session join");
-        assert_eq!(outcome, SessionOutcome::Cancelled);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn session_surfaces_disconnected_on_slave_drop() {
-        // Dropping the slave end of a pty pair makes the master side see EOF
-        // on the next read, which `run_session` must report as
-        // `SessionOutcome::Disconnected`. That outcome is what triggers the
-        // outer `run_inner` re-open loop — proving the trigger separately
-        // from the loop keeps the assertion crisp.
-        let (master, slave) = tokio_serial::SerialStream::pair().expect("pty pair");
-
-        let allocator = EndpointIdAllocator::new();
-        let endpoint_id = allocator.alloc();
-        let stats = Arc::new(EndpointStats::default());
-        let tx_queue = TxQueue::new(8, stats.clone());
-        let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
-        let cancel = CancellationToken::new();
-
-        // Run the session loop directly with the master we have, then assert
-        // it surfaces Disconnected on slave-drop. That's the exact transition
-        // run_inner's outer loop reacts to.
-        let session = {
-            let stats = stats.clone();
-            let tx_queue = tx_queue.clone();
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                run_session(
-                    master,
-                    endpoint_id,
-                    &stats,
-                    &frame_tx,
-                    &tx_queue,
-                    &cancel,
-                    4096,
-                )
-                .await
-            })
-        };
-        drop(slave);
-        let outcome = timeout(Duration::from_secs(2), session)
-            .await
-            .expect("session join timeout")
-            .expect("session join");
-        assert_eq!(outcome, SessionOutcome::Disconnected);
-    }
-
-    #[cfg(unix)]
-    fn build_test_v2_heartbeat() -> Vec<u8> {
-        // Hand-rolled v2 HEARTBEAT (msgid=0, payload 9 bytes), CRC computed
-        // against crc_extra=50 — keeps this test independent of the test/
-        // common fixtures, since those live in a separate test crate.
-        use crate::mavlink::crc::Crc16;
-        let payload: [u8; 9] = [0, 0, 0, 0, 2, 3, 0, 0, 3];
-        let mut frame = Vec::with_capacity(12 + payload.len() + 2);
-        frame.push(0xFD); // STX v2
-        frame.push(payload.len() as u8); // len
-        frame.push(0); // incompat_flags
-        frame.push(0); // compat_flags
-        frame.push(0); // seq
-        frame.push(1); // sysid
-        frame.push(1); // compid
-        frame.push(0); // msgid LSB
-        frame.push(0); // msgid mid
-        frame.push(0); // msgid MSB
-        frame.extend_from_slice(&payload);
-        let mut crc = Crc16::new();
-        crc.update_slice(&frame[1..]);
-        crc.update(50); // HEARTBEAT crc_extra
-        let crc = crc.finalize();
-        frame.push(crc as u8);
-        frame.push((crc >> 8) as u8);
-        frame
     }
 }
