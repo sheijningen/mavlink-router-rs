@@ -1,6 +1,7 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod backoff;
 pub mod events;
 pub mod filters;
 pub mod serial;
