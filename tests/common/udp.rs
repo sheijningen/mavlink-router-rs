@@ -41,6 +41,17 @@ pub fn spawn_udps(
     cancel: CancellationToken,
     name: &str,
 ) -> UdpsHarness {
+    spawn_udps_with_config(allocator, cancel, name, UdpServerConfig::default())
+}
+
+/// Like `spawn_udps` but lets the test override the listener's `UdpServerConfig`
+/// — typically to shorten `idle_secs` for fast idle-reap coverage.
+pub fn spawn_udps_with_config(
+    allocator: &Arc<EndpointIdAllocator>,
+    cancel: CancellationToken,
+    name: &str,
+    cfg: UdpServerConfig,
+) -> UdpsHarness {
     let port = ephemeral_localhost_port();
     let listen_addr: SocketAddr = format!("127.0.0.1:{port}")
         .parse()
@@ -56,7 +67,7 @@ pub fn spawn_udps(
                 listen_addr,
                 parent_id,
                 parent_name,
-                cfg: UdpServerConfig::default(),
+                cfg,
             },
             UdpServerWiring {
                 allocator,
