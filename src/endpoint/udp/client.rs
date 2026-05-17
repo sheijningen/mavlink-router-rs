@@ -243,9 +243,11 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
         BindOutcome::Bound(s) => s,
         BindOutcome::Cancelled => return Ok(()),
     };
-    // Local bind succeeded; udpc has no transport-up/down event thereafter
-    // (revert to configured-host is *not* a transport event per CLAUDE.md),
-    // so this is the only Connected write the task ever issues.
+    // Local bind succeeded. udpc has no transport-up/down event in the
+    // socket-lifecycle sense (revert to configured-host is *not* a transport
+    // event per CLAUDE.md), but the task does flip back to Reconnecting on
+    // send_to errors and DNS-resolve failures that leave us with no target —
+    // see `send_frame` for the recovery / failure writes.
     stats.store_state(EndpointState::Connected);
 
     let mut framer = Framer::with_capacity(read_buf_bytes);
@@ -326,6 +328,11 @@ async fn handle_inbound(
             }
         }
     }
+    // An accepted inbound proves the peer is reachable on this socket — flip
+    // the state out of any prior Reconnecting (a previous send_to may have
+    // failed before the peer responded over this same path). Idempotent on
+    // the common already-Connected case.
+    stats.store_state(EndpointState::Connected);
 
     framer.buffer_mut().extend_from_slice(data);
     while let Some((header, frame)) = framer.try_next_frame() {
@@ -359,16 +366,30 @@ async fn send_frame(
         if !fresh.is_empty() {
             dest.resolved_ips = fresh;
         }
+        // CLAUDE.md: "writes Reconnecting only on send_to errors and
+        // DNS-resolve failures that prevent any send at all". The frame
+        // we just skipped is one such failure — if the re-resolve also
+        // couldn't produce a target, surface the state to the operator.
+        // The next successful send flips back to Connected below.
+        if dest.current_target().is_none() {
+            stats.store_state(EndpointState::Reconnecting);
+        }
         return;
     };
     match socket.send_to(&frame, target).await {
-        Ok(n) => stats.add_tx_frame(n),
+        Ok(n) => {
+            stats.add_tx_frame(n);
+            // Idempotent recovery write: cheap relaxed AtomicU8 store, and
+            // saves tracking "were we Reconnecting?" on the hot path.
+            stats.store_state(EndpointState::Connected);
+        }
         Err(e) => {
             warn!(error = %e, %target, "udpc send_to failed; re-resolving for next burst");
             let fresh = resolve_host(&dest.host, dest.port).await;
             if !fresh.is_empty() {
                 dest.resolved_ips = fresh;
             }
+            stats.store_state(EndpointState::Reconnecting);
         }
     }
 }
@@ -565,5 +586,163 @@ mod tests {
         });
         check_latch_idle(&mut dest, Duration::from_secs(30)).await;
         assert!(dest.latch.is_some());
+    }
+
+    /// Successful send flips state to Connected (idempotent recovery path).
+    #[tokio::test]
+    async fn send_frame_success_writes_connected() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("recv bind");
+        let receiver_port = receiver.local_addr().expect("recv addr").port();
+        let sender = UdpSocket::bind("127.0.0.1:0").await.expect("send bind");
+        let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
+        let mut dest = make_dest(&[v4(127, 0, 0, 1)], receiver_port);
+        send_frame(&sender, &mut dest, Bytes::from_static(b"hello"), &stats).await;
+        assert_eq!(stats.load_state(), EndpointState::Connected);
+        assert_eq!(stats.tx_frames.load(Ordering::Relaxed), 1);
+    }
+
+    /// send_to to port 0 returns EINVAL on Unix (an invalid destination);
+    /// the task writes Reconnecting in response. Gated to unix because
+    /// WinSock's sendto-to-port-0 behaviour isn't documented to fail
+    /// synchronously.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn send_frame_send_to_error_writes_reconnecting() {
+        let sender = UdpSocket::bind("127.0.0.1:0").await.expect("send bind");
+        let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
+        // Port 0 as a destination is invalid; send_to returns Err.
+        let mut dest = make_dest(&[v4(127, 0, 0, 1)], 0);
+        send_frame(&sender, &mut dest, Bytes::from_static(b"hello"), &stats).await;
+        assert_eq!(stats.load_state(), EndpointState::Reconnecting);
+        assert_eq!(
+            stats.tx_frames.load(Ordering::Relaxed),
+            0,
+            "failed send must not count as tx_frame"
+        );
+    }
+
+    /// No resolved IPs + DNS re-resolve also fails → Reconnecting. Uses a
+    /// `.invalid` host (RFC 2606 reserved-for-non-resolution) so the
+    /// lookup is guaranteed to return no addresses.
+    #[tokio::test]
+    async fn send_frame_no_target_after_failed_reresolve_writes_reconnecting() {
+        let sender = UdpSocket::bind("127.0.0.1:0").await.expect("send bind");
+        let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
+        let mut dest = Destination {
+            host: "rmr-test-host-should-not-resolve.invalid".to_string(),
+            port: 14550,
+            resolved_ips: vec![],
+            latch: None,
+        };
+        send_frame(&sender, &mut dest, Bytes::from_static(b"hello"), &stats).await;
+        assert_eq!(stats.load_state(), EndpointState::Reconnecting);
+    }
+
+    /// Inverse of the previous test: if `current_target` was None *and*
+    /// the fresh re-resolve produces addresses, the next call to
+    /// `send_frame` will have a target. We don't write Reconnecting on
+    /// that branch (we only write Reconnecting when there's still no
+    /// target after the re-resolve). The state we were in before is
+    /// preserved.
+    #[tokio::test]
+    async fn send_frame_no_target_then_reresolve_succeeds_keeps_state() {
+        let sender = UdpSocket::bind("127.0.0.1:0").await.expect("send bind");
+        let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
+        let mut dest = Destination {
+            // `localhost` resolves to 127.0.0.1 (and possibly ::1) on every
+            // supported OS so the re-resolve populates resolved_ips.
+            host: "localhost".to_string(),
+            port: 14550,
+            resolved_ips: vec![],
+            latch: None,
+        };
+        send_frame(&sender, &mut dest, Bytes::from_static(b"hello"), &stats).await;
+        // The frame was skipped (no target on entry), but the re-resolve
+        // succeeded so we shouldn't transition to Reconnecting.
+        assert_eq!(stats.load_state(), EndpointState::Connected);
+        assert!(
+            !dest.resolved_ips.is_empty(),
+            "re-resolve should have populated IPs"
+        );
+    }
+
+    /// Recovery: a Reconnecting endpoint that sends successfully flips
+    /// back to Connected. Pins the two-way transition. Unix-only because
+    /// the failure leg uses port-0 send_to (see above).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn send_frame_recovers_from_reconnecting_on_success() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("recv bind");
+        let receiver_port = receiver.local_addr().expect("recv addr").port();
+        let sender = UdpSocket::bind("127.0.0.1:0").await.expect("send bind");
+        let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
+
+        // First: an error transitions to Reconnecting.
+        let mut bad_dest = make_dest(&[v4(127, 0, 0, 1)], 0);
+        send_frame(&sender, &mut bad_dest, Bytes::from_static(b"a"), &stats).await;
+        assert_eq!(stats.load_state(), EndpointState::Reconnecting);
+
+        // Then: a successful send recovers to Connected.
+        let mut good_dest = make_dest(&[v4(127, 0, 0, 1)], receiver_port);
+        send_frame(&sender, &mut good_dest, Bytes::from_static(b"b"), &stats).await;
+        assert_eq!(stats.load_state(), EndpointState::Connected);
+    }
+
+    /// Recovery via reply path: an accepted inbound flips state out of
+    /// Reconnecting regardless of whether send_to has succeeded yet.
+    /// Important for the "GCS pushes traffic before we've sent" case.
+    #[tokio::test]
+    async fn accepted_inbound_writes_connected() {
+        let mut dest = make_dest(&[v4(127, 0, 0, 1)], 14550);
+        let mut framer = Framer::with_capacity(1024);
+        let mut framer_counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
+        let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
+
+        let src = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 50000));
+        // Empty data so try_next_frame yields nothing; we're testing the
+        // state transition that runs unconditionally after classify_inbound.
+        handle_inbound(
+            &[],
+            src,
+            &mut dest,
+            &mut framer,
+            &mut framer_counters,
+            EndpointId(0),
+            &stats,
+            &frame_tx,
+        )
+        .await;
+        assert_eq!(stats.load_state(), EndpointState::Connected);
+        assert!(dest.latch.is_some(), "expected latch to be installed");
+    }
+
+    /// Rejected inbound (unrelated source) must NOT recover state — a
+    /// stranger pinging the socket doesn't prove our configured peer is
+    /// reachable.
+    #[tokio::test]
+    async fn rejected_inbound_does_not_write_connected() {
+        let mut dest = make_dest(&[v4(192, 168, 1, 5)], 14550);
+        let mut framer = Framer::with_capacity(1024);
+        let mut framer_counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
+        let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
+
+        // Source IP not in resolved_ips, no latch — classify returns Reject.
+        let src = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 9), 50000));
+        handle_inbound(
+            &[],
+            src,
+            &mut dest,
+            &mut framer,
+            &mut framer_counters,
+            EndpointId(0),
+            &stats,
+            &frame_tx,
+        )
+        .await;
+        assert_eq!(stats.load_state(), EndpointState::Reconnecting);
+        assert!(dest.latch.is_none());
+        assert_eq!(stats.in_filter_drops.load(Ordering::Relaxed), 1);
     }
 }
