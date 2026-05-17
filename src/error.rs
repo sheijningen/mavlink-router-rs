@@ -9,4 +9,9 @@ pub enum Error {
 
     #[error("duplicate endpoint name '{0}'")]
     DuplicateName(String),
+
+    #[error(
+        "{scheme}: host '{host}' must be an IP literal — listeners cannot bind to a hostname (use 0.0.0.0 or [::] for any-interface)"
+    )]
+    ListenHostNotAnIp { scheme: &'static str, host: String },
 }
