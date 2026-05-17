@@ -9,6 +9,7 @@ pub mod stats;
 
 pub use error::Error;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -77,6 +78,8 @@ pub async fn run_with_cancel(cli: cli::Cli, token: CancellationToken) -> Result<
     let specs = cli::parse_specs(&cli.endpoints)?;
     let endpoint_count = specs.len();
 
+    warn_on_groups_without_dedup(&specs, cli.dedup_ms);
+
     let n_estimate = estimate_registry_size(&specs);
     let event_q_cap = (n_estimate * 2).max(64);
     let stats_q_cap = (n_estimate * 2).max(64);
@@ -116,6 +119,88 @@ pub async fn run_with_cancel(cli: cli::Cli, token: CancellationToken) -> Result<
     info!("rmr stopped");
 
     Ok(())
+}
+
+/// Per-spec [`IdentityFlags`] borrow — every `EndpointKind` carries one on
+/// its inner struct, but at slightly different field paths. Centralising the
+/// match keeps callers like the group/dedup check from duplicating the
+/// arms.
+fn spec_identity(spec: &EndpointSpec) -> &IdentityFlags {
+    match &spec.kind {
+        EndpointKind::Serial(e) => &e.identity,
+        EndpointKind::UdpServer(e) => &e.identity,
+        EndpointKind::UdpClient(e) => &e.identity,
+        EndpointKind::TcpServer(e) => &e.identity,
+        EndpointKind::TcpClient(e) => &e.identity,
+    }
+}
+
+/// Weight a spec contributes to its group's "effective member" count. The
+/// trigger for the dedup warning is whether the group can host duplicate
+/// uplink frames at runtime, which is broader than "≥2 top-level entries":
+/// a single `tcps:` / `udps:` parent listener with `?group=` is the canonical
+/// redundant-uplink configuration too — its accepted clients (or learned
+/// peers) inherit the group at admission, so two upstreams dialling the same
+/// listener already share the learn-set. Parents therefore weigh 2 on their
+/// own. Sniffers contribute 0 — a sniffer in a group is a diagnostic tap,
+/// not a redundant leg.
+fn group_member_weight(spec: &EndpointSpec) -> usize {
+    if spec_identity(spec).sniffer {
+        return 0;
+    }
+    match &spec.kind {
+        EndpointKind::TcpServer(_) | EndpointKind::UdpServer(_) => 2,
+        _ => 1,
+    }
+}
+
+/// Return every group whose effective membership is high enough that a
+/// `--dedup-ms=0` run is likely a misconfig. Pure helper: `dedup_ms > 0`
+/// short-circuits to an empty `Vec`, so the gate is testable from one entry
+/// point. The reported count is the *declared* member count (sniffers
+/// excluded) — operators see the same number they put in their config, not
+/// the weighted internal score.
+fn groups_needing_dedup_warning(specs: &[EndpointSpec], dedup_ms: u64) -> Vec<(Arc<str>, usize)> {
+    if dedup_ms > 0 {
+        return Vec::new();
+    }
+    // (effective_weight, declared_count)
+    let mut by_group: HashMap<Arc<str>, (usize, usize)> = HashMap::new();
+    for spec in specs {
+        let Some(name) = &spec_identity(spec).group else {
+            continue;
+        };
+        let weight = group_member_weight(spec);
+        if weight == 0 {
+            continue;
+        }
+        let entry = by_group.entry(name.clone()).or_default();
+        entry.0 += weight;
+        entry.1 += 1;
+    }
+    let mut groups: Vec<(Arc<str>, usize)> = by_group
+        .into_iter()
+        .filter(|(_, (w, _))| *w >= 2)
+        .map(|(n, (_, c))| (n, c))
+        .collect();
+    groups.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    groups
+}
+
+/// A group exists to share a learn-set across redundant-uplink legs (CLAUDE.md
+/// "Endpoint groups" — LTE + RFD900 sharing `?group=uplink`). When the legs
+/// deliver the same vehicle frame and `--dedup-ms=0`, the duplicate fans out
+/// to every destination twice. The WARN doesn't change behaviour — some
+/// deployments may legitimately not need dedup — it just surfaces what is
+/// almost always a misconfig.
+fn warn_on_groups_without_dedup(specs: &[EndpointSpec], dedup_ms: u64) {
+    for (name, count) in groups_needing_dedup_warning(specs, dedup_ms) {
+        warn!(
+            group = %name,
+            members = count,
+            "group shares a learn-set but --dedup-ms=0; if its members deliver duplicate uplink frames, set --dedup-ms (e.g. 100) to suppress them"
+        );
+    }
 }
 
 /// CLAUDE.md "Stats sink architecture": channel sizing formula
@@ -398,5 +483,102 @@ mod tests {
     fn estimate_registry_size_uses_udps_peer_capacity_override() {
         let specs = vec![EndpointSpec::parse("udps:0.0.0.0:1?udps_peer_capacity=8").unwrap()];
         assert_eq!(estimate_registry_size(&specs), 1 + 8);
+    }
+
+    fn group_names(groups: &[(Arc<str>, usize)]) -> Vec<(&str, usize)> {
+        groups.iter().map(|(n, c)| (n.as_ref(), *c)).collect()
+    }
+
+    #[test]
+    fn groups_needing_dedup_warning_ignores_lone_leaves_and_groupless() {
+        let specs = vec![
+            EndpointSpec::parse("tcpc:127.0.0.1:1?group=alone").unwrap(),
+            EndpointSpec::parse("tcpc:127.0.0.1:2").unwrap(),
+        ];
+        assert!(groups_needing_dedup_warning(&specs, 0).is_empty());
+    }
+
+    #[test]
+    fn groups_needing_dedup_warning_fires_on_two_leaves() {
+        let specs = vec![
+            EndpointSpec::parse("tcpc:127.0.0.1:1?group=uplink").unwrap(),
+            EndpointSpec::parse("udpc:127.0.0.1:2?group=uplink").unwrap(),
+        ];
+        assert_eq!(
+            group_names(&groups_needing_dedup_warning(&specs, 0)),
+            vec![("uplink", 2)]
+        );
+    }
+
+    #[test]
+    fn groups_needing_dedup_warning_fires_on_lone_listener_parent() {
+        // A single `tcps:` listener with `?group=` is itself the
+        // redundant-uplink pattern — accepted clients inherit the group
+        // and share learn-state at runtime.
+        for body in ["tcps:0.0.0.0:1?group=uplink", "udps:0.0.0.0:1?group=uplink"] {
+            let specs = vec![EndpointSpec::parse(body).unwrap()];
+            assert_eq!(
+                group_names(&groups_needing_dedup_warning(&specs, 0)),
+                vec![("uplink", 1)],
+                "expected listener-only group to warn: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn groups_needing_dedup_warning_sorts_by_name() {
+        let specs = vec![
+            EndpointSpec::parse("tcpc:127.0.0.1:1?group=zeta").unwrap(),
+            EndpointSpec::parse("tcpc:127.0.0.1:2?group=alpha").unwrap(),
+            EndpointSpec::parse("udpc:127.0.0.1:3?group=zeta").unwrap(),
+            EndpointSpec::parse("serial:/dev/null:115200?group=alpha").unwrap(),
+        ];
+        assert_eq!(
+            group_names(&groups_needing_dedup_warning(&specs, 0)),
+            vec![("alpha", 2), ("zeta", 2)]
+        );
+    }
+
+    #[test]
+    fn groups_needing_dedup_warning_excludes_sniffers_from_count() {
+        // A sniffer in a group is a diagnostic tap; pairing it with one
+        // real leg shouldn't fire (effective weight = 1).
+        let specs = vec![
+            EndpointSpec::parse("tcpc:127.0.0.1:1?group=g").unwrap(),
+            EndpointSpec::parse("udpc:127.0.0.1:2?group=g&sniffer=true").unwrap(),
+        ];
+        assert!(groups_needing_dedup_warning(&specs, 0).is_empty());
+    }
+
+    #[test]
+    fn groups_needing_dedup_warning_short_circuits_when_dedup_enabled() {
+        let specs = vec![
+            EndpointSpec::parse("tcpc:127.0.0.1:1?group=uplink").unwrap(),
+            EndpointSpec::parse("udpc:127.0.0.1:2?group=uplink").unwrap(),
+        ];
+        assert!(groups_needing_dedup_warning(&specs, 100).is_empty());
+    }
+
+    #[test]
+    fn group_member_weight_matrix() {
+        // Regression guard: any future EndpointKind silently defaulting to
+        // weight 1 would under-count listener-style additions.
+        let cases = [
+            ("tcpc:127.0.0.1:1?group=g", 1),
+            ("udpc:127.0.0.1:2?group=g", 1),
+            ("serial:/dev/null:115200?group=g", 1),
+            ("tcps:0.0.0.0:3?group=g", 2),
+            ("udps:0.0.0.0:4?group=g", 2),
+            ("tcpc:127.0.0.1:5?group=g&sniffer=true", 0),
+            ("tcps:0.0.0.0:6?group=g&sniffer=true", 0),
+        ];
+        for (body, expected) in cases {
+            let spec = EndpointSpec::parse(body).unwrap();
+            assert_eq!(
+                group_member_weight(&spec),
+                expected,
+                "weight mismatch for {body}"
+            );
+        }
     }
 }
