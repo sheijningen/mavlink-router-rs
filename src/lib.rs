@@ -19,7 +19,9 @@ use tracing::{info, warn};
 
 use crate::endpoint::EndpointId;
 use crate::endpoint::EndpointIdAllocator;
+use crate::endpoint::defaults::DEFAULT_TX_QUEUE_FRAMES;
 use crate::endpoint::events::{EndpointEvent, RouterFrame};
+use crate::endpoint::identity_flags::IdentityFlags;
 use crate::endpoint::serial::{SerialSpec, SerialWiring};
 use crate::endpoint::spec::{EndpointKind, EndpointSpec};
 use crate::endpoint::stats::{EndpointState, EndpointStats};
@@ -128,18 +130,6 @@ fn estimate_registry_size(specs: &[EndpointSpec]) -> usize {
     n
 }
 
-/// `tcps:` / `udps:` parent listeners exist as supervisory entries: they
-/// hold stats and an `EndpointId` but their `TxQueue` has no consumer
-/// (children own real readers/writers). The router must skip them as
-/// routing destinations, otherwise broadcast frames pile up and inflate
-/// `dropped_tx` for no reason.
-fn is_routable_top_level(kind: &EndpointKind) -> bool {
-    !matches!(
-        kind,
-        EndpointKind::TcpServer(_) | EndpointKind::UdpServer(_)
-    )
-}
-
 fn spawn_router(
     tasks: &mut JoinSet<()>,
     frame_rx: mpsc::Receiver<RouterFrame>,
@@ -182,6 +172,17 @@ async fn spawn_endpoints(
     Ok(())
 }
 
+/// Construct the endpoint's runtime handles (`EndpointId`, `Arc<EndpointStats>`,
+/// per-kind `TxQueue`), announce the appropriate lifecycle event to the
+/// router, and spawn the endpoint task. Single `match kind` dispatch — leaf
+/// arms (`tcpc:` / `udpc:` / `serial:`) build a `TxQueue` and emit
+/// `EndpointAdded`; parent-listener arms (`tcps:` / `udps:`) emit
+/// `ParentListenerAdded` with no `TxQueue`. The lifecycle event is awaited
+/// to completion BEFORE the endpoint task is spawned so the router's biased
+/// select sees the registration before any frame stamped with the new
+/// `EndpointId` (CLAUDE.md "Endpoint registration is symmetric"). On a
+/// closed event channel the spawn is silently skipped — the rest of the
+/// router has already torn down.
 async fn spawn_endpoint(
     tasks: &mut JoinSet<()>,
     allocator: &Arc<EndpointIdAllocator>,
@@ -197,75 +198,30 @@ async fn spawn_endpoint(
     } = spec;
     let endpoint_id = allocator.alloc();
     let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
-    let identity = kind.identity();
-    // Parent listeners have no consumer for a TxQueue, so we don't build
-    // one for them — the event variant the router receives encodes the
-    // distinction.
-    let tx_queue = if is_routable_top_level(&kind) {
-        Some(TxQueue::new(kind.tx_queue_frames(), stats.clone()))
-    } else {
-        None
-    };
 
-    // CLAUDE.md "Endpoint registration is symmetric": send the lifecycle
-    // event and wait for delivery BEFORE spawning the endpoint task, so the
-    // router (biased over event_rx then frame_rx) processes the
-    // registration before any RouterFrame this endpoint produces.
-    let event = match &tx_queue {
-        Some(tx_queue) => EndpointEvent::EndpointAdded {
-            id: endpoint_id,
-            name: name.clone(),
-            tx_queue: tx_queue.clone(),
-            stats: stats.clone(),
-            identity,
-        },
-        None => EndpointEvent::ParentListenerAdded {
-            id: endpoint_id,
-            name: name.clone(),
-            stats: stats.clone(),
-        },
-    };
-    if event_tx.send(event).await.is_err() {
-        warn!(
-            %endpoint_id, %name,
-            "router event channel closed during endpoint registration; skipping spawn"
-        );
-        return Ok(());
-    }
-
-    spawn_endpoint_task(
-        tasks,
-        kind,
-        name,
-        endpoint_id,
-        stats,
-        tx_queue,
-        frame_tx,
-        event_tx,
-        cancel,
-        allocator,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn spawn_endpoint_task(
-    tasks: &mut JoinSet<()>,
-    kind: EndpointKind,
-    name: String,
-    endpoint_id: EndpointId,
-    stats: Arc<EndpointStats>,
-    tx_queue: Option<TxQueue>,
-    frame_tx: &mpsc::Sender<RouterFrame>,
-    event_tx: &mpsc::Sender<EndpointEvent>,
-    cancel: &CancellationToken,
-    allocator: &Arc<EndpointIdAllocator>,
-) -> Result<(), Error> {
     match kind {
         EndpointKind::Serial(ep) => {
+            let tx_queue = TxQueue::new(
+                ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+                stats.clone(),
+            );
+            let identity = ep.identity.clone();
+            if !announce_leaf(
+                event_tx,
+                endpoint_id,
+                name.clone(),
+                tx_queue.clone(),
+                stats.clone(),
+                identity,
+            )
+            .await
+            {
+                return Ok(());
+            }
             let spec = SerialSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = SerialWiring {
                 frame_tx: frame_tx.clone(),
-                tx_queue: tx_queue.expect("leaf endpoint missing TxQueue"),
+                tx_queue,
                 stats,
                 cancel: cancel.clone(),
             };
@@ -274,10 +230,27 @@ fn spawn_endpoint_task(
             });
         }
         EndpointKind::TcpClient(ep) => {
+            let tx_queue = TxQueue::new(
+                ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+                stats.clone(),
+            );
+            let identity = ep.identity.clone();
+            if !announce_leaf(
+                event_tx,
+                endpoint_id,
+                name.clone(),
+                tx_queue.clone(),
+                stats.clone(),
+                identity,
+            )
+            .await
+            {
+                return Ok(());
+            }
             let spec = TcpClientSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = TcpClientWiring {
                 frame_tx: frame_tx.clone(),
-                tx_queue: tx_queue.expect("leaf endpoint missing TxQueue"),
+                tx_queue,
                 stats,
                 cancel: cancel.clone(),
             };
@@ -286,10 +259,27 @@ fn spawn_endpoint_task(
             });
         }
         EndpointKind::UdpClient(ep) => {
+            let tx_queue = TxQueue::new(
+                ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+                stats.clone(),
+            );
+            let identity = ep.identity.clone();
+            if !announce_leaf(
+                event_tx,
+                endpoint_id,
+                name.clone(),
+                tx_queue.clone(),
+                stats.clone(),
+                identity,
+            )
+            .await
+            {
+                return Ok(());
+            }
             let spec = UdpClientSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = UdpClientWiring {
                 frame_tx: frame_tx.clone(),
-                tx_queue: tx_queue.expect("leaf endpoint missing TxQueue"),
+                tx_queue,
                 stats,
                 cancel: cancel.clone(),
             };
@@ -298,10 +288,9 @@ fn spawn_endpoint_task(
             });
         }
         EndpointKind::TcpServer(ep) => {
-            debug_assert!(
-                tx_queue.is_none(),
-                "parent listener should not own a TxQueue"
-            );
+            if !announce_parent_listener(event_tx, endpoint_id, name.clone(), stats.clone()).await {
+                return Ok(());
+            }
             let spec = TcpServerSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = TcpServerWiring {
                 allocator: allocator.clone(),
@@ -316,10 +305,9 @@ fn spawn_endpoint_task(
             });
         }
         EndpointKind::UdpServer(ep) => {
-            debug_assert!(
-                tx_queue.is_none(),
-                "parent listener should not own a TxQueue"
-            );
+            if !announce_parent_listener(event_tx, endpoint_id, name.clone(), stats.clone()).await {
+                return Ok(());
+            }
             let spec = UdpServerSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = UdpServerWiring {
                 allocator: allocator.clone(),
@@ -335,6 +323,65 @@ fn spawn_endpoint_task(
         }
     }
     Ok(())
+}
+
+/// Fire `EndpointAdded` for a leaf routing endpoint. Returns `true` on
+/// successful delivery and `false` when the channel is closed — the caller
+/// then skips the spawn so the router never sees frames from an unknown
+/// `EndpointId`. A closed channel here means the router has already exited;
+/// the warning surfaces that asymmetry without aborting the whole spawn loop.
+async fn announce_leaf(
+    event_tx: &mpsc::Sender<EndpointEvent>,
+    id: EndpointId,
+    name: String,
+    tx_queue: TxQueue,
+    stats: Arc<EndpointStats>,
+    identity: IdentityFlags,
+) -> bool {
+    if event_tx
+        .send(EndpointEvent::EndpointAdded {
+            id,
+            name: name.clone(),
+            tx_queue,
+            stats,
+            identity,
+        })
+        .await
+        .is_err()
+    {
+        warn!(
+            endpoint_id = %id, %name,
+            "router event channel closed during endpoint registration; skipping spawn"
+        );
+        return false;
+    }
+    true
+}
+
+/// `ParentListenerAdded` counterpart of [`announce_leaf`]. No `TxQueue` or
+/// `IdentityFlags` because parent listeners aren't routing destinations.
+async fn announce_parent_listener(
+    event_tx: &mpsc::Sender<EndpointEvent>,
+    id: EndpointId,
+    name: String,
+    stats: Arc<EndpointStats>,
+) -> bool {
+    if event_tx
+        .send(EndpointEvent::ParentListenerAdded {
+            id,
+            name: name.clone(),
+            stats,
+        })
+        .await
+        .is_err()
+    {
+        warn!(
+            endpoint_id = %id, %name,
+            "router event channel closed during parent-listener registration; skipping spawn"
+        );
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -365,31 +412,5 @@ mod tests {
     fn estimate_registry_size_uses_udps_peer_capacity_override() {
         let specs = vec![EndpointSpec::parse("udps:0.0.0.0:1?udps_peer_capacity=8").unwrap()];
         assert_eq!(estimate_registry_size(&specs), 1 + 8);
-    }
-
-    #[test]
-    fn is_routable_top_level_marks_leaves_routable() {
-        for input in &[
-            "tcpc:127.0.0.1:5760",
-            "udpc:127.0.0.1:14550",
-            "serial:/dev/null:115200",
-        ] {
-            let spec = EndpointSpec::parse(input).unwrap();
-            assert!(
-                is_routable_top_level(&spec.kind),
-                "{input} should be routable"
-            );
-        }
-    }
-
-    #[test]
-    fn is_routable_top_level_marks_listeners_non_routable() {
-        for input in &["tcps:0.0.0.0:5760", "udps:0.0.0.0:14550"] {
-            let spec = EndpointSpec::parse(input).unwrap();
-            assert!(
-                !is_routable_top_level(&spec.kind),
-                "{input} should NOT be routable (parent listener)"
-            );
-        }
     }
 }
