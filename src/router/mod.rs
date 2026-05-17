@@ -64,6 +64,11 @@ struct RegisteredEndpoint {
     #[allow(dead_code)]
     identity: IdentityFlags,
     learn: LearnTable,
+    /// `false` for supervisory entries (`tcps:` / `udps:` parent listeners
+    /// — they appear in stats but their `TxQueue` has no consumer, so
+    /// pushing to it would just inflate `dropped_tx`). Sub-endpoints
+    /// admitted via `PeerAdded` are always routable.
+    routable: bool,
 }
 
 /// Bundle the spawner hands to the router task. The two `mpsc::Receiver`s
@@ -131,6 +136,7 @@ async fn handle_event(
             tx_queue,
             stats,
             identity,
+            routable,
         } => {
             let learn = LearnTable::new(identity.learn_capacity);
             let entry = RegisteredEndpoint {
@@ -141,8 +147,9 @@ async fn handle_event(
                 stats: stats.clone(),
                 identity,
                 learn,
+                routable,
             };
-            trace!(%id, %name, "router: endpoint added");
+            trace!(%id, %name, routable, "router: endpoint added");
             registry.insert(id, entry);
             let _ = stats_event_tx
                 .send(StatsEvent::Register { id, name, stats })
@@ -166,6 +173,7 @@ async fn handle_event(
                 stats: stats.clone(),
                 identity,
                 learn,
+                routable: true,
             };
             trace!(%child_id, %parent_id, %name, "router: peer added");
             registry.insert(child_id, entry);
@@ -226,6 +234,9 @@ fn handle_frame(registry: &mut HashMap<EndpointId, RegisteredEndpoint>, fr: Rout
 
     for (dest_id, dest_ep) in registry.iter() {
         if *dest_id == src_id {
+            continue;
+        }
+        if !dest_ep.routable {
             continue;
         }
         if !admit_to(&header, &dest_ep.learn) {
@@ -302,12 +313,21 @@ mod tests {
     }
 
     fn endpoint_added(fx: &EndpointFixture, name: &str) -> EndpointEvent {
+        endpoint_added_with_routable(fx, name, true)
+    }
+
+    fn endpoint_added_with_routable(
+        fx: &EndpointFixture,
+        name: &str,
+        routable: bool,
+    ) -> EndpointEvent {
         EndpointEvent::EndpointAdded {
             id: fx.id,
             name: name.to_string(),
             tx_queue: fx.tx_queue.clone(),
             stats: fx.stats.clone(),
             identity: IdentityFlags::default(),
+            routable,
         }
     }
 
@@ -632,6 +652,57 @@ mod tests {
         assert_eq!(finalized, expected);
         assert_eq!(a.stats.load_state(), EndpointState::Down);
         assert_eq!(b.stats.load_state(), EndpointState::Down);
+    }
+
+    #[tokio::test]
+    async fn non_routable_destination_does_not_receive_broadcast() {
+        // CLAUDE.md: tcps/udps parent listeners get EndpointAdded for
+        // stats visibility but their TxQueue has no consumer. Pushing to
+        // it would inflate dropped_tx for no reason. The router must skip
+        // them as routing destinations.
+        let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
+        let cancel = wiring.cancel.clone();
+        let task = tokio::spawn(run(wiring));
+        let alloc = EndpointIdAllocator::new();
+        let src = make_endpoint(&alloc, true);
+        let parent = make_endpoint(&alloc, true);
+
+        event_tx
+            .send(endpoint_added(&src, "src"))
+            .await
+            .expect("src");
+        event_tx
+            .send(endpoint_added_with_routable(&parent, "parent", false))
+            .await
+            .expect("parent");
+        tokio::task::yield_now().await;
+
+        // Broadcast frame from src.
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: src.id,
+                frame: Bytes::from_static(b"x"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            parent.tx_queue.pop().is_none(),
+            "non-routable parent received a frame it shouldn't have"
+        );
+        assert_eq!(
+            parent.stats.dropped_tx.load(Ordering::Relaxed),
+            0,
+            "non-routable parent's dropped_tx inflated"
+        );
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("router exit")
+            .expect("router join");
     }
 
     #[tokio::test]

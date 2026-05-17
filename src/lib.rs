@@ -162,6 +162,18 @@ fn tx_queue_frames_of(kind: &EndpointKind) -> usize {
     common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES)
 }
 
+/// `tcps:` / `udps:` parent listeners exist as supervisory entries: they
+/// hold stats and an `EndpointId` but their `TxQueue` has no consumer
+/// (children own real readers/writers). The router must skip them as
+/// routing destinations, otherwise broadcast frames pile up and inflate
+/// `dropped_tx` for no reason.
+fn is_routable_top_level(kind: &EndpointKind) -> bool {
+    !matches!(
+        kind,
+        EndpointKind::TcpServer(_) | EndpointKind::UdpServer(_)
+    )
+}
+
 fn listen_addr_for(scheme: &'static str, host: &str, port: u16) -> Result<SocketAddr, Error> {
     let ip: IpAddr = host.parse().map_err(|_| Error::ListenHostNotAnIp {
         scheme,
@@ -188,6 +200,7 @@ async fn spawn_endpoint(
     let identity = identity_of(&kind);
     let tx_queue_frames = tx_queue_frames_of(&kind);
     let tx_queue = TxQueue::new(tx_queue_frames, stats.clone());
+    let routable = is_routable_top_level(&kind);
 
     // CLAUDE.md "Endpoint registration is symmetric": send EndpointAdded
     // and wait for delivery BEFORE spawning the endpoint task, so the
@@ -200,6 +213,7 @@ async fn spawn_endpoint(
             tx_queue: tx_queue.clone(),
             stats: stats.clone(),
             identity,
+            routable,
         })
         .await
         .is_err()
@@ -351,6 +365,32 @@ mod tests {
         let addr = listen_addr_for("udps", "::", 14550).unwrap();
         assert_eq!(addr.port(), 14550);
         assert!(addr.is_ipv6());
+    }
+
+    #[test]
+    fn is_routable_top_level_marks_leaves_routable() {
+        for input in &[
+            "tcpc:127.0.0.1:5760",
+            "udpc:127.0.0.1:14550",
+            "serial:/dev/null:115200",
+        ] {
+            let spec = EndpointSpec::parse(input).unwrap();
+            assert!(
+                is_routable_top_level(&spec.kind),
+                "{input} should be routable"
+            );
+        }
+    }
+
+    #[test]
+    fn is_routable_top_level_marks_listeners_non_routable() {
+        for input in &["tcps:0.0.0.0:5760", "udps:0.0.0.0:14550"] {
+            let spec = EndpointSpec::parse(input).unwrap();
+            assert!(
+                !is_routable_top_level(&spec.kind),
+                "{input} should NOT be routable (parent listener)"
+            );
+        }
     }
 
     #[test]

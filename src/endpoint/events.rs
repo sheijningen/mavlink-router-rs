@@ -40,6 +40,13 @@ pub enum EndpointEvent {
         tx_queue: TxQueue,
         stats: Arc<EndpointStats>,
         identity: IdentityFlags,
+        /// `false` for `tcps:` / `udps:` parent listeners — they're
+        /// configured endpoints visible in stats but their `TxQueue` has
+        /// no consumer task, so the router must skip them as routing
+        /// destinations. `true` for `tcpc:` / `udpc:` / `serial:` and any
+        /// other leaf top-level endpoint whose TxQueue is drained by a
+        /// real writer.
+        routable: bool,
     },
     PeerAdded {
         parent_id: EndpointId,
