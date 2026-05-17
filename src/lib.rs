@@ -267,23 +267,18 @@ async fn spawn_endpoint(
 
     match kind {
         EndpointKind::Serial(ep) => {
-            let tx_queue = TxQueue::new(
-                ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
-                stats.clone(),
-            );
-            let identity = ep.identity.clone();
-            if !announce_leaf(
+            let Some(tx_queue) = prepare_leaf(
                 event_tx,
                 endpoint_id,
-                name.clone(),
-                tx_queue.clone(),
+                &name,
                 stats.clone(),
-                identity,
+                ep.common.tx_queue_frames,
+                ep.identity.clone(),
             )
             .await
-            {
+            else {
                 return Ok(());
-            }
+            };
             let spec = SerialSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = SerialWiring {
                 frame_tx: frame_tx.clone(),
@@ -296,23 +291,18 @@ async fn spawn_endpoint(
             });
         }
         EndpointKind::TcpClient(ep) => {
-            let tx_queue = TxQueue::new(
-                ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
-                stats.clone(),
-            );
-            let identity = ep.identity.clone();
-            if !announce_leaf(
+            let Some(tx_queue) = prepare_leaf(
                 event_tx,
                 endpoint_id,
-                name.clone(),
-                tx_queue.clone(),
+                &name,
                 stats.clone(),
-                identity,
+                ep.common.tx_queue_frames,
+                ep.identity.clone(),
             )
             .await
-            {
+            else {
                 return Ok(());
-            }
+            };
             let spec = TcpClientSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = TcpClientWiring {
                 frame_tx: frame_tx.clone(),
@@ -325,23 +315,18 @@ async fn spawn_endpoint(
             });
         }
         EndpointKind::UdpClient(ep) => {
-            let tx_queue = TxQueue::new(
-                ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
-                stats.clone(),
-            );
-            let identity = ep.identity.clone();
-            if !announce_leaf(
+            let Some(tx_queue) = prepare_leaf(
                 event_tx,
                 endpoint_id,
-                name.clone(),
-                tx_queue.clone(),
+                &name,
                 stats.clone(),
-                identity,
+                ep.common.tx_queue_frames,
+                ep.identity.clone(),
             )
             .await
-            {
+            else {
                 return Ok(());
-            }
+            };
             let spec = UdpClientSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = UdpClientWiring {
                 frame_tx: frame_tx.clone(),
@@ -354,7 +339,7 @@ async fn spawn_endpoint(
             });
         }
         EndpointKind::TcpServer(ep) => {
-            if !announce_parent_listener(event_tx, endpoint_id, name.clone(), stats.clone()).await {
+            if !announce_parent_listener(event_tx, endpoint_id, &name, stats.clone()).await {
                 return Ok(());
             }
             let spec = TcpServerSpec::from_endpoint(ep, endpoint_id, name);
@@ -370,7 +355,7 @@ async fn spawn_endpoint(
             });
         }
         EndpointKind::UdpServer(ep) => {
-            if !announce_parent_listener(event_tx, endpoint_id, name.clone(), stats.clone()).await {
+            if !announce_parent_listener(event_tx, endpoint_id, &name, stats.clone()).await {
                 return Ok(());
             }
             let spec = UdpServerSpec::from_endpoint(ep, endpoint_id, name);
@@ -389,24 +374,28 @@ async fn spawn_endpoint(
     Ok(())
 }
 
-/// Fire `EndpointAdded` for a leaf routing endpoint. Returns `true` on
-/// successful delivery and `false` when the channel is closed — the caller
-/// then skips the spawn so the router never sees frames from an unknown
-/// `EndpointId`. A closed channel here means the router has already exited;
-/// the warning surfaces that asymmetry without aborting the whole spawn loop.
-async fn announce_leaf(
+/// Build the per-leaf `TxQueue`, fire `EndpointAdded`, and return the queue
+/// on successful registration. `None` means the event channel was closed —
+/// the router has already exited and the caller must skip the spawn so no
+/// frame is ever stamped with an unknown `EndpointId`. The warning surfaces
+/// that asymmetry without aborting the rest of the spawn loop.
+async fn prepare_leaf(
     event_tx: &mpsc::Sender<EndpointEvent>,
     id: EndpointId,
-    name: String,
-    tx_queue: TxQueue,
+    name: &str,
     stats: Arc<EndpointStats>,
+    tx_queue_frames: Option<usize>,
     identity: IdentityFlags,
-) -> bool {
+) -> Option<TxQueue> {
+    let tx_queue = TxQueue::new(
+        tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+        stats.clone(),
+    );
     if event_tx
         .send(EndpointEvent::EndpointAdded {
             id,
-            name: name.clone(),
-            tx_queue,
+            name: name.to_string(),
+            tx_queue: tx_queue.clone(),
             stats,
             identity,
         })
@@ -417,23 +406,24 @@ async fn announce_leaf(
             endpoint_id = %id, %name,
             "router event channel closed during endpoint registration; skipping spawn"
         );
-        return false;
+        return None;
     }
-    true
+    Some(tx_queue)
 }
 
-/// `ParentListenerAdded` counterpart of [`announce_leaf`]. No `TxQueue` or
-/// `IdentityFlags` because parent listeners aren't routing destinations.
+/// `ParentListenerAdded` counterpart of [`prepare_leaf`]. No `TxQueue` or
+/// `IdentityFlags` because parent listeners aren't routing destinations, so
+/// the caller has no extra handle to receive — a `bool` is enough.
 async fn announce_parent_listener(
     event_tx: &mpsc::Sender<EndpointEvent>,
     id: EndpointId,
-    name: String,
+    name: &str,
     stats: Arc<EndpointStats>,
 ) -> bool {
     if event_tx
         .send(EndpointEvent::ParentListenerAdded {
             id,
-            name: name.clone(),
+            name: name.to_string(),
             stats,
         })
         .await
