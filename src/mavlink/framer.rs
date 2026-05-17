@@ -58,11 +58,8 @@ impl Framer {
             if self.buf.len() < stx.header_len() {
                 return None;
             }
-            let (frame_len, incompat_flags) = match self.decide_frame_len(stx) {
-                FrameLen::Ready {
-                    frame_len,
-                    incompat_flags,
-                } => (frame_len, incompat_flags),
+            let frame_len = match self.decide_frame_len(stx) {
+                FrameLen::Ready(n) => n,
                 FrameLen::UnknownIncompatFlag => {
                     // Length is unknowable, so we can't safely forward. Drop
                     // the STX byte and rescan from the next one.
@@ -73,7 +70,7 @@ impl Framer {
             if self.buf.len() < frame_len {
                 return None;
             }
-            if let Some(frame) = self.try_validate_and_emit(stx, incompat_flags, frame_len) {
+            if let Some(frame) = self.try_validate_and_emit(stx, frame_len) {
                 return Some(frame);
             }
             // CRC failed; try_validate_and_emit already discarded one byte.
@@ -111,10 +108,7 @@ impl Framer {
     fn decide_frame_len(&self, stx: Stx) -> FrameLen {
         let payload_len = self.buf[1] as usize;
         match stx {
-            Stx::V1 => FrameLen::Ready {
-                frame_len: V1_HEADER_LEN + payload_len + CRC_LEN,
-                incompat_flags: 0,
-            },
+            Stx::V1 => FrameLen::Ready(V1_HEADER_LEN + payload_len + CRC_LEN),
             Stx::V2 => {
                 let iflags = self.buf[2];
                 if iflags & !V2_IFLAG_SIGNED != 0 {
@@ -125,10 +119,7 @@ impl Framer {
                 } else {
                     0
                 };
-                FrameLen::Ready {
-                    frame_len: V2_HEADER_LEN + payload_len + CRC_LEN + signed_extra,
-                    incompat_flags: iflags,
-                }
+                FrameLen::Ready(V2_HEADER_LEN + payload_len + CRC_LEN + signed_extra)
             }
         }
     }
@@ -139,10 +130,9 @@ impl Framer {
     fn try_validate_and_emit(
         &mut self,
         stx: Stx,
-        incompat_flags: u8,
         frame_len: usize,
     ) -> Option<(ParsedHeader, Bytes)> {
-        let header = parse_header(&self.buf[..frame_len], stx, incompat_flags);
+        let header = parse_header(&self.buf[..frame_len], stx);
 
         // Single binary search per frame; the borrow flows into both CRC and
         // target extraction so the table isn't probed twice.
@@ -185,10 +175,7 @@ impl Framer {
 }
 
 enum FrameLen {
-    Ready {
-        frame_len: usize,
-        incompat_flags: u8,
-    },
+    Ready(usize),
     UnknownIncompatFlag,
 }
 
@@ -198,7 +185,7 @@ impl Default for Framer {
     }
 }
 
-fn parse_header(frame: &[u8], stx: Stx, incompat_flags: u8) -> ParsedHeader {
+fn parse_header(frame: &[u8], stx: Stx) -> ParsedHeader {
     match stx {
         Stx::V1 => ParsedHeader {
             version: Version::V1,
@@ -207,16 +194,12 @@ fn parse_header(frame: &[u8], stx: Stx, incompat_flags: u8) -> ParsedHeader {
             sysid: frame[3],
             compid: frame[4],
             msgid: frame[5] as u32,
-            incompat_flags: 0,
-            compat_flags: 0,
             target_system: None,
             target_component: None,
         },
         Stx::V2 => ParsedHeader {
             version: Version::V2,
             payload_len: frame[1],
-            incompat_flags,
-            compat_flags: frame[3],
             seq: frame[4],
             sysid: frame[5],
             compid: frame[6],
@@ -267,14 +250,6 @@ mod tests {
     use crate::mavlink::frame::{STX_V1, STX_V2};
     use crate::mavlink::msgid_table;
     use bytes::BufMut;
-
-    // Test-only predicate: production code never asks whether a frame is
-    // signed (CLAUDE.md "MAVLink v2 signing: pass-through only").
-    impl ParsedHeader {
-        fn is_signed(&self) -> bool {
-            self.version == Version::V2 && (self.incompat_flags & V2_IFLAG_SIGNED) != 0
-        }
-    }
 
     fn build_v1(msgid: u32, payload: &[u8], crc_extra: u8) -> Vec<u8> {
         let mut frame = Vec::with_capacity(8 + payload.len());
@@ -367,7 +342,6 @@ mod tests {
         let (header, bytes) = f.try_next_frame().expect("frame");
         assert_eq!(header.version, Version::V2);
         assert_eq!(header.msgid, 0);
-        assert!(!header.is_signed());
         assert_eq!(bytes.len(), frame.len());
     }
 
@@ -385,8 +359,7 @@ mod tests {
 
         let mut f = Framer::new();
         f.buffer_mut().put_slice(&frame);
-        let (header, bytes) = f.try_next_frame().expect("frame");
-        assert!(header.is_signed());
+        let (_, bytes) = f.try_next_frame().expect("frame");
         assert_eq!(
             bytes.len(),
             frame.len(),
@@ -631,32 +604,15 @@ mod tests {
     }
 
     #[test]
-    fn v1_header_is_never_signed_even_if_iflag_bit_was_set() {
-        // ParsedHeader::is_signed must require version == V2.
-        let h = ParsedHeader {
-            version: Version::V1,
-            sysid: 1,
-            compid: 1,
-            msgid: 0,
-            seq: 0,
-            payload_len: 0,
-            incompat_flags: V2_IFLAG_SIGNED,
-            compat_flags: 0,
-            target_system: None,
-            target_component: None,
-        };
-        assert!(!h.is_signed());
-    }
-
-    #[test]
     fn half_target_msgid_yields_sys_some_comp_none() {
         // CHANGE_OPERATOR_CONTROL (id 5) has target_system at offset 0 but no
         // target_component. Build a frame and assert the framer reflects this.
+        // Wire layout for v1: control_request u8, version u8, passkey char[25] — 27 bytes.
         let entry = msgid_table::lookup(5).expect("CHANGE_OPERATOR_CONTROL");
         assert_eq!(entry.target_sys_offset, Some(0));
         assert_eq!(entry.target_comp_offset, None);
 
-        let mut payload = vec![0u8; entry.min_payload_len as usize];
+        let mut payload = vec![0u8; 27];
         payload[0] = 42; // target_system byte
         let frame = build_v1(5, &payload, entry.crc_extra);
 

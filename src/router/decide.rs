@@ -101,8 +101,6 @@ mod tests {
             msgid: 0,
             seq: 0,
             payload_len: 0,
-            incompat_flags: 0,
-            compat_flags: 0,
             target_system,
             target_component,
         }
@@ -116,8 +114,6 @@ mod tests {
             msgid,
             seq: 0,
             payload_len: 0,
-            incompat_flags: 0,
-            compat_flags: 0,
             target_system: None,
             target_component: None,
         }

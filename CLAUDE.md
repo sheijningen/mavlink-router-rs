@@ -167,7 +167,7 @@ In short: router stalls are designed to be **rare** (bounded mpsc of 1024, ~50ns
 
 ### MAVLink handling depth
 
-The router uses a single in-memory table of `(msgid → {name, crc_extra, min_payload_len, target_sys_offset?, target_comp_offset?})`. `name` is the MAVLink message name as `&'static str` — purely a label for error messages, conflict diagnostics during the build-time merge, and `tracing` output; the router never matches on it. Populated in two layers:
+The router uses a single in-memory table of `(msgid → {crc_extra, target_sys_offset?, target_comp_offset?})`. The MAVLink message name is kept at build time only — used for `crc_extra` and merge-conflict diagnostics — and is intentionally not carried into the runtime table, since the router never matches on names. Populated in two layers:
 
 1. **Compile-time built-in** — `build.rs` parses vendored MAVLink XML (default: `common.xml` + `ardupilotmega.xml`) with `quick-xml` (build-dependency) and emits `const SORTED: &[(u32, MsgEntry)]`, sorted by msgid. Lookup is binary search (≈9 comparisons for ~500 entries). Zero runtime cost, ~95% coverage. `<include>foo.xml</include>` is resolved recursively at build time, search path = the including file's directory, with cycle detection (fatal if detected).
 2. **Pass-through** — unknown msgids forward as broadcast with no CRC check.
@@ -554,7 +554,7 @@ CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `c
 - **DNS resolution:** re-resolve hostnames on every reconnect for `tcpc:` and `udpc:` endpoints. Survives DNS changes (k8s service migration, dynamic DNS, VPN routing changes) at the cost of one syscall per reconnect.
 - **CRC validation:** validate CRC for known msgids at ingress; drop frames with bad CRC and count them per-endpoint. Unknown msgids cannot be validated (no `crc_extra` available) and are forwarded as-is. **Rationale:** drone links (SiK radios, LTE, mesh) are bandwidth-constrained; spending CPU on the high-bandwidth ingress side to avoid wasting bytes on the scarce outbound side is the right trade. Recipients validate end-to-end too, but by then the wasted radio time is already gone.
 - **Dialect handling (2-layer model + fork path):**
-  1. **Built-in** at compile time: `build.rs` consumes the `DIALECTS` list (defaults to `common.xml` + `ardupilotmega.xml`) and emits a `const` table of `(msgid → {name, crc_extra, min_payload_len, target_sys_offset?, target_comp_offset?})`. Covers the ~95% case with zero config.
+  1. **Built-in** at compile time: `build.rs` consumes the `DIALECTS` list (defaults to `common.xml` + `ardupilotmega.xml`) and emits a `const` table of `(msgid → {crc_extra, target_sys_offset?, target_comp_offset?})`. Covers the ~95% case with zero config.
   2. **Pass-through** for everything else: any msgid not in the table is forwarded as broadcast with CRC validation skipped. Never reject a frame for being unknown.
 
   Custom/proprietary dialects are handled by **forking**: drop the XML next to the vendored files, append the filename to `DIALECTS` in `build.rs`, rebuild. The existing `<include>` resolver, cycle detector, and `crc_extra` conflict checker apply to fork-added dialects automatically — a `crc_extra` mismatch with a built-in entry is a fatal build error, not a silent runtime override. There is intentionally no runtime `--dialect` flag: shipping an XML parser, include resolver, and conflict checker in the binary buys very little over pass-through, and the target audience (integrators building from source) loses nothing by rebuilding.

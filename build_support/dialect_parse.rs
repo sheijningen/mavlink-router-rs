@@ -21,13 +21,12 @@ pub(crate) struct ParsedMessage {
 }
 
 /// Staging form of a msgid-table row used while build.rs is walking dialects.
-/// Owned `String` names (vs. the `&'static str` in the runtime `MsgEntry`)
-/// because the generated table is materialised by writing string literals.
+/// `name` is retained at build time for merge-conflict diagnostics but is not
+/// emitted into the runtime table.
 #[derive(Debug, Clone)]
 pub(crate) struct MsgEntryGen {
     pub name: String,
     pub crc_extra: u8,
-    pub min_payload_len: u16,
     pub target_sys_offset: Option<u8>,
     pub target_comp_offset: Option<u8>,
 }
@@ -111,7 +110,6 @@ pub(crate) fn merge_entry(
     msg_id: u32,
     msg_name: String,
     crc_extra: u8,
-    min_payload_len: u16,
     target_sys_offset: Option<u8>,
     target_comp_offset: Option<u8>,
     entries: &mut std::collections::HashMap<u32, MsgEntryGen>,
@@ -140,7 +138,6 @@ pub(crate) fn merge_entry(
         MsgEntryGen {
             name: msg_name,
             crc_extra,
-            min_payload_len,
             target_sys_offset,
             target_comp_offset,
         },
@@ -224,7 +221,6 @@ mod tests {
             MsgEntryGen {
                 name: "HEARTBEAT".to_string(),
                 crc_extra: 50,
-                min_payload_len: 9,
                 target_sys_offset: None,
                 target_comp_offset: None,
             },
@@ -235,7 +231,7 @@ mod tests {
     #[test]
     fn merge_inserts_into_empty() {
         let mut entries: HashMap<u32, MsgEntryGen> = HashMap::new();
-        merge_entry(0, "HEARTBEAT".to_string(), 50, 9, None, None, &mut entries).unwrap();
+        merge_entry(0, "HEARTBEAT".to_string(), 50, None, None, &mut entries).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[&0].name, "HEARTBEAT");
         assert_eq!(entries[&0].crc_extra, 50);
@@ -244,7 +240,7 @@ mod tests {
     #[test]
     fn merge_identical_is_idempotent() {
         let mut entries = seeded();
-        merge_entry(0, "HEARTBEAT".to_string(), 50, 9, None, None, &mut entries).unwrap();
+        merge_entry(0, "HEARTBEAT".to_string(), 50, None, None, &mut entries).unwrap();
         assert_eq!(entries.len(), 1);
     }
 
@@ -252,7 +248,7 @@ mod tests {
     fn merge_with_different_crc_extra_is_fatal() {
         let mut entries = seeded();
         let err =
-            merge_entry(0, "HEARTBEAT".to_string(), 99, 9, None, None, &mut entries).unwrap_err();
+            merge_entry(0, "HEARTBEAT".to_string(), 99, None, None, &mut entries).unwrap_err();
         match err {
             MergeError::CrcExtraConflict {
                 id,
@@ -273,7 +269,7 @@ mod tests {
     #[test]
     fn merge_with_same_id_different_name_is_fatal() {
         let mut entries = seeded();
-        let err = merge_entry(0, "OTHER".to_string(), 50, 9, None, None, &mut entries).unwrap_err();
+        let err = merge_entry(0, "OTHER".to_string(), 50, None, None, &mut entries).unwrap_err();
         match err {
             MergeError::NameConflict {
                 id,
@@ -292,16 +288,7 @@ mod tests {
     #[test]
     fn merge_distinct_ids_both_inserted() {
         let mut entries = seeded();
-        merge_entry(
-            1,
-            "SYS_STATUS".to_string(),
-            124,
-            31,
-            None,
-            None,
-            &mut entries,
-        )
-        .unwrap();
+        merge_entry(1, "SYS_STATUS".to_string(), 124, None, None, &mut entries).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[&0].name, "HEARTBEAT");
         assert_eq!(entries[&1].name, "SYS_STATUS");
@@ -314,7 +301,6 @@ mod tests {
             4,
             "PING".to_string(),
             237,
-            14,
             Some(12),
             Some(13),
             &mut entries,

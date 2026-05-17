@@ -1,5 +1,5 @@
-// Bake the MAVLink msgid table (crc_extra, min_payload_len, target field
-// offsets) at compile time from the vendored dialect XML.
+// Bake the MAVLink msgid table (crc_extra, target field offsets) at compile
+// time from the vendored dialect XML.
 //
 // `crc_extra.rs` is `include!`d at the top of this file so that
 // `crc_extra_for_message` (the runtime crate's single source of truth) is also
@@ -102,11 +102,9 @@ fn main() {
     for (id, e) in &sorted {
         writeln!(
             out,
-            "    ({id}, MsgEntry {{ name: {name:?}, crc_extra: {crc}, min_payload_len: {mpl}, target_sys_offset: {ts:?}, target_comp_offset: {tc:?} }}),",
+            "    ({id}, MsgEntry {{ crc_extra: {crc}, target_sys_offset: {ts:?}, target_comp_offset: {tc:?} }}),",
             id = id,
-            name = e.name,
             crc = e.crc_extra,
-            mpl = e.min_payload_len,
             ts = e.target_sys_offset,
             tc = e.target_comp_offset,
         )
@@ -129,12 +127,11 @@ fn ingest_message(canon: &Path, msg: ParsedMessage, entries: &mut HashMap<u32, M
             .collect();
         crc_extra_for_message(&msg.name, &crc_fields)
     };
-    let (min_payload_len, target_sys_offset, target_comp_offset) = compute_offsets(&msg.fields);
+    let (target_sys_offset, target_comp_offset) = compute_offsets(&msg.fields);
     merge_entry(
         msg.id,
         msg.name,
         crc_extra,
-        min_payload_len,
         target_sys_offset,
         target_comp_offset,
         entries,
@@ -285,7 +282,7 @@ fn parse_field_attrs(e: &BytesStart<'_>) -> (String, String) {
     (type_name, field_name)
 }
 
-fn compute_offsets(fields: &[ParsedField]) -> (u16, Option<u8>, Option<u8>) {
+fn compute_offsets(fields: &[ParsedField]) -> (Option<u8>, Option<u8>) {
     let mut base: Vec<&ParsedField> = fields.iter().filter(|f| !f.is_extension).collect();
     base.sort_by(|a, b| type_size(&b.type_name).cmp(&type_size(&a.type_name)));
 
@@ -319,5 +316,5 @@ fn compute_offsets(fields: &[ParsedField]) -> (u16, Option<u8>, Option<u8>) {
             .checked_add(elem * n)
             .unwrap_or_else(|| panic!("payload overflow for field '{}'", f.name));
     }
-    (off, tsys, tcomp)
+    (tsys, tcomp)
 }

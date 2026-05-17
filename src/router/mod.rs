@@ -83,7 +83,6 @@ use learn::LearnTable;
 struct RegisteredEndpoint {
     name: String,
     is_top_level: bool,
-    parent_id: Option<EndpointId>,
     tx_queue: TxQueue,
     stats: Arc<EndpointStats>,
     /// Filter / sniffer / group / seq-tracker capacities. The router reads
@@ -200,7 +199,6 @@ async fn handle_event(
             let entry = RegisteredEndpoint {
                 name: name.clone(),
                 is_top_level: true,
-                parent_id: None,
                 tx_queue,
                 stats: stats.clone(),
                 identity,
@@ -241,7 +239,6 @@ async fn handle_event(
             let entry = RegisteredEndpoint {
                 name: name.clone(),
                 is_top_level: false,
-                parent_id: Some(parent_id),
                 tx_queue,
                 stats: stats.clone(),
                 identity,
@@ -422,8 +419,6 @@ mod tests {
             msgid: 0,
             seq: 0,
             payload_len: 0,
-            incompat_flags: 0,
-            compat_flags: 0,
             target_system,
             target_component: None,
         }

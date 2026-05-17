@@ -5,12 +5,8 @@ use super::generated::SORTED;
 /// payload.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MsgEntry {
-    pub name: &'static str,
     /// CRC-16-MCRF4XX seed mixed in after the framed bytes.
     pub crc_extra: u8,
-    /// Sum of non-extension field sizes (the v1 wire size); also the v2
-    /// zero-trim ceiling.
-    pub min_payload_len: u16,
     /// Payload-relative offset of the `target_system` field if this msgid
     /// carries one, else `None`. MAVLink wire payload length is u8 (≤ 255),
     /// so the offset fits in u8.
@@ -35,9 +31,7 @@ mod tests {
     #[test]
     fn heartbeat() {
         let e = lookup(0).expect("HEARTBEAT (id 0) must be in the table");
-        assert_eq!(e.name, "HEARTBEAT");
         assert_eq!(e.crc_extra, 50);
-        assert_eq!(e.min_payload_len, 9);
         assert_eq!(e.target_sys_offset, None);
         assert_eq!(e.target_comp_offset, None);
     }
@@ -45,30 +39,24 @@ mod tests {
     #[test]
     fn sys_status() {
         let e = lookup(1).expect("SYS_STATUS (id 1) must be in the table");
-        assert_eq!(e.name, "SYS_STATUS");
         assert_eq!(e.crc_extra, 124);
-        assert_eq!(e.min_payload_len, 31);
         assert_eq!(e.target_sys_offset, None);
     }
 
     #[test]
     fn ping_target_offsets() {
         let e = lookup(4).expect("PING (id 4) must be in the table");
-        assert_eq!(e.name, "PING");
         assert_eq!(e.crc_extra, 237);
         // Wire order: time_usec (u64, 0..8), seq (u32, 8..12),
         //             target_system (u8, 12), target_component (u8, 13).
         assert_eq!(e.target_sys_offset, Some(12));
         assert_eq!(e.target_comp_offset, Some(13));
-        assert_eq!(e.min_payload_len, 14);
     }
 
     #[test]
     fn attitude() {
         let e = lookup(30).expect("ATTITUDE (id 30) must be in the table");
-        assert_eq!(e.name, "ATTITUDE");
         assert_eq!(e.crc_extra, 39);
-        assert_eq!(e.min_payload_len, 28);
         assert_eq!(e.target_sys_offset, None);
     }
 
@@ -102,22 +90,18 @@ mod tests {
     #[test]
     fn param_request_list_targets_at_start() {
         let e = lookup(21).expect("PARAM_REQUEST_LIST (id 21) must be in the table");
-        assert_eq!(e.name, "PARAM_REQUEST_LIST");
         // Two uint8_t fields, stable size-sort preserves their declaration order.
         assert_eq!(e.target_sys_offset, Some(0));
         assert_eq!(e.target_comp_offset, Some(1));
-        assert_eq!(e.min_payload_len, 2);
     }
 
     #[test]
     fn command_long_targets() {
         let e = lookup(76).expect("COMMAND_LONG (id 76) must be in the table");
-        assert_eq!(e.name, "COMMAND_LONG");
         // Wire sort: 7 floats (28 bytes), command u16 (2), then the three u8s:
         // target_system (30), target_component (31), confirmation (32).
         assert_eq!(e.target_sys_offset, Some(30));
         assert_eq!(e.target_comp_offset, Some(31));
-        assert_eq!(e.min_payload_len, 33);
     }
 
     #[test]
@@ -126,30 +110,7 @@ mod tests {
         // that has target_system without target_component — exercises the
         // half-target offset branch end to end.
         let e = lookup(5).expect("CHANGE_OPERATOR_CONTROL (id 5) must be in the table");
-        assert_eq!(e.name, "CHANGE_OPERATOR_CONTROL");
         assert_eq!(e.target_sys_offset, Some(0));
         assert_eq!(e.target_comp_offset, None);
-    }
-
-    #[test]
-    fn target_offsets_are_within_min_payload_len() {
-        for (id, entry) in SORTED {
-            if let Some(off) = entry.target_sys_offset {
-                assert!(
-                    u16::from(off) < entry.min_payload_len,
-                    "msgid {id} ({}): target_sys_offset {off} >= min_payload_len {}",
-                    entry.name,
-                    entry.min_payload_len
-                );
-            }
-            if let Some(off) = entry.target_comp_offset {
-                assert!(
-                    u16::from(off) < entry.min_payload_len,
-                    "msgid {id} ({}): target_comp_offset {off} >= min_payload_len {}",
-                    entry.name,
-                    entry.min_payload_len
-                );
-            }
-        }
     }
 }

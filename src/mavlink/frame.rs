@@ -56,8 +56,6 @@ pub struct ParsedHeader {
     pub msgid: u32,
     pub seq: u8,
     pub payload_len: u8,
-    pub incompat_flags: u8,
-    pub compat_flags: u8,
     /// None if the msgid has no target field, the msgid is unknown to the
     /// router (no entry in the const table), or the field offset lies past
     /// the (possibly v2 zero-trimmed) payload_len — all of which are treated
