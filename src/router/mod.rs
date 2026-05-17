@@ -11,7 +11,7 @@
 //! learn-set, and pushes admitted frames into each destination's
 //! [`TxQueue`].
 //!
-//! The Phase 5a skeleton implements four behaviours from CLAUDE.md:
+//! Behaviours implemented here:
 //!
 //! - **Registry maintenance** — handle `EndpointAdded` /
 //!   `ParentListenerAdded` / `PeerAdded` / `PeerRemoved`, forwarding
@@ -19,16 +19,19 @@
 //! - **Source learn** — touch the source endpoint's learn-set on every
 //!   inbound frame and keep the `learn_entries` stats counter in sync.
 //! - **Routing decision** — for every *other* registered routing
-//!   endpoint, run [`decide::admit_to`] and push the frame to that
+//!   endpoint, run [`decide::decide`] and push the frame to that
 //!   destination's `TxQueue` when admitted (cheap `Bytes::clone` Arc
 //!   bumps; the queue handles drop-oldest overflow and increments
-//!   `dropped_tx`).
+//!   `dropped_tx`). Out-filter rejections bump the destination's
+//!   `out_filter_drops`; sniffer destinations bypass loop-prevent,
+//!   out-filter, and target-match per CLAUDE.md.
 //! - **Shutdown sweep** — on cancel, write `state = Down` for every
 //!   remaining entry in both registries and forward `Finalize` so the
 //!   stats task can drop its registry mirror.
 //!
-//! Policy (filters, sniffer, dedup, groups, seq tracker) is Phase 5b and
-//! lands in [`decide`] / [`dedup`] / [`group`] alongside.
+//! The remaining Phase 5b deliverables (dedup, endpoint groups, the
+//! per-source seq tracker) land in [`dedup`] / [`group`] and the reader
+//! tasks respectively.
 
 pub mod decide;
 pub mod dedup;
@@ -51,7 +54,7 @@ use crate::endpoint::stats::{EndpointState, EndpointStats};
 use crate::endpoint::tx_queue::TxQueue;
 use crate::stats::StatsEvent;
 
-use decide::admit_to;
+use decide::{Decision, decide as decide_for_dest};
 use learn::LearnTable;
 
 /// One registered routing endpoint — a leaf (`tcpc:` / `udpc:` / `serial:`)
@@ -65,10 +68,10 @@ struct RegisteredEndpoint {
     parent_id: Option<EndpointId>,
     tx_queue: TxQueue,
     stats: Arc<EndpointStats>,
-    /// Filter / sniffer / group / seq-tracker capacities. Held here so
-    /// Phase 5b can wire `passes_out_filter`, sniffer override, and the
-    /// shared-learn-set group path without touching the spawner.
-    #[allow(dead_code)]
+    /// Filter / sniffer / group / seq-tracker capacities. The router reads
+    /// `filters` (out-filter evaluation) and `sniffer` (decision override)
+    /// on every dispatched frame; the `group` and capacity fields will be
+    /// consumed by later Phase 5b steps (groups, seq tracker).
     identity: IdentityFlags,
     learn: LearnTable,
 }
@@ -262,10 +265,21 @@ fn handle_frame(routing: &mut HashMap<EndpointId, RegisteredEndpoint>, fr: Route
         if *dest_id == src_id {
             continue;
         }
-        if !admit_to(&header, &dest_ep.learn) {
-            continue;
+        match decide_for_dest(&header, &dest_ep.learn, &dest_ep.identity) {
+            Decision::Admit => {
+                dest_ep.tx_queue.push(frame.clone());
+            }
+            Decision::OutFilterBlocked => {
+                // Only out-filter rejections are credited to a counter —
+                // loop-prevent and target-mismatch are the everyday no-op
+                // rejections.
+                dest_ep
+                    .stats
+                    .out_filter_drops
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Decision::LoopBlocked | Decision::TargetMismatch => {}
         }
-        dest_ep.tx_queue.push(frame.clone());
     }
 }
 
@@ -341,12 +355,20 @@ mod tests {
     }
 
     fn endpoint_added(fx: &EndpointFixture, name: &str) -> EndpointEvent {
+        endpoint_added_with_identity(fx, name, IdentityFlags::default())
+    }
+
+    fn endpoint_added_with_identity(
+        fx: &EndpointFixture,
+        name: &str,
+        identity: IdentityFlags,
+    ) -> EndpointEvent {
         EndpointEvent::EndpointAdded {
             id: fx.id,
             name: name.to_string(),
             tx_queue: fx.tx_queue.clone(),
             stats: fx.stats.clone(),
-            identity: IdentityFlags::default(),
+            identity,
         }
     }
 
@@ -727,6 +749,228 @@ mod tests {
             parent.stats.dropped_tx.load(Ordering::Relaxed),
             0,
             "parent listener dropped_tx inflated"
+        );
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("router exit")
+            .expect("router join");
+    }
+
+    #[tokio::test]
+    async fn out_filter_blocks_destination_and_increments_drop_counter() {
+        use crate::endpoint::filters::{Filters, MsgIdRange};
+        let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
+        let cancel = wiring.cancel.clone();
+        let task = tokio::spawn(run(wiring));
+        let alloc = EndpointIdAllocator::new();
+        let src = make_endpoint(&alloc, true);
+        let dst = make_endpoint(&alloc, true);
+
+        let block_msgid_0 = IdentityFlags {
+            filters: Filters {
+                block_msgid_out: vec![MsgIdRange::single(0)],
+                ..Filters::default()
+            },
+            ..IdentityFlags::default()
+        };
+
+        event_tx
+            .send(endpoint_added(&src, "src"))
+            .await
+            .expect("src");
+        event_tx
+            .send(endpoint_added_with_identity(&dst, "dst", block_msgid_0))
+            .await
+            .expect("dst");
+        tokio::task::yield_now().await;
+
+        // msgid 0 broadcast frame; dst's out-filter blocks msgid 0.
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: src.id,
+                frame: Bytes::from_static(b"x"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send");
+
+        for _ in 0..20 {
+            if dst.stats.out_filter_drops.load(Ordering::Relaxed) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(dst.stats.out_filter_drops.load(Ordering::Relaxed), 1);
+        assert!(dst.tx_queue.pop().is_none(), "blocked frame must not queue");
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("router exit")
+            .expect("router join");
+    }
+
+    #[tokio::test]
+    async fn sniffer_destination_bypasses_loop_prevention_and_target_match() {
+        // Two destinations, one sniffer one plain. We pre-load *plain*'s
+        // learn-set with (7, 1) by feeding a frame whose source endpoint
+        // *is* plain — that's the only way `plain.learn.contains(7, 1)`
+        // ever becomes true (endpoints learn from their own ingress).
+        // After that, a frame from `src` whose `(srcsys, srccomp) = (7, 1)`
+        // tickles loop-prevention on plain but the sniffer tap still
+        // admits it.
+        let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
+        let cancel = wiring.cancel.clone();
+        let task = tokio::spawn(run(wiring));
+        let alloc = EndpointIdAllocator::new();
+        let src = make_endpoint(&alloc, true);
+        let tap = make_endpoint(&alloc, true);
+        let plain = make_endpoint(&alloc, true);
+
+        let sniffer = IdentityFlags {
+            sniffer: true,
+            ..IdentityFlags::default()
+        };
+
+        event_tx
+            .send(endpoint_added(&src, "src"))
+            .await
+            .expect("src");
+        event_tx
+            .send(endpoint_added_with_identity(&tap, "tap", sniffer))
+            .await
+            .expect("tap");
+        event_tx
+            .send(endpoint_added(&plain, "plain"))
+            .await
+            .expect("plain");
+        tokio::task::yield_now().await;
+
+        // Pre-load plain.learn by sending a frame *from* plain with source
+        // identity (7, 1). The router touches plain's learn-set with
+        // (7, 1); the destinations (src, tap) admit it as a normal frame.
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: plain.id,
+                frame: Bytes::from_static(b"prime"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("prime send");
+        // Drain the queues populated by the prime frame so the assertions
+        // below see only the actual test traffic.
+        let _ = tokio::time::timeout(Duration::from_secs(1), src.tx_queue.pop_or_wait()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), tap.tx_queue.pop_or_wait()).await;
+        // Confirm plain.learn now holds (7, 1) by inspecting its
+        // learn_entries counter (router publishes after each new insert).
+        for _ in 0..20 {
+            if plain.stats.learn_entries.load(Ordering::Relaxed) >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(plain.stats.learn_entries.load(Ordering::Relaxed), 1);
+
+        // Frame from src(7, 1) — plain rejects on loop-prevention, tap
+        // admits via sniffer override.
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: src.id,
+                frame: Bytes::from_static(b"echo"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send");
+        let popped = tokio::time::timeout(Duration::from_secs(1), tap.tx_queue.pop_or_wait())
+            .await
+            .expect("tap got frame");
+        assert_eq!(popped, Bytes::from_static(b"echo"));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            plain.tx_queue.pop().is_none(),
+            "loop prevention should have stopped plain from receiving"
+        );
+
+        // Targeted frame at sysid 99 (never learned). Plain rejects on
+        // target-mismatch; tap admits because sniffer bypasses target-match.
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: src.id,
+                frame: Bytes::from_static(b"targeted"),
+                header: header(7, 1, Some(99)),
+            })
+            .await
+            .expect("send");
+        let popped = tokio::time::timeout(Duration::from_secs(1), tap.tx_queue.pop_or_wait())
+            .await
+            .expect("tap got targeted frame");
+        assert_eq!(popped, Bytes::from_static(b"targeted"));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            plain.tx_queue.pop().is_none(),
+            "target-mismatch should have stopped plain from receiving"
+        );
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("router exit")
+            .expect("router join");
+    }
+
+    #[tokio::test]
+    async fn sniffer_destination_admits_through_out_filter_block() {
+        // A frame matching the sniffer's own block_msgid_out still reaches
+        // it — sniffer override skips out-filter entirely. out_filter_drops
+        // must stay 0.
+        use crate::endpoint::filters::{Filters, MsgIdRange};
+        let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
+        let cancel = wiring.cancel.clone();
+        let task = tokio::spawn(run(wiring));
+        let alloc = EndpointIdAllocator::new();
+        let src = make_endpoint(&alloc, true);
+        let tap = make_endpoint(&alloc, true);
+
+        let sniffer_with_block = IdentityFlags {
+            sniffer: true,
+            filters: Filters {
+                block_msgid_out: vec![MsgIdRange::single(0)],
+                ..Filters::default()
+            },
+            ..IdentityFlags::default()
+        };
+
+        event_tx
+            .send(endpoint_added(&src, "src"))
+            .await
+            .expect("src");
+        event_tx
+            .send(endpoint_added_with_identity(
+                &tap,
+                "tap",
+                sniffer_with_block,
+            ))
+            .await
+            .expect("tap");
+        tokio::task::yield_now().await;
+
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: src.id,
+                frame: Bytes::from_static(b"x"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send");
+        let _ = tokio::time::timeout(Duration::from_secs(1), tap.tx_queue.pop_or_wait())
+            .await
+            .expect("tap received frame despite block_msgid_out");
+        assert_eq!(
+            tap.stats.out_filter_drops.load(Ordering::Relaxed),
+            0,
+            "sniffer admit must not bump out_filter_drops"
         );
 
         cancel.cancel();
