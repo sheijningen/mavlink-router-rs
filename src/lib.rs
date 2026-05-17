@@ -21,7 +21,7 @@ use tracing::{info, warn};
 use crate::endpoint::EndpointId;
 use crate::endpoint::EndpointIdAllocator;
 use crate::endpoint::defaults::{DEFAULT_DEDUP_WINDOW_CAPACITY, DEFAULT_TX_QUEUE_FRAMES};
-use crate::endpoint::events::{EndpointEvent, RouterFrame};
+use crate::endpoint::events::{EndpointEvent, Routable, RouterFrame};
 use crate::endpoint::identity_flags::IdentityFlags;
 use crate::endpoint::serial::{SerialSpec, SerialWiring};
 use crate::endpoint::spec::{EndpointKind, EndpointSpec};
@@ -246,13 +246,13 @@ async fn spawn_endpoints(
 /// per-kind `TxQueue`), announce the appropriate lifecycle event to the
 /// router, and spawn the endpoint task. Single `match kind` dispatch — leaf
 /// arms (`tcpc:` / `udpc:` / `serial:`) build a `TxQueue` and emit
-/// `EndpointAdded`; parent-listener arms (`tcps:` / `udps:`) emit
-/// `ParentListenerAdded` with no `TxQueue`. The lifecycle event is awaited
-/// to completion BEFORE the endpoint task is spawned so the router's biased
-/// select sees the registration before any frame stamped with the new
-/// `EndpointId` (CLAUDE.md "Endpoint registration is symmetric"). On a
-/// closed event channel the spawn is silently skipped — the rest of the
-/// router has already torn down.
+/// `EndpointAdded` with `routable = Some(_)`; parent-listener arms
+/// (`tcps:` / `udps:`) emit `EndpointAdded` with `routable = None`. The
+/// lifecycle event is awaited to completion BEFORE the endpoint task is
+/// spawned so the router's biased select sees the registration before any
+/// frame stamped with the new `EndpointId` (CLAUDE.md "Endpoint
+/// registration is symmetric"). On a closed event channel the spawn is
+/// silently skipped — the rest of the router has already torn down.
 async fn spawn_endpoint(
     tasks: &mut JoinSet<()>,
     allocator: &Arc<EndpointIdAllocator>,
@@ -339,7 +339,7 @@ async fn spawn_endpoint(
             });
         }
         EndpointKind::TcpServer(ep) => {
-            if !announce_parent_listener(event_tx, endpoint_id, &name, stats.clone()).await {
+            if !prepare_parent_listener(event_tx, endpoint_id, &name, stats.clone()).await {
                 return Ok(());
             }
             let spec = TcpServerSpec::from_endpoint(ep, endpoint_id, name);
@@ -355,7 +355,7 @@ async fn spawn_endpoint(
             });
         }
         EndpointKind::UdpServer(ep) => {
-            if !announce_parent_listener(event_tx, endpoint_id, &name, stats.clone()).await {
+            if !prepare_parent_listener(event_tx, endpoint_id, &name, stats.clone()).await {
                 return Ok(());
             }
             let spec = UdpServerSpec::from_endpoint(ep, endpoint_id, name);
@@ -374,11 +374,12 @@ async fn spawn_endpoint(
     Ok(())
 }
 
-/// Build the per-leaf `TxQueue`, fire `EndpointAdded`, and return the queue
-/// on successful registration. `None` means the event channel was closed —
-/// the router has already exited and the caller must skip the spawn so no
-/// frame is ever stamped with an unknown `EndpointId`. The warning surfaces
-/// that asymmetry without aborting the rest of the spawn loop.
+/// Build the per-leaf `TxQueue`, fire `EndpointAdded` with `routable =
+/// Some(_)`, and return the queue on successful registration. `None` means
+/// the event channel was closed — the router has already exited and the
+/// caller must skip the spawn so no frame is ever stamped with an unknown
+/// `EndpointId`. The warning surfaces that asymmetry without aborting the
+/// rest of the spawn loop.
 async fn prepare_leaf(
     event_tx: &mpsc::Sender<EndpointEvent>,
     id: EndpointId,
@@ -395,9 +396,11 @@ async fn prepare_leaf(
         .send(EndpointEvent::EndpointAdded {
             id,
             name: name.to_string(),
-            tx_queue: tx_queue.clone(),
             stats,
-            identity,
+            routable: Some(Routable {
+                tx_queue: tx_queue.clone(),
+                identity,
+            }),
         })
         .await
         .is_err()
@@ -411,20 +414,22 @@ async fn prepare_leaf(
     Some(tx_queue)
 }
 
-/// `ParentListenerAdded` counterpart of [`prepare_leaf`]. No `TxQueue` or
-/// `IdentityFlags` because parent listeners aren't routing destinations, so
-/// the caller has no extra handle to receive — a `bool` is enough.
-async fn announce_parent_listener(
+/// Parent-listener counterpart of [`prepare_leaf`]. Fires `EndpointAdded`
+/// with `routable = None` — parent listeners have no `TxQueue` consumer
+/// (their children own real readers/writers) and the router skips them on
+/// dispatch. Returns `false` if the event channel was closed.
+async fn prepare_parent_listener(
     event_tx: &mpsc::Sender<EndpointEvent>,
     id: EndpointId,
     name: &str,
     stats: Arc<EndpointStats>,
 ) -> bool {
     if event_tx
-        .send(EndpointEvent::ParentListenerAdded {
+        .send(EndpointEvent::EndpointAdded {
             id,
             name: name.to_string(),
             stats,
+            routable: None,
         })
         .await
         .is_err()

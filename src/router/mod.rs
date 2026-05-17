@@ -1,21 +1,22 @@
 //! Central router task.
 //!
-//! Owns the per-endpoint learn tables and two registries: one for routing
-//! endpoints (leaf top-level and sub-endpoints) and a separate one for
-//! `tcps:` / `udps:` parent listeners. Parent listeners are kept apart so
-//! the hot frame-dispatch loop only iterates entries that can actually
-//! accept a frame — encoding "skip parents on dispatch" in the type
-//! system rather than a per-iteration runtime check. Receives lifecycle
-//! events and frames on two bounded mpscs, applies the per-destination
-//! decision to each frame against every other routing endpoint's
-//! learn-set, and pushes admitted frames into each destination's
-//! [`TxQueue`].
+//! Owns the per-endpoint learn tables and one registry keyed by
+//! [`EndpointId`]. Each entry carries an optional [`RoutableState`] —
+//! leaves and accepted sub-endpoints supply one; `tcps:` / `udps:` parent
+//! listeners leave it `None` because they never receive frames themselves
+//! (their children own real readers/writers). The hot frame-dispatch loop
+//! short-circuits on `routable.is_none()` at one branch per registry slot,
+//! so parents pay one predicted-not-taken branch and never reach the
+//! per-destination decision. Receives lifecycle events and frames on two
+//! bounded mpscs, applies the per-destination decision to each frame
+//! against every other routing endpoint's learn-set, and pushes admitted
+//! frames into each destination's [`TxQueue`].
 //!
 //! Behaviours implemented here:
 //!
-//! - **Registry maintenance** — handle `EndpointAdded` /
-//!   `ParentListenerAdded` / `PeerAdded` / `PeerRemoved`, forwarding
-//!   `StatsEvent::Register` / `Finalize` to the stats task in lockstep.
+//! - **Registry maintenance** — handle `EndpointAdded` / `PeerAdded` /
+//!   `PeerRemoved`, forwarding `StatsEvent::Register` / `Finalize` to the
+//!   stats task in lockstep.
 //! - **Source learn** — touch the source endpoint's learn-set on every
 //!   inbound frame and keep the `learn_entries` stats counter in sync.
 //! - **Routing decision** — for every *other* registered routing
@@ -70,40 +71,41 @@ use dedup::DedupWindow;
 use group::GroupRegistry;
 use learn::LearnTable;
 
-/// One registered routing endpoint — a leaf (`tcpc:` / `udpc:` / `serial:`)
-/// or a sub-endpoint (`tcps:` accepted child, `udps:` learned peer). The
-/// router is the sole writer of the fields owned here (`learn`, the
-/// registry slot); `stats` and `tx_queue` are `Arc`-shared with the
-/// endpoint's reader/writer and may be observed without coordination.
+/// One registered endpoint. Leaves (`tcpc:` / `udpc:` / `serial:`),
+/// accepted `tcps:` children, and learned `udps:` peers all set `routable
+/// = Some(_)`; `tcps:` / `udps:` parent listeners set `routable = None`
+/// because they're never routing destinations. The router is the sole
+/// writer of `routable.learn` and the registry slot; `stats` and
+/// `routable.tx_queue` are `Arc`-shared with the endpoint's reader/writer
+/// and may be observed without coordination.
+struct RegisteredEndpoint {
+    name: String,
+    is_top_level: bool,
+    stats: Arc<EndpointStats>,
+    /// `None` for parent listeners — they have no `TxQueue` and the hot
+    /// frame-dispatch loop skips them at one branch. `Some(_)` carries the
+    /// dispatch handles for every endpoint that can actually receive a
+    /// frame.
+    routable: Option<RoutableState>,
+}
+
+/// Per-endpoint dispatch state owned by the router for every routable
+/// endpoint. Built from the [`Routable`] payload of `EndpointAdded` /
+/// `PeerAdded` plus a fresh [`LearnTable`].
 ///
 /// The `learn` field is *only* consulted when the endpoint has no group
 /// (`identity.group.is_none()`). Group members read their effective learn
 /// table from [`GroupRegistry`] keyed by `identity.group` per CLAUDE.md's
 /// "Endpoint groups: members share *only* the learn-set; filters and
 /// stats remain per-endpoint."
-struct RegisteredEndpoint {
-    name: String,
-    is_top_level: bool,
+struct RoutableState {
     tx_queue: TxQueue,
-    stats: Arc<EndpointStats>,
-    /// Filter / sniffer / group / seq-tracker capacities. The router reads
-    /// `filters` (out-filter evaluation), `sniffer` (decision override),
-    /// and `group` (effective-learn lookup) on every dispatched frame.
+    /// Filter / sniffer / group flags. The router reads `filters`
+    /// (out-filter evaluation), `sniffer` (decision override), and
+    /// `group` (effective-learn lookup) on every dispatched frame.
     identity: IdentityFlags,
     /// Per-endpoint learn table. Unused when `identity.group.is_some()`.
     learn: LearnTable,
-}
-
-/// Supervisory entry for a `tcps:` / `udps:` parent listener. Lives in a
-/// separate registry from routing endpoints because the listener has no
-/// `TxQueue` consumer (children own real readers/writers) and is never a
-/// routing destination — keeping it out of the routing registry means the
-/// hot frame-dispatch loop iterates only entries that can actually accept a
-/// frame. The router still owns the `stats` `Arc` for the shutdown sweep
-/// (`state = Down` + `Finalize` forwarded to the stats task).
-struct ParentListenerEntry {
-    name: String,
-    stats: Arc<EndpointStats>,
 }
 
 /// Bundle the spawner hands to the router task. The two `mpsc::Receiver`s
@@ -138,7 +140,6 @@ pub async fn run(wiring: RouterWiring) {
     } = wiring;
 
     let mut routing: HashMap<EndpointId, RegisteredEndpoint> = HashMap::new();
-    let mut listeners: HashMap<EndpointId, ParentListenerEntry> = HashMap::new();
     let mut groups = GroupRegistry::new();
     let mut dedup = DedupWindow::new(
         std::time::Duration::from_millis(dedup_ms),
@@ -150,7 +151,7 @@ pub async fn run(wiring: RouterWiring) {
             biased;
             _ = cancel.cancelled() => break,
             Some(ev) = event_rx.recv() => {
-                handle_event(&mut routing, &mut listeners, &mut groups, ev, &stats_event_tx).await;
+                handle_event(&mut routing, &mut groups, ev, &stats_event_tx).await;
             }
             Some(fr) = frame_rx.recv() => {
                 handle_frame(&mut routing, &mut groups, &mut dedup, fr);
@@ -165,22 +166,14 @@ pub async fn run(wiring: RouterWiring) {
     // final-state for every sub-endpoint that was torn down during the
     // drain window.
     while let Ok(ev) = event_rx.try_recv() {
-        handle_event(
-            &mut routing,
-            &mut listeners,
-            &mut groups,
-            ev,
-            &stats_event_tx,
-        )
-        .await;
+        handle_event(&mut routing, &mut groups, ev, &stats_event_tx).await;
     }
 
-    shutdown_sweep(&mut routing, &mut listeners, &stats_event_tx).await;
+    shutdown_sweep(&mut routing, &stats_event_tx).await;
 }
 
 async fn handle_event(
     routing: &mut HashMap<EndpointId, RegisteredEndpoint>,
-    listeners: &mut HashMap<EndpointId, ParentListenerEntry>,
     groups: &mut GroupRegistry,
     ev: EndpointEvent,
     stats_event_tx: &mpsc::Sender<StatsEvent>,
@@ -189,37 +182,27 @@ async fn handle_event(
         EndpointEvent::EndpointAdded {
             id,
             name,
-            tx_queue,
             stats,
-            identity,
+            routable,
         } => {
-            if let Some(group) = &identity.group {
-                groups.join(group.clone(), LEARN_CAPACITY);
-            }
-            let learn = LearnTable::new(LEARN_CAPACITY);
+            let routable_state = routable.map(|r| {
+                if let Some(group) = &r.identity.group {
+                    groups.join(group.clone(), LEARN_CAPACITY);
+                }
+                RoutableState {
+                    tx_queue: r.tx_queue,
+                    identity: r.identity,
+                    learn: LearnTable::new(LEARN_CAPACITY),
+                }
+            });
             let entry = RegisteredEndpoint {
                 name: name.clone(),
                 is_top_level: true,
-                tx_queue,
                 stats: stats.clone(),
-                identity,
-                learn,
+                routable: routable_state,
             };
-            trace!(%id, %name, "router: endpoint added");
+            trace!(%id, %name, routable = entry.routable.is_some(), "router: endpoint added");
             routing.insert(id, entry);
-            let _ = stats_event_tx
-                .send(StatsEvent::Register { id, name, stats })
-                .await;
-        }
-        EndpointEvent::ParentListenerAdded { id, name, stats } => {
-            trace!(%id, %name, "router: parent listener added");
-            listeners.insert(
-                id,
-                ParentListenerEntry {
-                    name: name.clone(),
-                    stats: stats.clone(),
-                },
-            );
             let _ = stats_event_tx
                 .send(StatsEvent::Register { id, name, stats })
                 .await;
@@ -236,14 +219,15 @@ async fn handle_event(
             if let Some(group) = &identity.group {
                 groups.join(group.clone(), LEARN_CAPACITY);
             }
-            let learn = LearnTable::new(LEARN_CAPACITY);
             let entry = RegisteredEndpoint {
                 name: name.clone(),
                 is_top_level: false,
-                tx_queue,
                 stats: stats.clone(),
-                identity,
-                learn,
+                routable: Some(RoutableState {
+                    tx_queue,
+                    identity,
+                    learn: LearnTable::new(LEARN_CAPACITY),
+                }),
             };
             trace!(%child_id, %parent_id, %name, "router: peer added");
             routing.insert(child_id, entry);
@@ -268,7 +252,9 @@ async fn handle_event(
                 | PeerRemovalReason::ListenerShutdown => EndpointState::Down,
             };
             if let Some(entry) = routing.remove(&child_id) {
-                if let Some(group) = &entry.identity.group {
+                if let Some(rs) = &entry.routable
+                    && let Some(group) = &rs.identity.group
+                {
                     groups.leave(group);
                 }
                 entry.stats.store_state(final_state);
@@ -295,16 +281,21 @@ fn handle_frame(
     let now = Instant::now();
 
     // Peek at the source endpoint's identity and stats so we can release
-    // the mut borrow on `routing` before touching `groups`.
+    // the mut borrow on `routing` before touching `groups`. A frame from a
+    // registered-but-non-routable endpoint (a parent listener) is a
+    // spawner bug — parents have no reader and cannot emit a `RouterFrame`
+    // — but the same DEBUG-then-drop handles both that and the genuine
+    // unknown-id case.
     let (src_stats, src_group) = {
         let Some(src_ep) = routing.get(&src_id) else {
-            // Should be unreachable in healthy operation per CLAUDE.md's
-            // registration-before-frame invariant; surface at DEBUG so a
-            // spawner-ordering regression is visible.
             debug!(%src_id, "router: frame from unknown endpoint; dropped");
             return;
         };
-        (src_ep.stats.clone(), src_ep.identity.group.clone())
+        let Some(rs) = &src_ep.routable else {
+            debug!(%src_id, "router: frame from non-routable endpoint; dropped");
+            return;
+        };
+        (src_ep.stats.clone(), rs.identity.group.clone())
     };
 
     // Dedup runs BEFORE learn and per-destination dispatch (CLAUDE.md
@@ -333,11 +324,12 @@ fn handle_frame(
             g.learn.len()
         }
         None => {
-            let src_ep = routing
+            let src_rs = routing
                 .get_mut(&src_id)
-                .expect("source endpoint just observed above");
-            src_ep.learn.touch(header.sysid, header.compid, now);
-            src_ep.learn.len()
+                .and_then(|ep| ep.routable.as_mut())
+                .expect("source routable just observed above");
+            src_rs.learn.touch(header.sysid, header.compid, now);
+            src_rs.learn.len()
         }
     };
     src_stats
@@ -348,7 +340,13 @@ fn handle_frame(
         if *dest_id == src_id {
             continue;
         }
-        let dest_learn = match &dest_ep.identity.group {
+        // Parent listeners (`routable == None`) are skipped here at one
+        // branch per registry slot — the type-level distinction lives on
+        // `RegisteredEndpoint.routable` rather than in a separate map.
+        let Some(dest_rs) = &dest_ep.routable else {
+            continue;
+        };
+        let dest_learn = match &dest_rs.identity.group {
             Some(name) => {
                 // Single-task ownership: groups.leave is only called from
                 // handle_event, which is mutually exclusive with this
@@ -361,11 +359,11 @@ fn handle_frame(
                     None => continue,
                 }
             }
-            None => &dest_ep.learn,
+            None => &dest_rs.learn,
         };
-        match decide_for_dest(&header, dest_learn, &dest_ep.identity) {
+        match decide_for_dest(&header, dest_learn, &dest_rs.identity) {
             Decision::Admit => {
-                dest_ep.tx_queue.push(frame.clone());
+                dest_rs.tx_queue.push(frame.clone());
             }
             Decision::OutFilterBlocked => {
                 // Only out-filter rejections are credited to a counter —
@@ -383,7 +381,6 @@ fn handle_frame(
 
 async fn shutdown_sweep(
     routing: &mut HashMap<EndpointId, RegisteredEndpoint>,
-    listeners: &mut HashMap<EndpointId, ParentListenerEntry>,
     stats_event_tx: &mpsc::Sender<StatsEvent>,
 ) {
     // CLAUDE.md "On shutdown the router walks its top-level registry, writes
@@ -392,12 +389,13 @@ async fn shutdown_sweep(
     // before cancel fired — Down is still the safe terminal value.
     for (id, entry) in routing.drain() {
         entry.stats.store_state(EndpointState::Down);
-        trace!(%id, name = %entry.name, top_level = entry.is_top_level, "router: shutdown finalize");
-        let _ = stats_event_tx.send(StatsEvent::Finalize { id }).await;
-    }
-    for (id, entry) in listeners.drain() {
-        entry.stats.store_state(EndpointState::Down);
-        trace!(%id, name = %entry.name, "router: shutdown finalize (parent listener)");
+        trace!(
+            %id,
+            name = %entry.name,
+            top_level = entry.is_top_level,
+            routable = entry.routable.is_some(),
+            "router: shutdown finalize"
+        );
         let _ = stats_event_tx.send(StatsEvent::Finalize { id }).await;
     }
 }
@@ -406,7 +404,7 @@ async fn shutdown_sweep(
 mod tests {
     use super::*;
     use crate::endpoint::EndpointIdAllocator;
-    use crate::endpoint::events::PeerRemovalReason;
+    use crate::endpoint::events::{PeerRemovalReason, Routable};
     use crate::mavlink::frame::{ParsedHeader, Version};
     use bytes::Bytes;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -462,17 +460,20 @@ mod tests {
         EndpointEvent::EndpointAdded {
             id: fx.id,
             name: name.to_string(),
-            tx_queue: fx.tx_queue.clone(),
             stats: fx.stats.clone(),
-            identity,
+            routable: Some(Routable {
+                tx_queue: fx.tx_queue.clone(),
+                identity,
+            }),
         }
     }
 
     fn parent_listener_added(fx: &EndpointFixture, name: &str) -> EndpointEvent {
-        EndpointEvent::ParentListenerAdded {
+        EndpointEvent::EndpointAdded {
             id: fx.id,
             name: name.to_string(),
             stats: fx.stats.clone(),
+            routable: None,
         }
     }
 
@@ -821,11 +822,12 @@ mod tests {
     #[tokio::test]
     async fn parent_listener_does_not_receive_broadcast() {
         // CLAUDE.md: tcps/udps parent listeners register via
-        // `ParentListenerAdded` (no TxQueue) and live in a separate
-        // registry from routing endpoints. The frame-dispatch loop must
-        // never touch them — a parent's TxQueue is unobservable to the
-        // router, so this test asserts the parent's stats (which the
-        // router *does* hold) reflect zero dispatch attempts.
+        // `EndpointAdded` with `routable = None`. They share the registry
+        // with routing endpoints; the frame-dispatch loop short-circuits
+        // on the `None` at one branch per slot. This test asserts the
+        // parent's TxQueue (held only by the test fixture, never handed
+        // to the router) receives zero frames despite live broadcast
+        // traffic.
         let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
         let cancel = wiring.cancel.clone();
         let task = tokio::spawn(run(wiring));

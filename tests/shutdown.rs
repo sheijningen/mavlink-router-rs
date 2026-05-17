@@ -2,18 +2,17 @@
 //! shutdown sweep with **live** endpoint/listener tasks in the loop.
 //!
 //! Unit tests in `src/router/mod.rs` exercise `shutdown_sweep` with fake
-//! `RegisteredEndpoint`/`ParentListenerEntry` values. These tests pin the
-//! system-level invariant: with a real task running alongside the router
-//! and writing `Connected` on bind, the final value observed in the shared
-//! `Arc<EndpointStats>` after `cancel` + join is `Down` (the router's
-//! shutdown write), not a lingering `Connected` (the task's last write
-//! before observing cancel). That's the CLAUDE.md split-authority rule:
-//! "once an endpoint task observes the cancellation token, it must not
-//! write `state` again".
+//! registry entries. These tests pin the system-level invariant: with a
+//! real task running alongside the router and writing `Connected` on bind,
+//! the final value observed in the shared `Arc<EndpointStats>` after
+//! `cancel` + join is `Down` (the router's shutdown write), not a
+//! lingering `Connected` (the task's last write before observing cancel).
+//! That's the CLAUDE.md split-authority rule: "once an endpoint task
+//! observes the cancellation token, it must not write `state` again".
 //!
-//! Two cases cover both branches of `shutdown_sweep`: the `routing` map
-//! (leaf top-level endpoints registered via `EndpointAdded`) and the
-//! `listeners` map (parent listeners registered via `ParentListenerAdded`).
+//! Two cases cover both sides of the unified registry: leaf top-level
+//! endpoints (`EndpointAdded` with `routable = Some(_)`) and parent
+//! listeners (`EndpointAdded` with `routable = None`).
 
 #[path = "common/mod.rs"]
 mod common;
@@ -25,7 +24,7 @@ use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use rmr::endpoint::events::{EndpointEvent, RouterFrame};
+use rmr::endpoint::events::{EndpointEvent, Routable, RouterFrame};
 use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::spec::{TcpServerEndpoint, UdpClientEndpoint};
 use rmr::endpoint::stats::{EndpointState, EndpointStats};
@@ -106,9 +105,11 @@ async fn router_writes_down_on_cancel_for_leaf_top_level_endpoint() {
         .send(EndpointEvent::EndpointAdded {
             id: endpoint_id,
             name: "uc".to_string(),
-            tx_queue: tx_queue.clone(),
             stats: endpoint_stats.clone(),
-            identity: identity.clone(),
+            routable: Some(Routable {
+                tx_queue: tx_queue.clone(),
+                identity: identity.clone(),
+            }),
         })
         .await
         .expect("EndpointAdded send");
@@ -166,13 +167,14 @@ async fn router_writes_down_on_cancel_for_parent_listener() {
     let spec = TcpServerSpec::from_endpoint(ep, parent_id, "ts".to_string());
 
     h.event_tx
-        .send(EndpointEvent::ParentListenerAdded {
+        .send(EndpointEvent::EndpointAdded {
             id: parent_id,
             name: "ts".to_string(),
             stats: parent_stats.clone(),
+            routable: None,
         })
         .await
-        .expect("ParentListenerAdded send");
+        .expect("EndpointAdded (parent listener) send");
 
     // The listener forwards any PeerAdded/PeerRemoved straight to the router
     // — no client connects in this test so the channel stays empty, but
@@ -206,6 +208,6 @@ async fn router_writes_down_on_cancel_for_parent_listener() {
         EndpointState::Down,
         "router must have written Down on the shutdown sweep for the parent \
          listener; anything else means the listener task wrote state after \
-         observing cancel or the router skipped the listeners.drain() arm"
+         observing cancel or the router skipped the shutdown sweep"
     );
 }
