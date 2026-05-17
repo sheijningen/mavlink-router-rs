@@ -88,29 +88,19 @@ pub async fn run_with_cancel(cli: cli::Cli, token: CancellationToken) -> Result<
 
     let mut tasks: JoinSet<()> = JoinSet::new();
 
-    {
-        let wiring = RouterWiring {
-            frame_rx,
-            event_rx,
-            stats_event_tx,
-            cancel: token.clone(),
-        };
-        tasks.spawn(async move {
-            router::run(wiring).await;
-        });
-    }
+    spawn_router(
+        &mut tasks,
+        frame_rx,
+        event_rx,
+        stats_event_tx,
+        token.clone(),
+    );
+    spawn_stats(&mut tasks, stats_event_rx, token.clone());
+    spawn_endpoints(&mut tasks, &event_tx, &frame_tx, &token, specs).await?;
 
-    {
-        let cancel = token.clone();
-        tasks.spawn(async move {
-            stats::run(stats_event_rx, cancel).await;
-        });
-    }
-
-    let allocator = Arc::new(EndpointIdAllocator::new());
-    for spec in specs {
-        spawn_endpoint(&mut tasks, &allocator, &event_tx, &frame_tx, &token, spec).await?;
-    }
+    // Drop the parent senders so the router's recv() loops observe
+    // end-of-input once the last endpoint task exits, not just the cancel
+    // token.
     drop(event_tx);
     drop(frame_tx);
 
@@ -180,6 +170,48 @@ fn listen_addr_for(scheme: &'static str, host: &str, port: u16) -> Result<Socket
         host: host.to_string(),
     })?;
     Ok(SocketAddr::new(ip, port))
+}
+
+fn spawn_router(
+    tasks: &mut JoinSet<()>,
+    frame_rx: mpsc::Receiver<RouterFrame>,
+    event_rx: mpsc::Receiver<EndpointEvent>,
+    stats_event_tx: mpsc::Sender<StatsEvent>,
+    cancel: CancellationToken,
+) {
+    let wiring = RouterWiring {
+        frame_rx,
+        event_rx,
+        stats_event_tx,
+        cancel,
+    };
+    tasks.spawn(async move {
+        router::run(wiring).await;
+    });
+}
+
+fn spawn_stats(
+    tasks: &mut JoinSet<()>,
+    stats_event_rx: mpsc::Receiver<StatsEvent>,
+    cancel: CancellationToken,
+) {
+    tasks.spawn(async move {
+        stats::run(stats_event_rx, cancel).await;
+    });
+}
+
+async fn spawn_endpoints(
+    tasks: &mut JoinSet<()>,
+    event_tx: &mpsc::Sender<EndpointEvent>,
+    frame_tx: &mpsc::Sender<RouterFrame>,
+    cancel: &CancellationToken,
+    specs: Vec<EndpointSpec>,
+) -> Result<(), Error> {
+    let allocator = Arc::new(EndpointIdAllocator::new());
+    for spec in specs {
+        spawn_endpoint(tasks, &allocator, event_tx, frame_tx, cancel, spec).await?;
+    }
+    Ok(())
 }
 
 async fn spawn_endpoint(
