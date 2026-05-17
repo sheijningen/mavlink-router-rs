@@ -512,4 +512,339 @@ mod tests {
         assert!(!f.passes_in_filter(0, 0, 128));
         assert!(!f.passes_in_filter(0, 0, 255));
     }
+
+    // ----- property tests -----
+    //
+    // CLAUDE.md "Testing strategy" requires proptest coverage for the filter
+    // evaluator: "blocklist always wins over allowlist on overlap" plus the
+    // surrounding axis-composition / monotonicity invariants. Properties test
+    // shapes that example-based tests can't enumerate (any allow/block list,
+    // any value, any range overlap).
+
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+
+    // Bias the range generators toward the small msgid space where real
+    // MAVLink lives so the interesting branches (range matches value) get
+    // exercised. A naive uniform `0..=u32::MAX` strategy almost never covers
+    // a uniformly-random msgid, which makes monotonicity / acceptance
+    // properties degenerate to their no-match branch.
+    fn msgid_value() -> impl Strategy<Value = u32> {
+        prop_oneof![
+            // 80%: plausible MAVLink msgid space (covers the const table).
+            8 => 0u32..=512,
+            // 20%: full u32 range to keep edge cases reachable.
+            2 => any::<u32>(),
+        ]
+    }
+
+    fn msgid_range() -> impl Strategy<Value = MsgIdRange> {
+        prop_oneof![
+            8 => (0u32..=512, 0u32..=512),
+            2 => (any::<u32>(), any::<u32>()),
+        ]
+        .prop_map(|(a, b)| MsgIdRange {
+            lo: a.min(b),
+            hi: a.max(b),
+        })
+    }
+
+    fn u8_range() -> impl Strategy<Value = U8Range> {
+        (0u8..=u8::MAX, 0u8..=u8::MAX).prop_map(|(a, b)| U8Range {
+            lo: a.min(b),
+            hi: a.max(b),
+        })
+    }
+
+    fn msgid_range_around(p: u32) -> impl Strategy<Value = MsgIdRange> {
+        (0u32..=p, p..=u32::MAX).prop_map(|(lo, hi)| MsgIdRange { lo, hi })
+    }
+
+    fn u8_range_around(p: u8) -> impl Strategy<Value = U8Range> {
+        (0u8..=p, p..=u8::MAX).prop_map(|(lo, hi)| U8Range { lo, hi })
+    }
+
+    proptest! {
+        // CLAUDE.md "blocklist always wins over allowlist on overlap": no
+        // matter what allow list contains the value, a block range that also
+        // covers the value rejects.
+        #[test]
+        fn block_wins_on_overlap_msgid(
+            (msgid, allow_with_msgid, blocker) in any::<u32>().prop_flat_map(|msgid| {
+                (
+                    Just(msgid),
+                    vec(msgid_range_around(msgid), 1..5),
+                    msgid_range_around(msgid),
+                )
+            }),
+            extra_allow in vec(msgid_range(), 0..4),
+            extra_block in vec(msgid_range(), 0..4),
+        ) {
+            let mut allow_all = allow_with_msgid;
+            allow_all.extend(extra_allow);
+            let mut block_all = extra_block;
+            block_all.push(blocker);
+            let f = Filters {
+                allow_msgid_in: allow_all,
+                block_msgid_in: block_all,
+                ..Filters::default()
+            };
+            prop_assert!(!f.passes_in_filter(msgid, 0, 0));
+        }
+
+        #[test]
+        fn block_wins_on_overlap_src_sys(
+            (src_sys, allow, blocker) in any::<u8>().prop_flat_map(|src_sys| {
+                (
+                    Just(src_sys),
+                    vec(u8_range_around(src_sys), 1..5),
+                    u8_range_around(src_sys),
+                )
+            }),
+        ) {
+            let f = Filters {
+                allow_src_sys_in: allow,
+                block_src_sys_in: vec![blocker],
+                ..Filters::default()
+            };
+            prop_assert!(!f.passes_in_filter(0, src_sys, 0));
+        }
+
+        #[test]
+        fn block_wins_on_overlap_src_comp(
+            (src_comp, allow, blocker) in any::<u8>().prop_flat_map(|src_comp| {
+                (
+                    Just(src_comp),
+                    vec(u8_range_around(src_comp), 1..5),
+                    u8_range_around(src_comp),
+                )
+            }),
+        ) {
+            let f = Filters {
+                allow_src_comp_in: allow,
+                block_src_comp_in: vec![blocker],
+                ..Filters::default()
+            };
+            prop_assert!(!f.passes_in_filter(0, 0, src_comp));
+        }
+
+        // Block-wins-on-overlap also applies to the egress filter — the
+        // locked decision says nothing distinguishes the in/out semantics
+        // beyond the list each filter reads.
+        #[test]
+        fn block_wins_on_overlap_msgid_out(
+            (msgid, allow_with_msgid, blocker) in msgid_value().prop_flat_map(|msgid| {
+                (
+                    Just(msgid),
+                    vec(msgid_range_around(msgid), 1..5),
+                    msgid_range_around(msgid),
+                )
+            }),
+            extra_allow in vec(msgid_range(), 0..4),
+            extra_block in vec(msgid_range(), 0..4),
+        ) {
+            let mut allow_all = allow_with_msgid;
+            allow_all.extend(extra_allow);
+            let mut block_all = extra_block;
+            block_all.push(blocker);
+            let f = Filters {
+                allow_msgid_out: allow_all,
+                block_msgid_out: block_all,
+                ..Filters::default()
+            };
+            prop_assert!(!f.passes_out_filter(msgid, 0, 0));
+        }
+
+        // Empty allow lists impose no restriction: result equals "not in any
+        // block range" across all three axes.
+        #[test]
+        fn empty_allow_equals_not_blocked(
+            msgid in msgid_value(),
+            src_sys in any::<u8>(),
+            src_comp in any::<u8>(),
+            block_msgid in vec(msgid_range(), 0..6),
+            block_sys in vec(u8_range(), 0..6),
+            block_comp in vec(u8_range(), 0..6),
+        ) {
+            let f = Filters {
+                block_msgid_in: block_msgid.clone(),
+                block_src_sys_in: block_sys.clone(),
+                block_src_comp_in: block_comp.clone(),
+                ..Filters::default()
+            };
+            let blocked = block_msgid.iter().any(|r| r.contains(msgid))
+                || block_sys.iter().any(|r| r.contains(src_sys))
+                || block_comp.iter().any(|r| r.contains(src_comp));
+            prop_assert_eq!(f.passes_in_filter(msgid, src_sys, src_comp), !blocked);
+        }
+
+        // Non-empty allow: a value matched by no allow range is rejected
+        // regardless of the block list.
+        #[test]
+        fn unlisted_in_nonempty_allow_is_rejected(
+            msgid in msgid_value(),
+            allow in vec(msgid_range(), 1..5),
+            block in vec(msgid_range(), 0..5),
+        ) {
+            prop_assume!(!allow.iter().any(|r| r.contains(msgid)));
+            let f = Filters {
+                allow_msgid_in: allow,
+                block_msgid_in: block,
+                ..Filters::default()
+            };
+            prop_assert!(!f.passes_in_filter(msgid, 0, 0));
+        }
+
+        // Adding a range to the blocklist can only narrow acceptance: a frame
+        // already rejected stays rejected.
+        #[test]
+        fn block_growth_is_monotone_rejection(
+            msgid in msgid_value(),
+            src_sys in any::<u8>(),
+            src_comp in any::<u8>(),
+            allow_msgid in vec(msgid_range(), 0..4),
+            block_msgid in vec(msgid_range(), 0..4),
+            extra_block in msgid_range(),
+        ) {
+            let mut f = Filters {
+                allow_msgid_in: allow_msgid,
+                block_msgid_in: block_msgid,
+                ..Filters::default()
+            };
+            let before = f.passes_in_filter(msgid, src_sys, src_comp);
+            f.block_msgid_in.push(extra_block);
+            let after = f.passes_in_filter(msgid, src_sys, src_comp);
+            // Monotone: `before == false` implies `after == false`.
+            prop_assert!(before || !after);
+        }
+
+        // Adding an allow range when allow is already non-empty can only
+        // widen acceptance: a frame already accepted stays accepted.
+        #[test]
+        fn allow_growth_is_monotone_acceptance(
+            msgid in msgid_value(),
+            src_sys in any::<u8>(),
+            src_comp in any::<u8>(),
+            allow_msgid in vec(msgid_range(), 1..4),
+            block_msgid in vec(msgid_range(), 0..4),
+            extra_allow in msgid_range(),
+        ) {
+            let mut f = Filters {
+                allow_msgid_in: allow_msgid,
+                block_msgid_in: block_msgid,
+                ..Filters::default()
+            };
+            let before = f.passes_in_filter(msgid, src_sys, src_comp);
+            f.allow_msgid_in.push(extra_allow);
+            let after = f.passes_in_filter(msgid, src_sys, src_comp);
+            // Monotone: `before == true` implies `after == true`.
+            prop_assert!(!before || after);
+        }
+
+        // In and Out lists are independent: changes to `*_out` cannot affect
+        // passes_in_filter, and vice versa.
+        #[test]
+        fn out_lists_do_not_affect_in_filter(
+            msgid in msgid_value(),
+            src_sys in any::<u8>(),
+            src_comp in any::<u8>(),
+            allow_msgid_in in vec(msgid_range(), 0..4),
+            block_msgid_in in vec(msgid_range(), 0..4),
+            allow_msgid_out in vec(msgid_range(), 0..4),
+            block_msgid_out in vec(msgid_range(), 0..4),
+            allow_sys_out in vec(u8_range(), 0..4),
+            block_sys_out in vec(u8_range(), 0..4),
+            allow_comp_out in vec(u8_range(), 0..4),
+            block_comp_out in vec(u8_range(), 0..4),
+        ) {
+            let baseline = Filters {
+                allow_msgid_in: allow_msgid_in.clone(),
+                block_msgid_in: block_msgid_in.clone(),
+                ..Filters::default()
+            };
+            let with_out = Filters {
+                allow_msgid_in,
+                block_msgid_in,
+                allow_msgid_out,
+                block_msgid_out,
+                allow_src_sys_out: allow_sys_out,
+                block_src_sys_out: block_sys_out,
+                allow_src_comp_out: allow_comp_out,
+                block_src_comp_out: block_comp_out,
+                ..Filters::default()
+            };
+            prop_assert_eq!(
+                baseline.passes_in_filter(msgid, src_sys, src_comp),
+                with_out.passes_in_filter(msgid, src_sys, src_comp),
+            );
+        }
+
+        #[test]
+        fn in_lists_do_not_affect_out_filter(
+            msgid in msgid_value(),
+            src_sys in any::<u8>(),
+            src_comp in any::<u8>(),
+            allow_msgid_out in vec(msgid_range(), 0..4),
+            block_msgid_out in vec(msgid_range(), 0..4),
+            allow_msgid_in in vec(msgid_range(), 0..4),
+            block_msgid_in in vec(msgid_range(), 0..4),
+            allow_sys_in in vec(u8_range(), 0..4),
+            block_sys_in in vec(u8_range(), 0..4),
+            allow_comp_in in vec(u8_range(), 0..4),
+            block_comp_in in vec(u8_range(), 0..4),
+        ) {
+            let baseline = Filters {
+                allow_msgid_out: allow_msgid_out.clone(),
+                block_msgid_out: block_msgid_out.clone(),
+                ..Filters::default()
+            };
+            let with_in = Filters {
+                allow_msgid_out,
+                block_msgid_out,
+                allow_msgid_in,
+                block_msgid_in,
+                allow_src_sys_in: allow_sys_in,
+                block_src_sys_in: block_sys_in,
+                allow_src_comp_in: allow_comp_in,
+                block_src_comp_in: block_comp_in,
+                ..Filters::default()
+            };
+            prop_assert_eq!(
+                baseline.passes_out_filter(msgid, src_sys, src_comp),
+                with_in.passes_out_filter(msgid, src_sys, src_comp),
+            );
+        }
+
+        // Axes compose as logical AND: the per-frame decision passes iff
+        // every axis would pass on its own.
+        #[test]
+        fn axes_compose_as_and(
+            msgid in msgid_value(),
+            src_sys in any::<u8>(),
+            src_comp in any::<u8>(),
+            allow_msgid in vec(msgid_range(), 0..4),
+            block_msgid in vec(msgid_range(), 0..4),
+            allow_sys in vec(u8_range(), 0..4),
+            block_sys in vec(u8_range(), 0..4),
+            allow_comp in vec(u8_range(), 0..4),
+            block_comp in vec(u8_range(), 0..4),
+        ) {
+            let f = Filters {
+                allow_msgid_in: allow_msgid.clone(),
+                block_msgid_in: block_msgid.clone(),
+                allow_src_sys_in: allow_sys.clone(),
+                block_src_sys_in: block_sys.clone(),
+                allow_src_comp_in: allow_comp.clone(),
+                block_src_comp_in: block_comp.clone(),
+                ..Filters::default()
+            };
+            let msgid_pass = pass_msgid_axis(msgid, &allow_msgid, &block_msgid);
+            let sys_pass = pass_u8_axis(src_sys, &allow_sys, &block_sys);
+            let comp_pass = pass_u8_axis(src_comp, &allow_comp, &block_comp);
+            prop_assert_eq!(
+                f.passes_in_filter(msgid, src_sys, src_comp),
+                msgid_pass && sys_pass && comp_pass,
+            );
+        }
+    }
 }
