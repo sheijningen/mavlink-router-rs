@@ -40,8 +40,9 @@
 //!   remaining entry in both registries and forward `Finalize` so the
 //!   stats task can drop its registry mirror.
 //!
-//! The remaining Phase 5b deliverable (per-source seq tracker) lands in
-//! the reader tasks.
+//! The per-source seq tracker that feeds `rx_lost_est` lives on the reader
+//! side (CLAUDE.md ingress pipeline step 2); the router never touches
+//! per-source seq state.
 
 pub mod decide;
 pub mod dedup;

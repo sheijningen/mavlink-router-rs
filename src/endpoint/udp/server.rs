@@ -79,7 +79,8 @@ struct PeerEntry {
 /// v1. `identity` carries the filter / sniffer / group / capacity bundle —
 /// inherited by every learned peer at admission time (CLAUDE.md "Sub-
 /// endpoints inherit their parent's `IdentityFlags` by clone at spawn
-/// time"). Unused until Phase 5 wires it through the reader and the router.
+/// time"); the per-peer reader applies the in-filter snapshot, the router
+/// applies out-filter / sniffer / group from the same bundle.
 pub struct UdpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,

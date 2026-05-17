@@ -16,11 +16,11 @@ use crate::mavlink::framer::Framer;
 /// through their bind/dial backoff; sub-endpoint admission paths store
 /// `Connected` because admission *is* the transport-up event).
 ///
-/// **Write authority is split** (CLAUDE.md locked decision; not yet wired up
-/// in code — Phase 5 enforces it): the endpoint task owns `Connected` /
-/// `Reconnecting`, the router task owns `Idle` / `Down`. Once an endpoint
-/// task observes the cancellation token it must not write `state` again so
-/// the router's `Down` write is guaranteed to be the last write to the slot.
+/// **Write authority is split** (CLAUDE.md locked decision): the endpoint
+/// task owns `Connected` / `Reconnecting`, the router task owns `Idle` /
+/// `Down`. Once an endpoint task observes the cancellation token it must
+/// not write `state` again so the router's `Down` write is guaranteed to
+/// be the last write to the slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EndpointState {
     #[default]

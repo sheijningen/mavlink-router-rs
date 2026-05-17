@@ -32,8 +32,8 @@ use super::super::tx_queue::TxQueue;
 /// overrides in v1. `identity` carries the filter / sniffer / group /
 /// capacity bundle — inherited by every accepted child at admission time
 /// (CLAUDE.md "Sub-endpoints inherit their parent's `IdentityFlags` by clone
-/// at spawn time"). Unused until Phase 5 wires it through the reader and
-/// the router.
+/// at spawn time"); the child reader applies the in-filter snapshot, the
+/// router applies out-filter / sniffer / group from the same bundle.
 pub struct TcpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,

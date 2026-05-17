@@ -35,10 +35,10 @@ pub const MAX_SERIAL_REOPEN_MS: u64 = 60_000;
 /// to open at what baud (with optional hardware flow control), what to call
 /// it, and the per-endpoint knobs from the query string with CLAUDE.md
 /// defaults already substituted. `identity` carries the filter / sniffer /
-/// group / capacity bundle — unused today, threaded here so Phase 5 readers
-/// and the router can consume it without a spawner rework (CLAUDE.md
-/// "Filters, group, sniffer, and learn/seq capacities travel with the
-/// `*Spec`").
+/// group / capacity bundle (CLAUDE.md "Filters, group, sniffer, and
+/// learn/seq capacities travel with the `*Spec`"); the reader applies the
+/// in-filter snapshot, the router applies out-filter / sniffer / group
+/// from the same bundle.
 pub struct SerialSpec {
     pub path: String,
     pub baud: u32,

@@ -45,9 +45,10 @@ pub const MAX_RECONNECT_MAX_MS: u64 = 600_000;
 /// Inputs that distinguish one `tcpc:` endpoint from another: where to dial,
 /// what to call it, and the per-endpoint knobs from the query string with
 /// CLAUDE.md defaults already substituted. `identity` carries the filter /
-/// sniffer / group / capacity bundle — unused today, threaded so Phase 5 can
-/// wire it up without a spawner rework (CLAUDE.md "Filters, group, sniffer,
-/// and learn/seq capacities travel with the `*Spec`").
+/// sniffer / group / capacity bundle (CLAUDE.md "Filters, group, sniffer,
+/// and learn/seq capacities travel with the `*Spec`"); the reader applies
+/// the in-filter snapshot, the router applies out-filter / sniffer / group
+/// from this same bundle.
 pub struct TcpClientSpec {
     pub host: String,
     pub port: u16,

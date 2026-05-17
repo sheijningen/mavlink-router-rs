@@ -45,10 +45,10 @@ const REVERT_TICK: Duration = Duration::from_secs(1);
 /// always the `tcpc:` curve (CLAUDE.md "Bind/open failure at startup is not
 /// fatal" + "Same reasoning applies to `udps:`" — `udpc:` follows the same
 /// rule) — `udpc:` does not expose per-endpoint bind-retry overrides in v1.
-/// `identity` carries the filter / sniffer / group / capacity bundle —
-/// unused today, threaded so Phase 5 can wire it up without a spawner
-/// rework (CLAUDE.md "Filters, group, sniffer, and learn/seq capacities
-/// travel with the `*Spec`").
+/// `identity` carries the filter / sniffer / group / capacity bundle
+/// (CLAUDE.md "Filters, group, sniffer, and learn/seq capacities travel
+/// with the `*Spec`"); the reader applies the in-filter snapshot, the
+/// router applies out-filter / sniffer / group from the same bundle.
 pub struct UdpClientSpec {
     pub host: String,
     pub port: u16,
