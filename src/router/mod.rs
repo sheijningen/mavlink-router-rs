@@ -25,13 +25,17 @@
 //!   `dropped_tx`). Out-filter rejections bump the destination's
 //!   `out_filter_drops`; sniffer destinations bypass loop-prevent,
 //!   out-filter, and target-match per CLAUDE.md.
+//! - **Group registry maintenance** — endpoints declaring `?group=NAME`
+//!   share a single learn-set hosted in [`GroupRegistry`]; the router
+//!   joins / leaves on `EndpointAdded` / `PeerAdded` / `PeerRemoved` and
+//!   routes source-learn writes and per-destination loop-prevent reads
+//!   through the group's table when present.
 //! - **Shutdown sweep** — on cancel, write `state = Down` for every
 //!   remaining entry in both registries and forward `Finalize` so the
 //!   stats task can drop its registry mirror.
 //!
-//! The remaining Phase 5b deliverables (dedup, endpoint groups, the
-//! per-source seq tracker) land in [`dedup`] / [`group`] and the reader
-//! tasks respectively.
+//! The remaining Phase 5b deliverables (dedup, per-source seq tracker)
+//! land in [`dedup`] and the reader tasks respectively.
 
 pub mod decide;
 pub mod dedup;
@@ -55,6 +59,7 @@ use crate::endpoint::tx_queue::TxQueue;
 use crate::stats::StatsEvent;
 
 use decide::{Decision, decide as decide_for_dest};
+use group::GroupRegistry;
 use learn::LearnTable;
 
 /// One registered routing endpoint — a leaf (`tcpc:` / `udpc:` / `serial:`)
@@ -62,6 +67,12 @@ use learn::LearnTable;
 /// router is the sole writer of the fields owned here (`learn`, the
 /// registry slot); `stats` and `tx_queue` are `Arc`-shared with the
 /// endpoint's reader/writer and may be observed without coordination.
+///
+/// The `learn` field is *only* consulted when the endpoint has no group
+/// (`identity.group.is_none()`). Group members read their effective learn
+/// table from [`GroupRegistry`] keyed by `identity.group` per CLAUDE.md's
+/// "Endpoint groups: members share *only* the learn-set; filters and
+/// stats remain per-endpoint."
 struct RegisteredEndpoint {
     name: String,
     is_top_level: bool,
@@ -69,10 +80,10 @@ struct RegisteredEndpoint {
     tx_queue: TxQueue,
     stats: Arc<EndpointStats>,
     /// Filter / sniffer / group / seq-tracker capacities. The router reads
-    /// `filters` (out-filter evaluation) and `sniffer` (decision override)
-    /// on every dispatched frame; the `group` and capacity fields will be
-    /// consumed by later Phase 5b steps (groups, seq tracker).
+    /// `filters` (out-filter evaluation), `sniffer` (decision override),
+    /// and `group` (effective-learn lookup) on every dispatched frame.
     identity: IdentityFlags,
+    /// Per-endpoint learn table. Unused when `identity.group.is_some()`.
     learn: LearnTable,
 }
 
@@ -115,16 +126,17 @@ pub async fn run(wiring: RouterWiring) {
 
     let mut routing: HashMap<EndpointId, RegisteredEndpoint> = HashMap::new();
     let mut listeners: HashMap<EndpointId, ParentListenerEntry> = HashMap::new();
+    let mut groups = GroupRegistry::new();
 
     loop {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
             Some(ev) = event_rx.recv() => {
-                handle_event(&mut routing, &mut listeners, ev, &stats_event_tx).await;
+                handle_event(&mut routing, &mut listeners, &mut groups, ev, &stats_event_tx).await;
             }
             Some(fr) = frame_rx.recv() => {
-                handle_frame(&mut routing, fr);
+                handle_frame(&mut routing, &mut groups, fr);
             }
             else => break,
         }
@@ -136,7 +148,14 @@ pub async fn run(wiring: RouterWiring) {
     // final-state for every sub-endpoint that was torn down during the
     // drain window.
     while let Ok(ev) = event_rx.try_recv() {
-        handle_event(&mut routing, &mut listeners, ev, &stats_event_tx).await;
+        handle_event(
+            &mut routing,
+            &mut listeners,
+            &mut groups,
+            ev,
+            &stats_event_tx,
+        )
+        .await;
     }
 
     shutdown_sweep(&mut routing, &mut listeners, &stats_event_tx).await;
@@ -145,6 +164,7 @@ pub async fn run(wiring: RouterWiring) {
 async fn handle_event(
     routing: &mut HashMap<EndpointId, RegisteredEndpoint>,
     listeners: &mut HashMap<EndpointId, ParentListenerEntry>,
+    groups: &mut GroupRegistry,
     ev: EndpointEvent,
     stats_event_tx: &mpsc::Sender<StatsEvent>,
 ) {
@@ -156,6 +176,9 @@ async fn handle_event(
             stats,
             identity,
         } => {
+            if let Some(group) = &identity.group {
+                groups.join(group.clone(), identity.learn_capacity);
+            }
             let learn = LearnTable::new(identity.learn_capacity);
             let entry = RegisteredEndpoint {
                 name: name.clone(),
@@ -194,6 +217,9 @@ async fn handle_event(
             stats,
             identity,
         } => {
+            if let Some(group) = &identity.group {
+                groups.join(group.clone(), identity.learn_capacity);
+            }
             let learn = LearnTable::new(identity.learn_capacity);
             let entry = RegisteredEndpoint {
                 name: name.clone(),
@@ -227,6 +253,9 @@ async fn handle_event(
                 | PeerRemovalReason::ListenerShutdown => EndpointState::Down,
             };
             if let Some(entry) = routing.remove(&child_id) {
+                if let Some(group) = &entry.identity.group {
+                    groups.leave(group);
+                }
                 entry.stats.store_state(final_state);
                 trace!(%child_id, %parent_id, ?reason, ?final_state, "router: peer removed");
             }
@@ -237,7 +266,11 @@ async fn handle_event(
     }
 }
 
-fn handle_frame(routing: &mut HashMap<EndpointId, RegisteredEndpoint>, fr: RouterFrame) {
+fn handle_frame(
+    routing: &mut HashMap<EndpointId, RegisteredEndpoint>,
+    groups: &mut GroupRegistry,
+    fr: RouterFrame,
+) {
     let RouterFrame {
         endpoint_id: src_id,
         frame,
@@ -245,27 +278,66 @@ fn handle_frame(routing: &mut HashMap<EndpointId, RegisteredEndpoint>, fr: Route
     } = fr;
     let now = Instant::now();
 
-    {
-        let Some(src_ep) = routing.get_mut(&src_id) else {
+    // Peek at the source endpoint's identity and stats so we can release
+    // the mut borrow on `routing` before touching `groups`.
+    let (src_stats, src_group) = {
+        let Some(src_ep) = routing.get(&src_id) else {
             // Should be unreachable in healthy operation per CLAUDE.md's
             // registration-before-frame invariant; surface at DEBUG so a
             // spawner-ordering regression is visible.
             debug!(%src_id, "router: frame from unknown endpoint; dropped");
             return;
         };
-        if src_ep.learn.touch(header.sysid, header.compid, now) {
-            src_ep
-                .stats
-                .learn_entries
-                .store(src_ep.learn.len() as u64, Ordering::Relaxed);
+        (src_ep.stats.clone(), src_ep.identity.group.clone())
+    };
+
+    // Touch the source's effective learn-set (per-endpoint or shared via
+    // a group). Always publish the current length to the source's
+    // `learn_entries` — when the source's learn is a group's table,
+    // other members may have inserted between our touches, so the cheap
+    // unconditional store is the only way every member's stats reflect
+    // the current group size.
+    let new_len = match &src_group {
+        Some(name) => {
+            let Some(g) = groups.get_mut(name) else {
+                debug!(%src_id, ?name, "router: source group missing; dropped");
+                return;
+            };
+            g.learn.touch(header.sysid, header.compid, now);
+            g.learn.len()
         }
-    }
+        None => {
+            let src_ep = routing
+                .get_mut(&src_id)
+                .expect("source endpoint just observed above");
+            src_ep.learn.touch(header.sysid, header.compid, now);
+            src_ep.learn.len()
+        }
+    };
+    src_stats
+        .learn_entries
+        .store(new_len as u64, Ordering::Relaxed);
 
     for (dest_id, dest_ep) in routing.iter() {
         if *dest_id == src_id {
             continue;
         }
-        match decide_for_dest(&header, &dest_ep.learn, &dest_ep.identity) {
+        let dest_learn = match &dest_ep.identity.group {
+            Some(name) => {
+                // Single-task ownership: groups.leave is only called from
+                // handle_event, which is mutually exclusive with this
+                // iteration over routing. A registered group member always
+                // has its entry present.
+                let g = groups.get(name);
+                debug_assert!(g.is_some(), "group entry vanished mid-dispatch");
+                match g {
+                    Some(g) => &g.learn,
+                    None => continue,
+                }
+            }
+            None => &dest_ep.learn,
+        };
+        match decide_for_dest(&header, dest_learn, &dest_ep.identity) {
             Decision::Admit => {
                 dest_ep.tx_queue.push(frame.clone());
             }
@@ -971,6 +1043,239 @@ mod tests {
             tap.stats.out_filter_drops.load(Ordering::Relaxed),
             0,
             "sniffer admit must not bump out_filter_drops"
+        );
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("router exit")
+            .expect("router join");
+    }
+
+    #[tokio::test]
+    async fn group_members_share_learn_set() {
+        // Two endpoints in the same group: when one of them sees an inbound
+        // frame from identity (7, 1), the other's per-destination decision
+        // should also treat (7, 1) as locally known — so a subsequent frame
+        // from a *third* endpoint whose source is (7, 1) is loop-blocked at
+        // *both* group members (redundant uplinks must not silence each
+        // other).
+        let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
+        let cancel = wiring.cancel.clone();
+        let task = tokio::spawn(run(wiring));
+        let alloc = EndpointIdAllocator::new();
+        let lte = make_endpoint(&alloc, true);
+        let rfd = make_endpoint(&alloc, true);
+        let gcs = make_endpoint(&alloc, true);
+
+        let in_group = IdentityFlags {
+            group: Some(Arc::<str>::from("uplink")),
+            ..IdentityFlags::default()
+        };
+
+        event_tx
+            .send(endpoint_added_with_identity(&lte, "lte", in_group.clone()))
+            .await
+            .expect("lte");
+        event_tx
+            .send(endpoint_added_with_identity(&rfd, "rfd", in_group.clone()))
+            .await
+            .expect("rfd");
+        event_tx
+            .send(endpoint_added(&gcs, "gcs"))
+            .await
+            .expect("gcs");
+        tokio::task::yield_now().await;
+
+        // A frame arrives on lte from vehicle sysid 7. The group's learn-set
+        // gains (7, 1); both lte and rfd reflect it.
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: lte.id,
+                frame: Bytes::from_static(b"telemetry"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send #1");
+        // gcs should admit it (gcs is not in the group; its learn is empty).
+        let _ = tokio::time::timeout(Duration::from_secs(1), gcs.tx_queue.pop_or_wait())
+            .await
+            .expect("gcs got frame #1");
+        // Drain rfd's queue (admitted: rfd hasn't yet learned (7, 1)
+        // because the group's learn-set membership at decision-time was
+        // empty — wait, the source touch happened *before* the dispatch
+        // loop, so by the time rfd's decision runs, the group learn-set
+        // already contains (7, 1). Therefore rfd should be loop-blocked
+        // for this very first frame).
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            rfd.tx_queue.pop().is_none(),
+            "rfd must be loop-blocked because the group's learn-set already contains the source"
+        );
+
+        // learn_entries on both group members should reflect 1 (the group
+        // table has one entry).
+        for _ in 0..20 {
+            if lte.stats.learn_entries.load(Ordering::Relaxed) == 1
+                && rfd.stats.learn_entries.load(Ordering::Relaxed) == 0
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            lte.stats.learn_entries.load(Ordering::Relaxed),
+            1,
+            "lte saw the touch and stored 1"
+        );
+        // rfd never sourced a frame, so its own learn_entries hasn't been
+        // republished yet — but the underlying group learn-set still has
+        // the entry. Demonstrate by sending a frame *from* rfd with the
+        // same source identity (7, 1); the group learn-set's touch is a
+        // refresh (no insert), but rfd's learn_entries will publish.
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: rfd.id,
+                frame: Bytes::from_static(b"echo"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send #2");
+        for _ in 0..20 {
+            if rfd.stats.learn_entries.load(Ordering::Relaxed) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(rfd.stats.learn_entries.load(Ordering::Relaxed), 1);
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("router exit")
+            .expect("router join");
+    }
+
+    #[tokio::test]
+    async fn group_members_do_not_share_filters() {
+        // CLAUDE.md: "Members share *only* the learn-set; filters and stats
+        // remain per-endpoint." Two group members with different filters
+        // must each apply their own out-filter independently.
+        use crate::endpoint::filters::{Filters, MsgIdRange};
+        let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
+        let cancel = wiring.cancel.clone();
+        let task = tokio::spawn(run(wiring));
+        let alloc = EndpointIdAllocator::new();
+        let src = make_endpoint(&alloc, true);
+        let strict = make_endpoint(&alloc, true);
+        let permissive = make_endpoint(&alloc, true);
+
+        let strict_id = IdentityFlags {
+            group: Some(Arc::<str>::from("downlink")),
+            filters: Filters {
+                block_msgid_out: vec![MsgIdRange::single(0)],
+                ..Filters::default()
+            },
+            ..IdentityFlags::default()
+        };
+        let permissive_id = IdentityFlags {
+            group: Some(Arc::<str>::from("downlink")),
+            ..IdentityFlags::default()
+        };
+
+        event_tx
+            .send(endpoint_added(&src, "src"))
+            .await
+            .expect("src");
+        event_tx
+            .send(endpoint_added_with_identity(&strict, "strict", strict_id))
+            .await
+            .expect("strict");
+        event_tx
+            .send(endpoint_added_with_identity(
+                &permissive,
+                "permissive",
+                permissive_id,
+            ))
+            .await
+            .expect("permissive");
+        tokio::task::yield_now().await;
+
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: src.id,
+                frame: Bytes::from_static(b"x"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send");
+
+        let _ = tokio::time::timeout(Duration::from_secs(1), permissive.tx_queue.pop_or_wait())
+            .await
+            .expect("permissive admits frame");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            strict.tx_queue.pop().is_none(),
+            "strict must drop on its own block_msgid_out, not share permissive's filter"
+        );
+        for _ in 0..20 {
+            if strict.stats.out_filter_drops.load(Ordering::Relaxed) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(strict.stats.out_filter_drops.load(Ordering::Relaxed), 1);
+        // permissive's counter stays clean — confirms stats stay per-endpoint.
+        assert_eq!(permissive.stats.out_filter_drops.load(Ordering::Relaxed), 0);
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("router exit")
+            .expect("router join");
+    }
+
+    #[tokio::test]
+    async fn group_members_do_not_share_stats() {
+        // Each group member owns its own EndpointStats Arc. Pushing a frame
+        // through one member's TxQueue must only bump that member's
+        // dropped_tx, never the sibling's.
+        let (_frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
+        let cancel = wiring.cancel.clone();
+        let task = tokio::spawn(run(wiring));
+        let alloc = EndpointIdAllocator::new();
+        let a = make_endpoint(&alloc, true);
+        let b = make_endpoint(&alloc, true);
+
+        let in_group = IdentityFlags {
+            group: Some(Arc::<str>::from("shared")),
+            ..IdentityFlags::default()
+        };
+
+        event_tx
+            .send(endpoint_added_with_identity(&a, "a", in_group.clone()))
+            .await
+            .expect("a");
+        event_tx
+            .send(endpoint_added_with_identity(&b, "b", in_group))
+            .await
+            .expect("b");
+        tokio::task::yield_now().await;
+
+        // Fill `a`'s tx_queue past capacity (8) to force at least one
+        // drop. We push 16; each push beyond cap evicts the oldest and
+        // bumps `a.stats.dropped_tx`. `b.stats.dropped_tx` stays zero.
+        for _ in 0..16 {
+            a.tx_queue.push(Bytes::from_static(b"x"));
+        }
+        assert!(
+            a.stats.dropped_tx.load(Ordering::Relaxed) >= 1,
+            "a should have dropped at least one frame"
+        );
+        assert_eq!(
+            b.stats.dropped_tx.load(Ordering::Relaxed),
+            0,
+            "b's dropped_tx must not move when a's queue overflows"
         );
 
         cancel.cancel();
