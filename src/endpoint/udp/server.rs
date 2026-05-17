@@ -146,39 +146,23 @@ pub async fn run(spec: UdpServerSpec, wiring: UdpServerWiring) {
 }
 
 async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) {
-    let UdpServerSpec {
-        listen_addr,
-        parent_id,
-        parent_name,
-        idle_secs,
-        peer_capacity,
-        read_buf_bytes,
-        tx_queue_frames,
-        reconnect_initial_ms,
-        reconnect_max_ms,
-        identity,
-    } = spec;
-    let UdpServerWiring {
-        allocator,
-        frame_tx,
-        event_tx,
-        cancel,
-        stats,
-    } = wiring;
+    let mut backoff = Backoff::new(spec.reconnect_initial_ms, spec.reconnect_max_ms);
 
-    let mut backoff = Backoff::new(reconnect_initial_ms, reconnect_max_ms);
-
-    let socket = match bind_with_backoff(&cancel, &mut backoff, "udps", listen_addr, || {
-        bind_udp_dual_stack(listen_addr)
-    })
+    let socket = match bind_with_backoff(
+        &wiring.cancel,
+        &mut backoff,
+        "udps",
+        spec.listen_addr,
+        || bind_udp_dual_stack(spec.listen_addr),
+    )
     .await
     {
         BindOutcome::Bound(s) => Arc::new(s),
         BindOutcome::Cancelled => return,
     };
-    stats.store_state(EndpointState::Connected);
-    let bound_addr = socket.local_addr().unwrap_or(listen_addr);
-    info!(%bound_addr, parent_id = %parent_id, "udps listening");
+    wiring.stats.store_state(EndpointState::Connected);
+    let bound_addr = socket.local_addr().unwrap_or(spec.listen_addr);
+    info!(%bound_addr, parent_id = %spec.parent_id, "udps listening");
 
     let mut peers: HashMap<SocketAddr, PeerEntry> = HashMap::new();
     let mut buf = vec![0u8; MAX_DATAGRAM_BYTES];
@@ -192,26 +176,18 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) {
 
     let ctx = ListenerCtx {
         socket: socket.clone(),
-        parent_id,
-        parent_name: &parent_name,
-        peer_capacity,
-        read_buf_bytes,
-        tx_queue_frames,
-        identity: &identity,
-        allocator: &allocator,
-        frame_tx: &frame_tx,
-        event_tx: &event_tx,
-        cancel: &cancel,
+        spec: &spec,
+        wiring: &wiring,
     };
 
     loop {
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => {
+            _ = wiring.cancel.cancelled() => {
                 shutdown_all_peers(
                     &mut peers,
-                    parent_id,
-                    &event_tx,
+                    spec.parent_id,
+                    &wiring.event_tx,
                     &mut writer_tasks,
                 )
                 .await;
@@ -220,9 +196,9 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) {
             _ = reaper.tick() => {
                 reap_idle_peers(
                     &mut peers,
-                    parent_id,
-                    Duration::from_secs(idle_secs),
-                    &event_tx,
+                    spec.parent_id,
+                    Duration::from_secs(spec.idle_secs),
+                    &wiring.event_tx,
                 )
                 .await;
             }
@@ -241,20 +217,12 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) {
 }
 
 /// Bundle of references the listener loop hands to its packet-handling
-/// helpers, so each helper takes one parameter instead of seven. Borrowed
+/// helpers, so each helper takes one parameter instead of many. Borrowed
 /// for the lifetime of a single accept iteration.
 struct ListenerCtx<'a> {
     socket: Arc<UdpSocket>,
-    parent_id: EndpointId,
-    parent_name: &'a str,
-    peer_capacity: usize,
-    read_buf_bytes: usize,
-    tx_queue_frames: usize,
-    identity: &'a IdentityFlags,
-    allocator: &'a Arc<EndpointIdAllocator>,
-    frame_tx: &'a mpsc::Sender<RouterFrame>,
-    event_tx: &'a mpsc::Sender<EndpointEvent>,
-    cancel: &'a CancellationToken,
+    spec: &'a UdpServerSpec,
+    wiring: &'a UdpServerWiring,
 }
 
 async fn handle_packet(
@@ -265,14 +233,14 @@ async fn handle_packet(
     ctx: &ListenerCtx<'_>,
 ) {
     if !peers.contains_key(&src) {
-        let child_id = ctx.allocator.alloc();
+        let child_id = ctx.wiring.allocator.alloc();
         // The first packet from this source IS the transport-up event for the
         // learned peer, so the Arc lands in Connected before it reaches the
         // router.
         let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
-        let tx_queue = TxQueue::new(ctx.tx_queue_frames, stats.clone());
-        let writer_cancel = ctx.cancel.child_token();
-        let name = peer_endpoint_name(ctx.parent_name, src);
+        let tx_queue = TxQueue::new(ctx.spec.tx_queue_frames, stats.clone());
+        let writer_cancel = ctx.wiring.cancel.child_token();
+        let name = peer_endpoint_name(&ctx.spec.parent_name, src);
         let writer_span = info_span!("udps_peer", name = %name);
 
         // Announce PeerAdded before LRU-evicting and before spawning the writer:
@@ -283,15 +251,16 @@ async fn handle_packet(
         // CLAUDE.md "Sub-endpoints inherit their parent's IdentityFlags by
         // clone at spawn time".
         if ctx
+            .wiring
             .event_tx
             .send(EndpointEvent::PeerAdded {
-                parent_id: ctx.parent_id,
+                parent_id: ctx.spec.parent_id,
                 child_id,
                 peer_addr: src,
                 name,
                 tx_queue: tx_queue.clone(),
                 stats: stats.clone(),
-                identity: ctx.identity.clone(),
+                identity: ctx.spec.identity.clone(),
             })
             .await
             .is_err()
@@ -299,10 +268,10 @@ async fn handle_packet(
             debug!("udps event channel closed; dropping admitted peer");
             return;
         }
-        trace!(parent_id = %ctx.parent_id, %src, "udps peer added");
+        trace!(parent_id = %ctx.spec.parent_id, %src, "udps peer added");
 
-        if peers.len() >= ctx.peer_capacity {
-            evict_lru_peer(peers, ctx.parent_id, ctx.event_tx).await;
+        if peers.len() >= ctx.spec.peer_capacity {
+            evict_lru_peer(peers, ctx.spec.parent_id, &ctx.wiring.event_tx).await;
         }
 
         writer_tasks.spawn(
@@ -318,10 +287,10 @@ async fn handle_packet(
 
         let entry = PeerEntry {
             child_id,
-            framer: Framer::with_capacity(ctx.read_buf_bytes),
+            framer: Framer::with_capacity(ctx.spec.read_buf_bytes),
             last_seen: Instant::now(),
             framer_counters: FramerCounters::new(),
-            seq_tracker: SeqTracker::new(ctx.identity.seq_tracker_capacity),
+            seq_tracker: SeqTracker::new(ctx.spec.identity.seq_tracker_capacity),
             stats,
             writer_cancel,
         };
@@ -352,6 +321,7 @@ async fn handle_packet(
         // rather than re-looking-up the peer's identical clone; only the drop
         // credit goes to the peer's Arc<EndpointStats>".
         if !ctx
+            .spec
             .identity
             .filters
             .passes_in_filter(header.msgid, header.sysid, header.compid)
@@ -367,6 +337,7 @@ async fn handle_packet(
             continue;
         }
         if ctx
+            .wiring
             .frame_tx
             .send(RouterFrame {
                 endpoint_id: peer.child_id,
@@ -610,20 +581,29 @@ mod tests {
         let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
         let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(8);
         let cancel = CancellationToken::new();
-        let parent_name = "test".to_string();
-        let identity = IdentityFlags::default();
-        let ctx = ListenerCtx {
-            socket: socket.clone(),
+        let spec = UdpServerSpec {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
             parent_id,
-            parent_name: &parent_name,
+            parent_name: "test".to_string(),
+            idle_secs: DEFAULT_IDLE_SECS,
             peer_capacity: 2,
             read_buf_bytes: DEFAULT_READ_BUF_BYTES,
             tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
-            identity: &identity,
-            allocator: &allocator,
-            frame_tx: &frame_tx,
-            event_tx: &event_tx,
-            cancel: &cancel,
+            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
+            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
+            identity: IdentityFlags::default(),
+        };
+        let wiring = UdpServerWiring {
+            allocator: allocator.clone(),
+            frame_tx,
+            event_tx,
+            cancel,
+            stats: Arc::new(EndpointStats::default()),
+        };
+        let ctx = ListenerCtx {
+            socket: socket.clone(),
+            spec: &spec,
+            wiring: &wiring,
         };
 
         let mut peers: HashMap<SocketAddr, PeerEntry> = HashMap::new();
