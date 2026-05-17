@@ -270,7 +270,7 @@ fn spawn_endpoint_task(
                 cancel: cancel.clone(),
             };
             tasks.spawn(async move {
-                let _ = endpoint::serial::run(spec, wiring).await;
+                endpoint::serial::run(spec, wiring).await;
             });
         }
         EndpointKind::TcpClient(ep) => {
@@ -282,7 +282,7 @@ fn spawn_endpoint_task(
                 cancel: cancel.clone(),
             };
             tasks.spawn(async move {
-                let _ = endpoint::tcp::client::run(spec, wiring).await;
+                endpoint::tcp::client::run(spec, wiring).await;
             });
         }
         EndpointKind::UdpClient(ep) => {
@@ -294,7 +294,7 @@ fn spawn_endpoint_task(
                 cancel: cancel.clone(),
             };
             tasks.spawn(async move {
-                let _ = endpoint::udp::client::run(spec, wiring).await;
+                endpoint::udp::client::run(spec, wiring).await;
             });
         }
         EndpointKind::TcpServer(ep) => {
@@ -312,7 +312,7 @@ fn spawn_endpoint_task(
                 stats,
             };
             tasks.spawn(async move {
-                let _ = endpoint::tcp::server::run(spec, wiring).await;
+                endpoint::tcp::server::run(spec, wiring).await;
             });
         }
         EndpointKind::UdpServer(ep) => {
@@ -330,7 +330,7 @@ fn spawn_endpoint_task(
                 stats,
             };
             tasks.spawn(async move {
-                let _ = endpoint::udp::server::run(spec, wiring).await;
+                endpoint::udp::server::run(spec, wiring).await;
             });
         }
     }

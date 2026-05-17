@@ -4,7 +4,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use bytes::Bytes;
-use thiserror::Error;
 use tokio::net::{UdpSocket, lookup_host};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval};
@@ -30,15 +29,6 @@ const DEFAULT_LATCH_IDLE_SECS: u64 = 30;
 // neither side truncates an oversized inbound packet.
 const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REVERT_TICK: Duration = Duration::from_secs(1);
-
-/// Typed-empty return for `udpc:` `run()`. Local bind failures enter the same
-/// backoff loop as `tcpc:` reconnects (CLAUDE.md "Bind/open failure at startup
-/// is not fatal"); inbound recv errors and outbound send errors are logged and
-/// the loop continues — no terminal failure modes remain in v1. Kept as a
-/// typed return for symmetry with the other endpoint modules in case a fatal
-/// case shows up.
-#[derive(Debug, Error)]
-pub enum UdpClientError {}
 
 /// Inputs that distinguish one `udpc:` endpoint from another: where to send,
 /// what to call it, and the per-endpoint knobs from the query string with
@@ -200,12 +190,12 @@ async fn resolve_host(host: &str, port: u16) -> Vec<IpAddr> {
 /// not fatal"); performs an initial DNS resolution (failure is non-fatal —
 /// retried on first send/inbound); then loops over inbound, the revert tick,
 /// the TX queue, and cancellation.
-pub async fn run(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), UdpClientError> {
+pub async fn run(spec: UdpClientSpec, wiring: UdpClientWiring) {
     let span = info_span!("udpc", name = %spec.name);
     run_inner(spec, wiring).instrument(span).await
 }
 
-async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), UdpClientError> {
+async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
     let UdpClientSpec {
         host,
         port,
@@ -241,7 +231,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
     .await
     {
         BindOutcome::Bound(s) => s,
-        BindOutcome::Cancelled => return Ok(()),
+        BindOutcome::Cancelled => return,
     };
     // Local bind succeeded. udpc has no transport-up/down event in the
     // socket-lifecycle sense (revert to configured-host is *not* a transport
@@ -265,7 +255,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
             biased;
             _ = cancel.cancelled() => {
                 tx_queue.drain_and_discard();
-                return Ok(());
+                return;
             }
             _ = revert_tick.tick() => {
                 check_latch_idle(&mut dest, Duration::from_secs(latch_idle_secs)).await;

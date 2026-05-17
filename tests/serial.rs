@@ -60,8 +60,7 @@ async fn run_returns_when_cancelled_while_open_retrying() {
     timeout(Duration::from_secs(2), handle)
         .await
         .expect("serial run did not return after cancel")
-        .expect("join")
-        .expect("run result");
+        .expect("join");
 }
 
 #[tokio::test]

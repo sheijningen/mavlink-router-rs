@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
@@ -23,14 +22,6 @@ use super::super::socket::{bind_tcp_dual_stack, configure_tcp_stream};
 use super::super::spec::TcpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats};
 use super::super::tx_queue::TxQueue;
-
-/// Typed-empty return for `tcps:` `run()`. Bind failures enter the same
-/// backoff loop as `tcpc:` reconnects, accept errors are logged and the loop
-/// continues, and per-child disconnects are routine — no terminal failure
-/// modes remain in v1. Kept as a typed return for symmetry with the other
-/// endpoint modules in case a fatal case shows up later.
-#[derive(Debug, Error)]
-pub enum TcpServerError {}
 
 /// Inputs that distinguish one `tcps:` listener from another: where to bind,
 /// what to call it, and the per-listener knobs from the query string with
@@ -99,12 +90,12 @@ pub struct TcpServerWiring {
 /// failure path"), so a port collision at startup logs at WARN and the
 /// listener attaches as soon as the port frees. Each accepted client becomes
 /// its own routing endpoint announced via `event_tx`.
-pub async fn run(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), TcpServerError> {
+pub async fn run(spec: TcpServerSpec, wiring: TcpServerWiring) {
     let span = info_span!("tcps", name = %spec.parent_name);
     run_inner(spec, wiring).instrument(span).await
 }
 
-async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), TcpServerError> {
+async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) {
     let TcpServerSpec {
         listen_addr,
         parent_id,
@@ -133,7 +124,7 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) -> Result<(), T
         .await
         {
             BindOutcome::Bound(l) => l,
-            BindOutcome::Cancelled => return Ok(()),
+            BindOutcome::Cancelled => return,
         };
         stats.store_state(EndpointState::Connected);
         let bound_addr = listener.local_addr().unwrap_or(listen_addr);

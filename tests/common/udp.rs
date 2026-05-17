@@ -18,8 +18,8 @@ use rmr::endpoint::{
     spec::{UdpClientEndpoint, UdpServerEndpoint},
     stats::{EndpointState, EndpointStats},
     tx_queue::TxQueue,
-    udp::client::{self as udp_client, UdpClientError, UdpClientSpec, UdpClientWiring},
-    udp::server::{self as udp_server, UdpServerError, UdpServerSpec, UdpServerWiring},
+    udp::client::{self as udp_client, UdpClientSpec, UdpClientWiring},
+    udp::server::{self as udp_server, UdpServerSpec, UdpServerWiring},
 };
 
 /// Bundle of channels and the join handle for a spawned `udps:` listener task.
@@ -40,7 +40,7 @@ pub struct UdpsHarness {
     /// transitions (Reconnecting → Connected on first bind).
     pub stats: Arc<EndpointStats>,
     /// Join handle of the spawned task; await after cancelling.
-    pub task: JoinHandle<Result<(), UdpServerError>>,
+    pub task: JoinHandle<()>,
 }
 
 /// Spawn a `udps:` listener with default config bound to `127.0.0.1:0`; the
@@ -128,7 +128,7 @@ pub struct UdpcHarness {
     /// Shared stats handle — tests can assert state transitions.
     pub stats: Arc<EndpointStats>,
     /// Join handle of the spawned task; await after cancelling.
-    pub task: JoinHandle<Result<(), UdpClientError>>,
+    pub task: JoinHandle<()>,
 }
 
 /// Spawn a `udpc:` client targeting `configured_addr`. The address's IP is

@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
@@ -44,14 +43,6 @@ pub const MAX_UDPS_PEER_CAPACITY: usize = 65_536;
 // theoretical max so a fragmented giant datagram couldn't be truncated.
 const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REAP_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Typed-empty return for `udps:` `run()`. Bind failures enter the same
-/// backoff loop as `tcpc:` reconnects (CLAUDE.md "Bind/open failure at startup
-/// is not fatal"), and per-peer recv errors are logged and the loop continues
-/// — no terminal failure modes remain in v1. Kept as a typed return for
-/// symmetry with the other endpoint modules in case a fatal case shows up.
-#[derive(Debug, Error)]
-pub enum UdpServerError {}
 
 /// Per-peer state the listener task carries between packets: the child
 /// routing endpoint's identity, its framer, last-seen timestamp for the LRU
@@ -138,12 +129,12 @@ pub struct UdpServerWiring {
 /// `recv_from`, the idle reaper, and cancellation. Each learned peer becomes
 /// a sub-routing endpoint announced via `event_tx` with its own TxQueue and
 /// writer task.
-pub async fn run(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), UdpServerError> {
+pub async fn run(spec: UdpServerSpec, wiring: UdpServerWiring) {
     let span = info_span!("udps", name = %spec.parent_name);
     run_inner(spec, wiring).instrument(span).await
 }
 
-async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), UdpServerError> {
+async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) {
     let UdpServerSpec {
         listen_addr,
         parent_id,
@@ -173,7 +164,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
     .await
     {
         BindOutcome::Bound(s) => Arc::new(s),
-        BindOutcome::Cancelled => return Ok(()),
+        BindOutcome::Cancelled => return,
     };
     stats.store_state(EndpointState::Connected);
     let bound_addr = socket.local_addr().unwrap_or(listen_addr);
@@ -217,7 +208,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
                     &mut writer_tasks,
                 )
                 .await;
-                return Ok(());
+                return;
             }
             _ = reaper.tick() => {
                 reap_idle_peers(

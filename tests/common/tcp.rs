@@ -16,8 +16,8 @@ use rmr::endpoint::{
     events::{EndpointEvent, RouterFrame},
     spec::{TcpClientEndpoint, TcpServerEndpoint},
     stats::{EndpointState, EndpointStats},
-    tcp::client::{self as tcp_client, TcpClientError, TcpClientSpec, TcpClientWiring},
-    tcp::server::{self as tcp_server, TcpServerError, TcpServerSpec, TcpServerWiring},
+    tcp::client::{self as tcp_client, TcpClientSpec, TcpClientWiring},
+    tcp::server::{self as tcp_server, TcpServerSpec, TcpServerWiring},
     tx_queue::TxQueue,
 };
 
@@ -39,7 +39,7 @@ pub struct TcpsHarness {
     /// transitions (Reconnecting → Connected on first bind).
     pub stats: Arc<EndpointStats>,
     /// Join handle of the spawned task; await after cancelling.
-    pub task: JoinHandle<Result<(), TcpServerError>>,
+    pub task: JoinHandle<()>,
 }
 
 /// Spawn a `tcps:` listener with default config bound to `127.0.0.1:0`; the
@@ -118,7 +118,7 @@ pub struct TcpcHarness {
     /// Shared stats the test can inspect (e.g. `dropped_tx`).
     pub stats: Arc<EndpointStats>,
     /// Join handle of the spawned task; await after cancelling.
-    pub task: JoinHandle<Result<(), TcpClientError>>,
+    pub task: JoinHandle<()>,
 }
 
 /// Spawn a `tcpc:` client targeting `target_addr`, configured by a parsed

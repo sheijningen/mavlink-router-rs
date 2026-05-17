@@ -4,7 +4,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 use tokio_util::sync::CancellationToken;
@@ -21,14 +20,6 @@ use super::tx_queue::TxQueue;
 use super::wait_or_cancel;
 
 const DEFAULT_SERIAL_REOPEN_MS: u64 = 1000;
-
-/// Typed-empty return for `serial:` `run()`. Open failures and disconnects
-/// are non-terminal — they trip the hot-replug poll loop, so the task never
-/// surfaces a fatal error to the spawner in v1. Kept as a typed return for
-/// symmetry with the other endpoint modules in case a fatal case shows up
-/// later.
-#[derive(Debug, Error)]
-pub enum SerialError {}
 
 /// Inputs that distinguish one `serial:` endpoint from another: which device
 /// to open at what baud (with optional hardware flow control), what to call
@@ -91,12 +82,12 @@ pub struct SerialWiring {
 /// token trips. The TxQueue is drained-and-discarded on every disconnect so a
 /// fresh device never inherits telemetry that aged out while unplugged
 /// (CLAUDE.md "TX queue on disconnect: drain and discard, never replay").
-pub async fn run(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialError> {
+pub async fn run(spec: SerialSpec, wiring: SerialWiring) {
     let span = info_span!("serial", name = %spec.name);
     run_inner(spec, wiring).instrument(span).await
 }
 
-async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialError> {
+async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
     let SerialSpec {
         path,
         baud,
@@ -120,7 +111,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialE
     loop {
         if cancel.is_cancelled() {
             tx_queue.drain_and_discard();
-            return Ok(());
+            return;
         }
 
         let stream = match open_until_cancel(&path, baud, flow_control, reopen_delay, &cancel).await
@@ -128,7 +119,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialE
             OpenOutcome::Opened(s) => s,
             OpenOutcome::Cancelled => {
                 tx_queue.drain_and_discard();
-                return Ok(());
+                return;
             }
         };
 
@@ -154,7 +145,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialE
         {
             SessionOutcome::Terminated => {
                 tx_queue.drain_and_discard();
-                return Ok(());
+                return;
             }
             SessionOutcome::Disconnected => {
                 tx_queue.drain_and_discard();
@@ -163,7 +154,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialE
                 // spin if the device disappeared and `open_until_cancel`
                 // would succeed immediately on a zombie path.
                 if !wait_or_cancel(&cancel, reopen_delay).await {
-                    return Ok(());
+                    return;
                 }
             }
         }
