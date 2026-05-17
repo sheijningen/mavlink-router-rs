@@ -37,8 +37,14 @@ async fn round_trip_between_two_udps_listeners() {
 
     let added_a = next_peer_added(&mut a.event_rx).await;
     let added_b = next_peer_added(&mut b.event_rx).await;
-    assert_eq!(added_a.peer_addr, peer_a.local_addr().expect("peer_a local_addr"));
-    assert_eq!(added_b.peer_addr, peer_b.local_addr().expect("peer_b local_addr"));
+    assert_eq!(
+        added_a.peer_addr,
+        peer_a.local_addr().expect("peer_a local_addr")
+    );
+    assert_eq!(
+        added_b.peer_addr,
+        peer_b.local_addr().expect("peer_b local_addr")
+    );
     let peer_a_queue_on_a = added_a.tx_queue;
     let peer_b_queue_on_b = added_b.tx_queue;
 

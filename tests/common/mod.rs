@@ -128,9 +128,5 @@ where
             )),
         }
     }
-    assert!(
-        failures.is_empty(),
-        "shutdown_all: {}",
-        failures.join("; ")
-    );
+    assert!(failures.is_empty(), "shutdown_all: {}", failures.join("; "));
 }
