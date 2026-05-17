@@ -37,14 +37,12 @@ async fn udps_peer_inherits_parent_identity() {
         },
     };
 
-    let listen_addr = "127.0.0.1:0".parse().expect("parse listen_addr");
+    let endpoint = UdpServerEndpoint {
+        bind_addr: "127.0.0.1:0".parse().expect("parse listen_addr"),
+        ..UdpServerEndpoint::default()
+    };
     let parent_id = allocator.alloc();
-    let mut spec = UdpServerSpec::from_endpoint(
-        UdpServerEndpoint::default(),
-        listen_addr,
-        parent_id,
-        "udps-id".to_string(),
-    );
+    let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps-id".to_string());
     spec.identity = parent_identity.clone();
     let mut harness = spawn_udps_with_spec(&allocator, cancel.clone(), spec);
     let bound = harness

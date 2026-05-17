@@ -62,11 +62,11 @@ pub async fn spawn_udps_with_endpoint(
     allocator: &Arc<EndpointIdAllocator>,
     cancel: CancellationToken,
     name: &str,
-    endpoint: UdpServerEndpoint,
+    mut endpoint: UdpServerEndpoint,
 ) -> UdpsHarness {
-    let listen_addr: SocketAddr = "127.0.0.1:0".parse().expect("parse listen_addr");
+    endpoint.bind_addr = "127.0.0.1:0".parse().expect("parse listen_addr");
     let parent_id = allocator.alloc();
-    let spec = UdpServerSpec::from_endpoint(endpoint, listen_addr, parent_id, name.to_string());
+    let spec = UdpServerSpec::from_endpoint(endpoint, parent_id, name.to_string());
     let mut h = spawn_udps_with_spec(allocator, cancel, spec);
     let rx = h.bound_addr_rx.take().expect("bound_addr_rx present");
     h.listen_addr = rx.await.expect("udps bound_addr_tx dropped");

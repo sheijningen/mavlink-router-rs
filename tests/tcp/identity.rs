@@ -38,14 +38,12 @@ async fn tcps_child_inherits_parent_identity() {
         },
     };
 
-    let listen_addr = "127.0.0.1:0".parse().expect("parse listen_addr");
+    let endpoint = TcpServerEndpoint {
+        bind_addr: "127.0.0.1:0".parse().expect("parse listen_addr"),
+        ..TcpServerEndpoint::default()
+    };
     let parent_id = allocator.alloc();
-    let mut spec = TcpServerSpec::from_endpoint(
-        TcpServerEndpoint::default(),
-        listen_addr,
-        parent_id,
-        "tcps-id".to_string(),
-    );
+    let mut spec = TcpServerSpec::from_endpoint(endpoint, parent_id, "tcps-id".to_string());
     spec.identity = parent_identity.clone();
     let mut harness = spawn_tcps_with_spec(&allocator, cancel.clone(), spec);
     let bound = harness

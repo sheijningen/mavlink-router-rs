@@ -1,3 +1,5 @@
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
 use super::super::defaults::DEFAULT_TX_QUEUE_FRAMES;
 use super::super::identity_flags::IdentityFlags;
 
@@ -75,15 +77,31 @@ pub struct SerialEndpoint {
     pub identity: IdentityFlags,
 }
 
-/// `udps:` endpoint config.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// `udps:` endpoint config. `bind_addr` is fully resolved at parse time —
+/// CLAUDE.md "malformed addresses are fatal" rules out hostnames here, so
+/// every `udps:` reaches the spawner with a concrete `SocketAddr`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpServerEndpoint {
-    pub host: String,
-    pub port: u16,
+    pub bind_addr: SocketAddr,
     pub idle_secs: Option<u64>,
     pub udps_peer_capacity: Option<usize>,
     pub common: CommonQuery,
     pub identity: IdentityFlags,
+}
+
+impl Default for UdpServerEndpoint {
+    fn default() -> Self {
+        Self {
+            // `std::net::SocketAddr` has no `Default`. Parsers always
+            // overwrite this field via `parse_listen_addr`; tests can
+            // override it before constructing a spec.
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            idle_secs: None,
+            udps_peer_capacity: None,
+            common: CommonQuery::default(),
+            identity: IdentityFlags::default(),
+        }
+    }
 }
 
 /// `udpc:` endpoint config.
@@ -96,13 +114,27 @@ pub struct UdpClientEndpoint {
     pub identity: IdentityFlags,
 }
 
-/// `tcps:` endpoint config.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// `tcps:` endpoint config. `bind_addr` is fully resolved at parse time —
+/// CLAUDE.md "malformed addresses are fatal" rules out hostnames here, so
+/// every `tcps:` reaches the spawner with a concrete `SocketAddr`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TcpServerEndpoint {
-    pub host: String,
-    pub port: u16,
+    pub bind_addr: SocketAddr,
     pub common: CommonQuery,
     pub identity: IdentityFlags,
+}
+
+impl Default for TcpServerEndpoint {
+    fn default() -> Self {
+        Self {
+            // `std::net::SocketAddr` has no `Default`. Parsers always
+            // overwrite this field via `parse_listen_addr`; tests can
+            // override it before constructing a spec.
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            common: CommonQuery::default(),
+            identity: IdentityFlags::default(),
+        }
+    }
 }
 
 /// `tcpc:` endpoint config.

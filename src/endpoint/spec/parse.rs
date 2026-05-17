@@ -1,3 +1,5 @@
+use std::net::{IpAddr, SocketAddr};
+
 use super::endpoint_kinds::{
     EndpointKind, SerialEndpoint, TcpClientEndpoint, TcpServerEndpoint, UdpClientEndpoint,
     UdpServerEndpoint,
@@ -44,10 +46,9 @@ pub fn parse_kind(
             apply_pairs(&mut SerialApplier(&mut ep), "serial", pairs)?;
             Ok(EndpointKind::Serial(ep))
         }),
-        "udps" => parse_host_port(body, "udps").and_then(|(host, port)| {
+        "udps" => parse_listen_addr(body, "udps").and_then(|bind_addr| {
             let mut ep = UdpServerEndpoint {
-                host,
-                port,
+                bind_addr,
                 ..UdpServerEndpoint::default()
             };
             apply_pairs(&mut UdpServerApplier(&mut ep), "udps", pairs)?;
@@ -62,10 +63,9 @@ pub fn parse_kind(
             apply_pairs(&mut UdpClientApplier(&mut ep), "udpc", pairs)?;
             Ok(EndpointKind::UdpClient(ep))
         }),
-        "tcps" => parse_host_port(body, "tcps").and_then(|(host, port)| {
+        "tcps" => parse_listen_addr(body, "tcps").and_then(|bind_addr| {
             let mut ep = TcpServerEndpoint {
-                host,
-                port,
+                bind_addr,
                 ..TcpServerEndpoint::default()
             };
             apply_pairs(&mut TcpServerApplier(&mut ep), "tcps", pairs)?;
@@ -129,6 +129,22 @@ fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> {
         });
     }
     Ok((path.to_string(), baud))
+}
+
+/// Listen-side parser used by `tcps:` and `udps:`: same `host:port` grammar
+/// as `parse_host_port`, but with an additional constraint that the host
+/// must be an IP literal (CLAUDE.md "malformed addresses are fatal" — bind
+/// targets are not resolved at runtime, only dial targets are).
+fn parse_listen_addr(body: &str, scheme: &'static str) -> Result<SocketAddr, SpecError> {
+    let (host, port) = parse_host_port(body, scheme)?;
+    let ip: IpAddr = host.parse().map_err(|_| SpecError::MalformedBody {
+        scheme,
+        body: body.to_string(),
+        reason: format!(
+            "listen host '{host}' must be an IP literal (e.g. '0.0.0.0', '[::]', '[::1]'); hostnames are not resolved for {scheme}: endpoints"
+        ),
+    })?;
+    Ok(SocketAddr::new(ip, port))
 }
 
 fn parse_host_port(body: &str, scheme: &'static str) -> Result<(String, u16), SpecError> {
@@ -198,9 +214,17 @@ pub fn validate_name(s: &str) -> Result<(), SpecError> {
 pub fn default_name(kind: &EndpointKind) -> String {
     match kind {
         EndpointKind::Serial(e) => format!("serial-{}-{}", sanitize_for_name(&e.path), e.baud),
-        EndpointKind::UdpServer(e) => format!("udps-{}-{}", sanitize_for_name(&e.host), e.port),
+        EndpointKind::UdpServer(e) => format!(
+            "udps-{}-{}",
+            sanitize_for_name(&e.bind_addr.ip().to_string()),
+            e.bind_addr.port()
+        ),
         EndpointKind::UdpClient(e) => format!("udpc-{}-{}", sanitize_for_name(&e.host), e.port),
-        EndpointKind::TcpServer(e) => format!("tcps-{}-{}", sanitize_for_name(&e.host), e.port),
+        EndpointKind::TcpServer(e) => format!(
+            "tcps-{}-{}",
+            sanitize_for_name(&e.bind_addr.ip().to_string()),
+            e.bind_addr.port()
+        ),
         EndpointKind::TcpClient(e) => format!("tcpc-{}-{}", sanitize_for_name(&e.host), e.port),
     }
 }
@@ -373,8 +397,7 @@ mod tests {
     fn udps_ipv4() {
         let s = parse_ok("udps:0.0.0.0:14550");
         let e = as_udps(&s);
-        assert_eq!(e.host, "0.0.0.0");
-        assert_eq!(e.port, 14550);
+        assert_eq!(e.bind_addr.to_string(), "0.0.0.0:14550");
         assert_eq!(s.name, "udps-0_0_0_0-14550");
     }
 
@@ -382,8 +405,7 @@ mod tests {
     fn udps_ipv6_dual_stack() {
         let s = parse_ok("udps:[::]:14550");
         let e = as_udps(&s);
-        assert_eq!(e.host, "::");
-        assert_eq!(e.port, 14550);
+        assert_eq!(e.bind_addr.to_string(), "[::]:14550");
         assert_eq!(s.name, "udps-__-14550");
     }
 
@@ -399,8 +421,58 @@ mod tests {
     fn tcps_ipv6_bracketed() {
         let s = parse_ok("tcps:[2001:db8::1]:5760");
         let e = as_tcps(&s);
-        assert_eq!(e.host, "2001:db8::1");
+        assert_eq!(e.bind_addr.to_string(), "[2001:db8::1]:5760");
+    }
+
+    /// CLAUDE.md "malformed addresses are fatal" + the locked-decision rule
+    /// that `tcps:`/`udps:` accept only IP literals: a hostname on the
+    /// listen side must be rejected at parse time, not at spawn time.
+    #[test]
+    fn tcps_hostname_rejected_at_parse() {
+        let err = parse_err("tcps:localhost:5760");
+        match err {
+            SpecError::MalformedBody { scheme, reason, .. } => {
+                assert_eq!(scheme, "tcps");
+                assert!(
+                    reason.contains("must be an IP literal"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected MalformedBody, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn udps_hostname_rejected_at_parse() {
+        let err = parse_err("udps:gcs.local:14550");
+        match err {
+            SpecError::MalformedBody { scheme, reason, .. } => {
+                assert_eq!(scheme, "udps");
+                assert!(
+                    reason.contains("must be an IP literal"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected MalformedBody, got {other:?}"),
+        }
+    }
+
+    /// `tcpc:` and `udpc:` still accept hostnames (DNS resolved at
+    /// runtime); parse-time validation only applies to the listen side.
+    #[test]
+    fn tcpc_hostname_still_accepted() {
+        let s = parse_ok("tcpc:companion.local:5760");
+        let e = as_tcpc(&s);
+        assert_eq!(e.host, "companion.local");
         assert_eq!(e.port, 5760);
+    }
+
+    #[test]
+    fn udpc_hostname_still_accepted() {
+        let s = parse_ok("udpc:gcs.example:14550");
+        let e = as_udpc(&s);
+        assert_eq!(e.host, "gcs.example");
+        assert_eq!(e.port, 14550);
     }
 
     #[test]

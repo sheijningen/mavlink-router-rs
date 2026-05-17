@@ -52,14 +52,12 @@ pub async fn spawn_tcps(
     cancel: CancellationToken,
     name: &str,
 ) -> TcpsHarness {
-    let listen_addr: SocketAddr = "127.0.0.1:0".parse().expect("parse listen_addr");
+    let endpoint = TcpServerEndpoint {
+        bind_addr: "127.0.0.1:0".parse().expect("parse listen_addr"),
+        ..TcpServerEndpoint::default()
+    };
     let parent_id = allocator.alloc();
-    let spec = TcpServerSpec::from_endpoint(
-        TcpServerEndpoint::default(),
-        listen_addr,
-        parent_id,
-        name.to_string(),
-    );
+    let spec = TcpServerSpec::from_endpoint(endpoint, parent_id, name.to_string());
     let mut h = spawn_tcps_with_spec(allocator, cancel, spec);
     let rx = h.bound_addr_rx.take().expect("bound_addr_rx present");
     h.listen_addr = rx.await.expect("tcps bound_addr_tx dropped");

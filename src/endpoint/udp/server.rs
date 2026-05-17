@@ -85,12 +85,11 @@ impl UdpServerSpec {
     /// `parent_name` because the parser doesn't allocate IDs.
     pub fn from_endpoint(
         ep: UdpServerEndpoint,
-        listen_addr: SocketAddr,
         parent_id: EndpointId,
         parent_name: String,
     ) -> Self {
         Self {
-            listen_addr,
+            listen_addr: ep.bind_addr,
             parent_id,
             parent_name,
             idle_secs: ep.idle_secs.unwrap_or(DEFAULT_IDLE_SECS),
@@ -447,14 +446,10 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
-    fn dummy_listen_addr() -> SocketAddr {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)
-    }
-
     #[test]
     fn spec_defaults_when_endpoint_unset() {
         let ep = UdpServerEndpoint::default();
-        let spec = UdpServerSpec::from_endpoint(ep, dummy_listen_addr(), EndpointId(0), "n".into());
+        let spec = UdpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.idle_secs, DEFAULT_IDLE_SECS);
         assert_eq!(spec.peer_capacity, DEFAULT_PEER_CAPACITY);
         assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
@@ -475,7 +470,7 @@ mod tests {
             },
             ..UdpServerEndpoint::default()
         };
-        let spec = UdpServerSpec::from_endpoint(ep, dummy_listen_addr(), EndpointId(0), "n".into());
+        let spec = UdpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.idle_secs, 10);
         assert_eq!(spec.peer_capacity, 4);
         assert_eq!(spec.read_buf_bytes, 1024);

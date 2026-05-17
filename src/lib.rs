@@ -9,7 +9,6 @@ pub mod stats;
 
 pub use error::Error;
 
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -139,14 +138,6 @@ fn is_routable_top_level(kind: &EndpointKind) -> bool {
         kind,
         EndpointKind::TcpServer(_) | EndpointKind::UdpServer(_)
     )
-}
-
-fn listen_addr_for(scheme: &'static str, host: &str, port: u16) -> Result<SocketAddr, Error> {
-    let ip: IpAddr = host.parse().map_err(|_| Error::ListenHostNotAnIp {
-        scheme,
-        host: host.to_string(),
-    })?;
-    Ok(SocketAddr::new(ip, port))
 }
 
 fn spawn_router(
@@ -311,8 +302,7 @@ fn spawn_endpoint_task(
                 tx_queue.is_none(),
                 "parent listener should not own a TxQueue"
             );
-            let listen_addr = listen_addr_for("tcps", &ep.host, ep.port)?;
-            let spec = TcpServerSpec::from_endpoint(ep, listen_addr, endpoint_id, name);
+            let spec = TcpServerSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = TcpServerWiring {
                 allocator: allocator.clone(),
                 frame_tx: frame_tx.clone(),
@@ -330,8 +320,7 @@ fn spawn_endpoint_task(
                 tx_queue.is_none(),
                 "parent listener should not own a TxQueue"
             );
-            let listen_addr = listen_addr_for("udps", &ep.host, ep.port)?;
-            let spec = UdpServerSpec::from_endpoint(ep, listen_addr, endpoint_id, name);
+            let spec = UdpServerSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = UdpServerWiring {
                 allocator: allocator.clone(),
                 frame_tx: frame_tx.clone(),
@@ -379,20 +368,6 @@ mod tests {
     }
 
     #[test]
-    fn listen_addr_for_accepts_ipv4_literal() {
-        let addr = listen_addr_for("udps", "0.0.0.0", 14550).unwrap();
-        assert_eq!(addr.port(), 14550);
-        assert!(addr.is_ipv4());
-    }
-
-    #[test]
-    fn listen_addr_for_accepts_ipv6_literal() {
-        let addr = listen_addr_for("udps", "::", 14550).unwrap();
-        assert_eq!(addr.port(), 14550);
-        assert!(addr.is_ipv6());
-    }
-
-    #[test]
     fn is_routable_top_level_marks_leaves_routable() {
         for input in &[
             "tcpc:127.0.0.1:5760",
@@ -415,17 +390,6 @@ mod tests {
                 !is_routable_top_level(&spec.kind),
                 "{input} should NOT be routable (parent listener)"
             );
-        }
-    }
-
-    #[test]
-    fn listen_addr_for_rejects_hostname() {
-        match listen_addr_for("tcps", "localhost", 5760) {
-            Err(Error::ListenHostNotAnIp { scheme, host }) => {
-                assert_eq!(scheme, "tcps");
-                assert_eq!(host, "localhost");
-            }
-            other => panic!("expected ListenHostNotAnIp, got {other:?}"),
         }
     }
 }

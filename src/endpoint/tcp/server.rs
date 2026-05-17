@@ -60,12 +60,11 @@ impl TcpServerSpec {
     /// `parent_name` because the parser doesn't allocate IDs.
     pub fn from_endpoint(
         ep: TcpServerEndpoint,
-        listen_addr: SocketAddr,
         parent_id: EndpointId,
         parent_name: String,
     ) -> Self {
         Self {
-            listen_addr,
+            listen_addr: ep.bind_addr,
             parent_id,
             parent_name,
             read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
@@ -332,15 +331,10 @@ async fn run_client_session(
 mod tests {
     use super::*;
 
-    fn dummy_listen_addr() -> SocketAddr {
-        use std::net::{IpAddr, Ipv4Addr};
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)
-    }
-
     #[test]
     fn spec_defaults_when_endpoint_unset() {
         let ep = TcpServerEndpoint::default();
-        let spec = TcpServerSpec::from_endpoint(ep, dummy_listen_addr(), EndpointId(0), "n".into());
+        let spec = TcpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
         assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
@@ -357,7 +351,7 @@ mod tests {
             },
             ..TcpServerEndpoint::default()
         };
-        let spec = TcpServerSpec::from_endpoint(ep, dummy_listen_addr(), EndpointId(0), "n".into());
+        let spec = TcpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.read_buf_bytes, 1024);
         assert_eq!(spec.tx_queue_frames, 8);
         // Reconnect curve stays at the tcpc defaults — CLAUDE.md "TCP/UDP
