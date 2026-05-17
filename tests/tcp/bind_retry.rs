@@ -82,7 +82,7 @@ async fn tcps_attaches_when_pre_held_port_is_freed() {
 
     let frame = common::build_v2_heartbeat(0);
     client.write_all(&frame).await.expect("client write");
-    let (_addr, _q) = next_peer_added(&mut h.event_rx).await;
+    let _added = next_peer_added(&mut h.event_rx).await;
     let f = timeout(Duration::from_secs(2), h.frame_rx.recv())
         .await
         .expect("frame timeout")

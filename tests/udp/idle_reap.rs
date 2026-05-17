@@ -43,8 +43,8 @@ async fn udps_reaps_peer_after_idle_secs() {
         .await
         .expect("peer send_to listener");
 
-    let (added_addr, _q) = next_peer_added(&mut a.event_rx).await;
-    assert_eq!(added_addr, peer_addr);
+    let added = next_peer_added(&mut a.event_rx).await;
+    assert_eq!(added.peer_addr, peer_addr);
 
     // Drain the inbound frame so the listener task isn't backpressured on
     // frame_tx while we wait for the reaper.
@@ -76,8 +76,8 @@ async fn udps_reaps_peer_after_idle_secs() {
     peer.send_to(&frame2, a.listen_addr)
         .await
         .expect("peer send_to listener (re-learn)");
-    let (re_added_addr, _q2) = next_peer_added(&mut a.event_rx).await;
-    assert_eq!(re_added_addr, peer_addr);
+    let re_added = next_peer_added(&mut a.event_rx).await;
+    assert_eq!(re_added.peer_addr, peer_addr);
 
     shutdown_all(&cancel, [a.task]).await;
 }

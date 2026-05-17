@@ -6,19 +6,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
-use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::EndpointIdAllocator;
-use rmr::endpoint::events::EndpointEvent;
 use rmr::endpoint::filters::{Filters, MsgIdRange, U8Range};
 use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::spec::TcpServerEndpoint;
 use rmr::endpoint::tcp::server::TcpServerSpec;
 
 use crate::common;
-use crate::common::shutdown_all;
 use crate::common::tcp::{connect_with_retry, spawn_tcps_with_spec};
+use crate::common::{next_peer_added, shutdown_all};
 
 #[tokio::test]
 async fn tcps_child_inherits_parent_identity() {
@@ -64,15 +62,8 @@ async fn tcps_child_inherits_parent_identity() {
     let frame = common::build_v2_heartbeat(0);
     peer.write_all(&frame).await.expect("peer write");
 
-    let ev = timeout(Duration::from_secs(2), harness.event_rx.recv())
-        .await
-        .expect("event_rx timeout")
-        .expect("event_rx closed");
-    let identity = match ev {
-        EndpointEvent::PeerAdded { identity, .. } => identity,
-        other => panic!("expected PeerAdded, got {other:?}"),
-    };
-    assert_eq!(identity, parent_identity);
+    let added = next_peer_added(&mut harness.event_rx).await;
+    assert_eq!(added.identity, parent_identity);
 
     drop(peer);
     shutdown_all(&cancel, std::iter::once(harness.task)).await;
