@@ -88,6 +88,7 @@ async fn pty_pair_round_trips_frame() {
                 &cancel,
                 4096,
                 &Filters::default(),
+                32,
             )
             .await
         })
@@ -153,6 +154,7 @@ async fn session_surfaces_disconnected_on_slave_drop() {
                 &cancel,
                 4096,
                 &Filters::default(),
+                32,
             )
             .await
         })

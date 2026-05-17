@@ -267,6 +267,7 @@ async fn accept_one_client(
             cancel.clone(),
             read_buf_bytes,
             identity.filters.clone(),
+            identity.seq_tracker_capacity,
         )
         .instrument(child_span),
     );
@@ -285,6 +286,7 @@ async fn run_client_session(
     cancel: CancellationToken,
     read_buf_bytes: usize,
     filters: Filters,
+    seq_tracker_capacity: usize,
 ) {
     let outcome = run_session(
         stream,
@@ -295,6 +297,7 @@ async fn run_client_session(
         &cancel,
         read_buf_bytes,
         &filters,
+        seq_tracker_capacity,
     )
     .await;
     // Drain anything still queued for this client; the socket is going away.

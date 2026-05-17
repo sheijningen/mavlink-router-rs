@@ -164,6 +164,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
             &cancel,
             read_buf_bytes,
             &identity.filters,
+            identity.seq_tracker_capacity,
         )
         .await
         {

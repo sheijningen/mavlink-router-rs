@@ -12,9 +12,11 @@ use tracing::{debug, trace, warn};
 use super::EndpointId;
 use super::events::RouterFrame;
 use super::filters::Filters;
+use super::seq_tracker::SeqTracker;
 use super::stats::{EndpointStats, FramerCounters};
 use super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
+use tokio::time::Instant;
 
 /// Why a per-connection read/write session terminated. Shared by every
 /// endpoint that runs a [`TxQueue`]-fed session loop over an
@@ -48,6 +50,7 @@ pub async fn run_session<S>(
     cancel: &CancellationToken,
     read_buf_bytes: usize,
     filters: &Filters,
+    seq_tracker_capacity: usize,
 ) -> SessionOutcome
 where
     S: AsyncRead + AsyncWrite,
@@ -55,6 +58,7 @@ where
     let (mut rh, mut wh) = tokio::io::split(stream);
     let mut framer = Framer::with_capacity(read_buf_bytes);
     let mut framer_counters = FramerCounters::new();
+    let mut seq_tracker = SeqTracker::new(seq_tracker_capacity);
 
     loop {
         tokio::select! {
@@ -69,6 +73,7 @@ where
                     endpoint_id,
                     frame_tx,
                     filters,
+                    &mut seq_tracker,
                 ).await {
                     return outcome;
                 }
@@ -82,6 +87,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_read_result(
     res: io::Result<usize>,
     framer: &mut Framer,
@@ -90,6 +96,7 @@ async fn handle_read_result(
     endpoint_id: EndpointId,
     frame_tx: &mpsc::Sender<RouterFrame>,
     filters: &Filters,
+    seq_tracker: &mut SeqTracker,
 ) -> ControlFlow<SessionOutcome> {
     match res {
         Ok(0) => {
@@ -102,7 +109,7 @@ async fn handle_read_result(
         }
         Ok(_) => {}
     }
-    forward_inbound_frames(framer, stats, endpoint_id, frame_tx, filters).await?;
+    forward_inbound_frames(framer, stats, endpoint_id, frame_tx, filters, seq_tracker).await?;
     framer_counters.sync(framer, stats);
     ControlFlow::Continue(())
 }
@@ -113,11 +120,19 @@ async fn forward_inbound_frames(
     endpoint_id: EndpointId,
     frame_tx: &mpsc::Sender<RouterFrame>,
     filters: &Filters,
+    seq_tracker: &mut SeqTracker,
 ) -> ControlFlow<SessionOutcome> {
     while let Some((header, frame)) = framer.try_next_frame() {
         // rx_frames/rx_bytes count every framed frame at the wire, so the
         // counter reflects link rate even when policy rejects the frame.
         stats.add_rx_frame(frame.len());
+        // CLAUDE.md ingress pipeline step 2: seq-loss accounting runs
+        // *before* In-filter so the counter reflects link quality, not
+        // policy. CRC ran inside `framer.try_next_frame()` ahead of us.
+        let lost = seq_tracker.observe(header.sysid, header.compid, header.seq, Instant::now());
+        if lost > 0 {
+            stats.rx_lost_est.fetch_add(lost as u64, Ordering::Relaxed);
+        }
         if !filters.passes_in_filter(header.msgid, header.sysid, header.compid) {
             stats.in_filter_drops.fetch_add(1, Ordering::Relaxed);
             trace!(
@@ -173,6 +188,10 @@ mod tests {
         Filters::default()
     }
 
+    fn fresh_tracker() -> SeqTracker {
+        SeqTracker::new(8)
+    }
+
     fn build_v1_heartbeat() -> Vec<u8> {
         // msgid 0 (HEARTBEAT), crc_extra 50, 9-byte payload — the smallest
         // known-msgid frame that exercises CRC-validated routing.
@@ -211,6 +230,7 @@ mod tests {
             fresh_id(),
             &tx,
             &no_filter(),
+            &mut fresh_tracker(),
         )
         .await;
         assert_eq!(out, ControlFlow::Break(SessionOutcome::Disconnected));
@@ -231,6 +251,7 @@ mod tests {
             fresh_id(),
             &tx,
             &no_filter(),
+            &mut fresh_tracker(),
         )
         .await;
         assert_eq!(out, ControlFlow::Break(SessionOutcome::Disconnected));
@@ -252,6 +273,7 @@ mod tests {
             fresh_id(),
             &tx,
             &no_filter(),
+            &mut fresh_tracker(),
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -277,6 +299,7 @@ mod tests {
             id,
             &tx,
             &no_filter(),
+            &mut fresh_tracker(),
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -308,6 +331,7 @@ mod tests {
             fresh_id(),
             &tx,
             &no_filter(),
+            &mut fresh_tracker(),
         )
         .await;
         assert_eq!(out, ControlFlow::Break(SessionOutcome::Terminated));
@@ -336,6 +360,7 @@ mod tests {
             fresh_id(),
             &tx,
             &no_filter(),
+            &mut fresh_tracker(),
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -367,6 +392,7 @@ mod tests {
             fresh_id(),
             &tx,
             &no_filter(),
+            &mut fresh_tracker(),
         )
         .await;
         assert_eq!(out, ControlFlow::Break(SessionOutcome::Terminated));
@@ -393,6 +419,7 @@ mod tests {
             fresh_id(),
             &tx,
             &no_filter(),
+            &mut fresh_tracker(),
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -421,6 +448,7 @@ mod tests {
             fresh_id(),
             &tx,
             &no_filter(),
+            &mut fresh_tracker(),
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -440,7 +468,15 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, mut rx) = mpsc::channel(8);
 
-        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &no_filter()).await;
+        let out = forward_inbound_frames(
+            &mut framer,
+            &stats,
+            fresh_id(),
+            &tx,
+            &no_filter(),
+            &mut fresh_tracker(),
+        )
+        .await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_err());
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 0);
@@ -455,7 +491,15 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, mut rx) = mpsc::channel(8);
 
-        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &no_filter()).await;
+        let out = forward_inbound_frames(
+            &mut framer,
+            &stats,
+            fresh_id(),
+            &tx,
+            &no_filter(),
+            &mut fresh_tracker(),
+        )
+        .await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_ok());
@@ -476,7 +520,15 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         drop(rx);
 
-        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &no_filter()).await;
+        let out = forward_inbound_frames(
+            &mut framer,
+            &stats,
+            fresh_id(),
+            &tx,
+            &no_filter(),
+            &mut fresh_tracker(),
+        )
+        .await;
         assert_eq!(out, ControlFlow::Break(SessionOutcome::Terminated));
     }
 
@@ -496,7 +548,15 @@ mod tests {
             ..Filters::default()
         };
 
-        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &filters).await;
+        let out = forward_inbound_frames(
+            &mut framer,
+            &stats,
+            fresh_id(),
+            &tx,
+            &filters,
+            &mut fresh_tracker(),
+        )
+        .await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_err(), "frame must not reach router");
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 1);
@@ -515,10 +575,131 @@ mod tests {
             ..Filters::default()
         };
 
-        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &filters).await;
+        let out = forward_inbound_frames(
+            &mut framer,
+            &stats,
+            fresh_id(),
+            &tx,
+            &filters,
+            &mut fresh_tracker(),
+        )
+        .await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_ok());
         assert_eq!(stats.in_filter_drops.load(Ordering::Relaxed), 0);
+    }
+
+    fn build_v1_heartbeat_with_seq(seq: u8) -> Vec<u8> {
+        let payload = [0u8; 9];
+        let mut frame = vec![STX_V1, payload.len() as u8, seq, 1, 1, 0];
+        frame.extend_from_slice(&payload);
+        let mut crc = Crc16::new();
+        crc.update_slice(&frame[1..]);
+        crc.update(50);
+        let c = crc.finalize();
+        frame.push((c & 0xFF) as u8);
+        frame.push((c >> 8) as u8);
+        frame
+    }
+
+    #[tokio::test]
+    async fn seq_tracker_bumps_rx_lost_est_on_small_gap() {
+        let f0 = build_v1_heartbeat_with_seq(0);
+        let f3 = build_v1_heartbeat_with_seq(3);
+        let mut framer = Framer::with_capacity(128);
+        framer.buffer_mut().put_slice(&f0);
+        framer.buffer_mut().put_slice(&f3);
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, _rx) = mpsc::channel(8);
+        let mut tracker = fresh_tracker();
+
+        let out = forward_inbound_frames(
+            &mut framer,
+            &stats,
+            fresh_id(),
+            &tx,
+            &no_filter(),
+            &mut tracker,
+        )
+        .await;
+        assert_eq!(out, ControlFlow::Continue(()));
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 2);
+        assert_eq!(stats.rx_lost_est.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn seq_tracker_runs_before_in_filter_so_blocked_frame_still_counts() {
+        // CLAUDE.md "Runs before In-filter so the counter reflects link
+        // quality, not policy" — In-filter blocks msgid 0, but rx_lost_est
+        // still bumps by 3 (gap between seq 0 and seq 4).
+        let f0 = build_v1_heartbeat_with_seq(0);
+        let f4 = build_v1_heartbeat_with_seq(4);
+        let mut framer = Framer::with_capacity(128);
+        framer.buffer_mut().put_slice(&f0);
+        framer.buffer_mut().put_slice(&f4);
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, mut rx) = mpsc::channel(8);
+        let filters = Filters {
+            block_msgid_in: vec![MsgIdRange::single(0)],
+            ..Filters::default()
+        };
+        let mut tracker = fresh_tracker();
+
+        let out =
+            forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &filters, &mut tracker)
+                .await;
+        assert_eq!(out, ControlFlow::Continue(()));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(stats.in_filter_drops.load(Ordering::Relaxed), 2);
+        assert_eq!(stats.rx_lost_est.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn seq_tracker_consecutive_seqs_no_bump() {
+        let frames: Vec<Vec<u8>> = (0u8..=4u8).map(build_v1_heartbeat_with_seq).collect();
+        let mut framer = Framer::with_capacity(256);
+        for f in &frames {
+            framer.buffer_mut().put_slice(f);
+        }
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, _rx) = mpsc::channel(16);
+        let mut tracker = fresh_tracker();
+
+        let _ = forward_inbound_frames(
+            &mut framer,
+            &stats,
+            fresh_id(),
+            &tx,
+            &no_filter(),
+            &mut tracker,
+        )
+        .await;
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 5);
+        assert_eq!(stats.rx_lost_est.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn seq_tracker_large_gap_treated_as_restart_no_bump() {
+        let f0 = build_v1_heartbeat_with_seq(0);
+        let f200 = build_v1_heartbeat_with_seq(200);
+        let mut framer = Framer::with_capacity(128);
+        framer.buffer_mut().put_slice(&f0);
+        framer.buffer_mut().put_slice(&f200);
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, _rx) = mpsc::channel(8);
+        let mut tracker = fresh_tracker();
+
+        let _ = forward_inbound_frames(
+            &mut framer,
+            &stats,
+            fresh_id(),
+            &tx,
+            &no_filter(),
+            &mut tracker,
+        )
+        .await;
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 2);
+        assert_eq!(stats.rx_lost_est.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

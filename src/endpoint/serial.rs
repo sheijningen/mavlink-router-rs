@@ -149,6 +149,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
             &cancel,
             read_buf_bytes,
             &identity.filters,
+            identity.seq_tracker_capacity,
         )
         .await
         {

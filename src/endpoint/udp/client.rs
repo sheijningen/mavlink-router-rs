@@ -18,6 +18,7 @@ use super::super::defaults::{
 use super::super::events::RouterFrame;
 use super::super::filters::Filters;
 use super::super::identity_flags::IdentityFlags;
+use super::super::seq_tracker::SeqTracker;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
@@ -249,6 +250,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
 
     let mut framer = Framer::with_capacity(read_buf_bytes);
     let mut framer_counters = FramerCounters::new();
+    let mut seq_tracker = SeqTracker::new(identity.seq_tracker_capacity);
     let mut buf = vec![0u8; MAX_DATAGRAM_BYTES];
 
     let mut revert_tick = interval(REVERT_TICK);
@@ -276,6 +278,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
                             &mut dest,
                             &mut framer,
                             &mut framer_counters,
+                            &mut seq_tracker,
                             endpoint_id,
                             &stats,
                             &frame_tx,
@@ -302,6 +305,7 @@ async fn handle_inbound(
     dest: &mut Destination,
     framer: &mut Framer,
     framer_counters: &mut FramerCounters,
+    seq_tracker: &mut SeqTracker,
     endpoint_id: EndpointId,
     stats: &Arc<EndpointStats>,
     frame_tx: &mpsc::Sender<RouterFrame>,
@@ -337,6 +341,12 @@ async fn handle_inbound(
     while let Some((header, frame)) = framer.try_next_frame() {
         let frame_len = frame.len();
         stats.add_rx_frame(frame_len);
+        // CLAUDE.md ingress pipeline step 2: seq-loss accounting runs
+        // before In-filter so the counter reflects link quality, not policy.
+        let lost = seq_tracker.observe(header.sysid, header.compid, header.seq, Instant::now());
+        if lost > 0 {
+            stats.rx_lost_est.fetch_add(lost as u64, Ordering::Relaxed);
+        }
         // Per-frame In-filter check — CLAUDE.md "In-filter evaluation in the
         // reader task". `in_filter_drops` is the union counter: the same slot
         // bumped by the wrong-source-IP rejection above.
@@ -719,6 +729,7 @@ mod tests {
             &mut dest,
             &mut framer,
             &mut framer_counters,
+            &mut SeqTracker::new(8),
             EndpointId(0),
             &stats,
             &frame_tx,
@@ -748,6 +759,7 @@ mod tests {
             &mut dest,
             &mut framer,
             &mut framer_counters,
+            &mut SeqTracker::new(8),
             EndpointId(0),
             &stats,
             &frame_tx,
@@ -797,6 +809,7 @@ mod tests {
             &mut dest,
             &mut framer,
             &mut framer_counters,
+            &mut SeqTracker::new(8),
             EndpointId(0),
             &stats,
             &frame_tx,

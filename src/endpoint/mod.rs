@@ -10,6 +10,7 @@ pub mod defaults;
 pub mod events;
 pub mod filters;
 pub mod identity_flags;
+pub mod seq_tracker;
 pub mod serial;
 pub mod session;
 pub mod socket;

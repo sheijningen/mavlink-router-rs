@@ -21,6 +21,7 @@ use super::super::defaults::{
 use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
 use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
+use super::super::seq_tracker::SeqTracker;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
@@ -64,6 +65,7 @@ struct PeerEntry {
     framer: Framer,
     last_seen: Instant,
     framer_counters: FramerCounters,
+    seq_tracker: SeqTracker,
     stats: Arc<EndpointStats>,
     writer_cancel: CancellationToken,
 }
@@ -319,6 +321,7 @@ async fn handle_packet(
             framer: Framer::with_capacity(ctx.read_buf_bytes),
             last_seen: Instant::now(),
             framer_counters: FramerCounters::new(),
+            seq_tracker: SeqTracker::new(ctx.identity.seq_tracker_capacity),
             stats,
             writer_cancel,
         };
@@ -334,6 +337,16 @@ async fn handle_packet(
     while let Some((header, frame)) = peer.framer.try_next_frame() {
         let frame_len = frame.len();
         peer.stats.add_rx_frame(frame_len);
+        // CLAUDE.md ingress pipeline step 2: seq-loss accounting runs
+        // before In-filter so the counter reflects link quality, not policy.
+        let lost =
+            peer.seq_tracker
+                .observe(header.sysid, header.compid, header.seq, Instant::now());
+        if lost > 0 {
+            peer.stats
+                .rx_lost_est
+                .fetch_add(lost as u64, Ordering::Relaxed);
+        }
         // CLAUDE.md: "filters apply uniformly to every admitted child of a
         // listener, so the listener evaluates against its own IdentityFlags
         // rather than re-looking-up the peer's identical clone; only the drop
@@ -513,6 +526,7 @@ mod tests {
             framer: Framer::new(),
             last_seen: Instant::now() - age,
             framer_counters: FramerCounters::new(),
+            seq_tracker: SeqTracker::new(8),
             stats,
             writer_cancel: CancellationToken::new(),
         }
