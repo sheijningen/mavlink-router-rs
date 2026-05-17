@@ -16,7 +16,7 @@ use rmr::endpoint::{
     EndpointIdAllocator,
     events::{EndpointEvent, RouterFrame},
     spec::{UdpClientEndpoint, UdpServerEndpoint},
-    stats::EndpointStats,
+    stats::{EndpointState, EndpointStats},
     tx_queue::TxQueue,
     udp::client::{self as udp_client, UdpClientError, UdpClientSpec, UdpClientWiring},
     udp::server::{self as udp_server, UdpServerError, UdpServerSpec, UdpServerWiring},
@@ -36,6 +36,9 @@ pub struct UdpsHarness {
     /// Resolves on the first successful bind. Already consumed by `spawn_udps*`;
     /// `spawn_udps_with_spec` leaves it for the caller (bind-retry tests).
     pub bound_addr_rx: Option<oneshot::Receiver<SocketAddr>>,
+    /// Shared stats handle for the parent listener — tests can assert state
+    /// transitions (Reconnecting → Connected on first bind).
+    pub stats: Arc<EndpointStats>,
     /// Join handle of the spawned task; await after cancelling.
     pub task: JoinHandle<Result<(), UdpServerError>>,
 }
@@ -84,27 +87,33 @@ pub fn spawn_udps_with_spec(
 ) -> UdpsHarness {
     let listen_addr = spec.listen_addr;
     let allocator = allocator.clone();
+    let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(32);
     let (bound_tx, bound_rx) = oneshot::channel::<SocketAddr>();
-    let task = tokio::spawn(async move {
-        udp_server::run(
-            spec,
-            UdpServerWiring {
-                allocator,
-                frame_tx,
-                event_tx,
-                cancel,
-                bound_addr_tx: Some(bound_tx),
-            },
-        )
-        .await
-    });
+    let task = {
+        let stats = stats.clone();
+        tokio::spawn(async move {
+            udp_server::run(
+                spec,
+                UdpServerWiring {
+                    allocator,
+                    frame_tx,
+                    event_tx,
+                    cancel,
+                    bound_addr_tx: Some(bound_tx),
+                    stats,
+                },
+            )
+            .await
+        })
+    };
     UdpsHarness {
         listen_addr,
         frame_rx,
         event_rx,
         bound_addr_rx: Some(bound_rx),
+        stats,
         task,
     }
 }
@@ -116,6 +125,8 @@ pub struct UdpcHarness {
     pub frame_rx: mpsc::Receiver<RouterFrame>,
     /// Queue the test pushes onto to schedule egress frames.
     pub tx_queue: TxQueue,
+    /// Shared stats handle — tests can assert state transitions.
+    pub stats: Arc<EndpointStats>,
     /// Join handle of the spawned task; await after cancelling.
     pub task: JoinHandle<Result<(), UdpClientError>>,
 }
@@ -131,7 +142,7 @@ pub fn spawn_udpc(
     name: &str,
 ) -> UdpcHarness {
     let endpoint_id = allocator.alloc();
-    let stats = Arc::new(EndpointStats::default());
+    let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
     let tx_queue = TxQueue::new(8, stats.clone());
     let endpoint = UdpClientEndpoint {
         host: configured_addr.ip().to_string(),
@@ -142,6 +153,7 @@ pub fn spawn_udpc(
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let task = {
         let tx_queue = tx_queue.clone();
+        let stats = stats.clone();
         tokio::spawn(async move {
             udp_client::run(
                 spec,
@@ -158,6 +170,7 @@ pub fn spawn_udpc(
     UdpcHarness {
         frame_rx,
         tx_queue,
+        stats,
         task,
     }
 }

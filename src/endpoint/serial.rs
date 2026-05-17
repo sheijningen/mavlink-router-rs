@@ -16,7 +16,7 @@ use super::events::RouterFrame;
 use super::identity_flags::IdentityFlags;
 use super::session::{SessionOutcome, run_session};
 use super::spec::{SerialEndpoint, SerialFlowControl};
-use super::stats::EndpointStats;
+use super::stats::{EndpointState, EndpointStats};
 use super::tx_queue::TxQueue;
 use super::wait_or_cancel;
 
@@ -139,6 +139,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialE
         if drained > 0 {
             trace!(drained, "serial drained stale frames before resuming");
         }
+        stats.store_state(EndpointState::Connected);
 
         match run_session(
             stream,
@@ -157,6 +158,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialE
             }
             SessionOutcome::Disconnected => {
                 tx_queue.drain_and_discard();
+                stats.store_state(EndpointState::Reconnecting);
                 // Sleep one reopen interval before reattempting so we don't
                 // spin if the device disappeared and `open_until_cancel`
                 // would succeed immediately on a zombie path.

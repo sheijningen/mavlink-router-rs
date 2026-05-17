@@ -23,7 +23,7 @@ use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpServerEndpoint;
-use super::super::stats::{EndpointStats, FramerCounters};
+use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
 
@@ -109,13 +109,17 @@ impl UdpServerSpec {
 /// and the cancellation token. `bound_addr_tx`, if set, fires once on the
 /// first successful bind with the actual `local_addr()` — lets a caller
 /// that requested `127.0.0.1:0` (test harnesses, future systemd-socket
-/// adoption) discover the OS-assigned port.
+/// adoption) discover the OS-assigned port. `stats` is the parent
+/// listener's own `Arc<EndpointStats>` (spawner-constructed via
+/// `EndpointStats::new(Reconnecting)`); the listener writes `Connected`
+/// once bind succeeds.
 pub struct UdpServerWiring {
     pub allocator: Arc<EndpointIdAllocator>,
     pub frame_tx: mpsc::Sender<RouterFrame>,
     pub event_tx: mpsc::Sender<EndpointEvent>,
     pub cancel: CancellationToken,
     pub bound_addr_tx: Option<oneshot::Sender<SocketAddr>>,
+    pub stats: Arc<EndpointStats>,
 }
 
 /// Run a `udps:` listener until the cancellation token fires. Binding is
@@ -149,6 +153,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
         event_tx,
         cancel,
         bound_addr_tx,
+        stats,
     } = wiring;
 
     let mut backoff = Backoff::new(reconnect_initial_ms, reconnect_max_ms);
@@ -161,6 +166,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) -> Result<(), U
         BindOutcome::Bound(s) => Arc::new(s),
         BindOutcome::Cancelled => return Ok(()),
     };
+    stats.store_state(EndpointState::Connected);
     let bound_addr = socket.local_addr().unwrap_or(listen_addr);
     if let Some(tx) = bound_addr_tx {
         let _ = tx.send(bound_addr);

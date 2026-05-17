@@ -18,7 +18,7 @@ use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::serial::{SerialSpec, SerialWiring, run};
 use rmr::endpoint::session::{SessionOutcome, run_session};
 use rmr::endpoint::spec::SerialFlowControl;
-use rmr::endpoint::stats::EndpointStats;
+use rmr::endpoint::stats::{EndpointState, EndpointStats};
 use rmr::endpoint::tx_queue::TxQueue;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -34,7 +34,7 @@ async fn run_returns_when_cancelled_while_open_retrying() {
     // honours the cancel token from inside its `wait_or_cancel` sleep.
     let allocator = EndpointIdAllocator::new();
     let endpoint_id = allocator.alloc();
-    let stats = Arc::new(EndpointStats::default());
+    let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
     let tx_queue = TxQueue::new(8, stats.clone());
     let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
     let cancel = CancellationToken::new();
@@ -53,12 +53,16 @@ async fn run_returns_when_cancelled_while_open_retrying() {
     let wiring = SerialWiring {
         frame_tx,
         tx_queue: tx_queue.clone(),
-        stats,
+        stats: stats.clone(),
         cancel: cancel.clone(),
     };
 
     let handle = tokio::spawn(async move { run(spec, wiring).await });
     tokio::time::sleep(Duration::from_millis(50)).await;
+    // Open keeps failing on /dev/null so the task stays in Reconnecting —
+    // the Connected transition is unreachable without a real device, but
+    // we can at least assert the initial state isn't being clobbered.
+    assert_eq!(stats.load_state(), EndpointState::Reconnecting);
     cancel.cancel();
     timeout(Duration::from_secs(2), handle)
         .await

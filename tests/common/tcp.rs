@@ -15,7 +15,7 @@ use rmr::endpoint::{
     EndpointIdAllocator,
     events::{EndpointEvent, RouterFrame},
     spec::{TcpClientEndpoint, TcpServerEndpoint},
-    stats::EndpointStats,
+    stats::{EndpointState, EndpointStats},
     tcp::client::{self as tcp_client, TcpClientError, TcpClientSpec, TcpClientWiring},
     tcp::server::{self as tcp_server, TcpServerError, TcpServerSpec, TcpServerWiring},
     tx_queue::TxQueue,
@@ -35,6 +35,9 @@ pub struct TcpsHarness {
     /// Resolves on the first successful bind. Already consumed by `spawn_tcps`;
     /// `spawn_tcps_with_spec` leaves it for the caller (bind-retry tests).
     pub bound_addr_rx: Option<oneshot::Receiver<SocketAddr>>,
+    /// Shared stats handle for the parent listener — tests can assert state
+    /// transitions (Reconnecting → Connected on first bind).
+    pub stats: Arc<EndpointStats>,
     /// Join handle of the spawned task; await after cancelling.
     pub task: JoinHandle<Result<(), TcpServerError>>,
 }
@@ -77,27 +80,33 @@ pub fn spawn_tcps_with_spec(
 ) -> TcpsHarness {
     let listen_addr = spec.listen_addr;
     let allocator = allocator.clone();
+    let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(32);
     let (bound_tx, bound_rx) = oneshot::channel::<SocketAddr>();
-    let task = tokio::spawn(async move {
-        tcp_server::run(
-            spec,
-            TcpServerWiring {
-                allocator,
-                frame_tx,
-                event_tx,
-                cancel,
-                bound_addr_tx: Some(bound_tx),
-            },
-        )
-        .await
-    });
+    let task = {
+        let stats = stats.clone();
+        tokio::spawn(async move {
+            tcp_server::run(
+                spec,
+                TcpServerWiring {
+                    allocator,
+                    frame_tx,
+                    event_tx,
+                    cancel,
+                    bound_addr_tx: Some(bound_tx),
+                    stats,
+                },
+            )
+            .await
+        })
+    };
     TcpsHarness {
         listen_addr,
         frame_rx,
         event_rx,
         bound_addr_rx: Some(bound_rx),
+        stats,
         task,
     }
 }
@@ -126,7 +135,7 @@ pub fn spawn_tcpc(
     name: &str,
 ) -> TcpcHarness {
     let endpoint_id = allocator.alloc();
-    let stats = Arc::new(EndpointStats::default());
+    let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
     let endpoint = TcpClientEndpoint {
         host: target_addr.ip().to_string(),
         port: target_addr.port(),

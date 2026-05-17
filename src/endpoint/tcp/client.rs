@@ -19,7 +19,7 @@ use super::super::identity_flags::IdentityFlags;
 use super::super::session::{SessionOutcome, run_session};
 use super::super::socket::configure_tcp_stream;
 use super::super::spec::TcpClientEndpoint;
-use super::super::stats::EndpointStats;
+use super::super::stats::{EndpointState, EndpointStats};
 use super::super::tx_queue::TxQueue;
 use super::super::wait_or_cancel;
 
@@ -145,6 +145,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) -> Result<(), T
         if drained > 0 {
             trace!(drained, "tcpc drained stale frames before resuming");
         }
+        stats.store_state(EndpointState::Connected);
 
         match run_session(
             stream,
@@ -162,6 +163,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) -> Result<(), T
                 return Ok(());
             }
             SessionOutcome::Disconnected => {
+                stats.store_state(EndpointState::Reconnecting);
                 continue;
             }
         }

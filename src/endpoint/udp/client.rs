@@ -21,7 +21,7 @@ use super::super::events::RouterFrame;
 use super::super::identity_flags::IdentityFlags;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
-use super::super::stats::{EndpointStats, FramerCounters};
+use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
 
@@ -243,6 +243,10 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) -> Result<(), U
         BindOutcome::Bound(s) => s,
         BindOutcome::Cancelled => return Ok(()),
     };
+    // Local bind succeeded; udpc has no transport-up/down event thereafter
+    // (revert to configured-host is *not* a transport event per CLAUDE.md),
+    // so this is the only Connected write the task ever issues.
+    stats.store_state(EndpointState::Connected);
 
     let mut framer = Framer::with_capacity(read_buf_bytes);
     let mut framer_counters = FramerCounters::new();
