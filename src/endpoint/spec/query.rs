@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use super::super::filters::Filters;
 use super::super::identity_flags::IdentityFlags;
+use super::super::udp::server::MAX_UDPS_PEER_CAPACITY;
 use super::endpoint_kinds::{
     CommonQuery, SerialEndpoint, SerialFlowControl, TcpClientEndpoint, TcpServerEndpoint,
     UdpClientEndpoint, UdpServerEndpoint,
@@ -133,7 +134,14 @@ impl QueryApplier for UdpServerApplier<'_> {
                 Ok(true)
             }
             "udps_peer_capacity" => {
-                self.0.udps_peer_capacity = Some(parse_usize(value, "udps_peer_capacity")?);
+                let n = parse_usize(value, "udps_peer_capacity")?;
+                if n == 0 || n > MAX_UDPS_PEER_CAPACITY {
+                    return Err(SpecError::InvalidQueryValue {
+                        key: "udps_peer_capacity",
+                        reason: format!("must be in 1..={MAX_UDPS_PEER_CAPACITY}, got {n}"),
+                    });
+                }
+                self.0.udps_peer_capacity = Some(n);
                 Ok(true)
             }
             _ => apply_shared(&mut self.0.identity, &mut self.0.common, key, value),
@@ -321,6 +329,60 @@ mod tests {
     fn sniffer_invalid_value_rejected() {
         match parse_err("udps:0.0.0.0:1?sniffer=yes") {
             SpecError::InvalidQueryValue { key, .. } => assert_eq!(key, "sniffer"),
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    // -- udps_peer_capacity bounds (CLAUDE.md "Defaults" table + parse-time
+    //    validation so `0` and absurd values don't silently turn into a
+    //    1-peer rotating slot or eat all memory). --
+
+    #[test]
+    fn udps_peer_capacity_zero_rejected() {
+        match parse_err("udps:0.0.0.0:1?udps_peer_capacity=0") {
+            SpecError::InvalidQueryValue { key, reason } => {
+                assert_eq!(key, "udps_peer_capacity");
+                // The max-allowed value must be surfaced so an operator can
+                // see the valid range from the error alone.
+                assert!(
+                    reason.contains("65536"),
+                    "expected max to appear in reason, got: {reason}"
+                );
+                assert!(
+                    reason.contains("got 0"),
+                    "expected offending value in reason, got: {reason}"
+                );
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn udps_peer_capacity_one_accepted() {
+        let s = parse_ok("udps:0.0.0.0:1?udps_peer_capacity=1");
+        assert_eq!(as_udps(&s).udps_peer_capacity, Some(1));
+    }
+
+    #[test]
+    fn udps_peer_capacity_max_accepted() {
+        let s = parse_ok("udps:0.0.0.0:1?udps_peer_capacity=65536");
+        assert_eq!(as_udps(&s).udps_peer_capacity, Some(65536));
+    }
+
+    #[test]
+    fn udps_peer_capacity_above_max_rejected() {
+        match parse_err("udps:0.0.0.0:1?udps_peer_capacity=65537") {
+            SpecError::InvalidQueryValue { key, reason } => {
+                assert_eq!(key, "udps_peer_capacity");
+                assert!(
+                    reason.contains("65536"),
+                    "expected max to appear in reason, got: {reason}"
+                );
+                assert!(
+                    reason.contains("got 65537"),
+                    "expected offending value in reason, got: {reason}"
+                );
+            }
             other => panic!("wrong error: {other:?}"),
         }
     }

@@ -29,6 +29,16 @@ use crate::mavlink::framer::Framer;
 
 const DEFAULT_IDLE_SECS: u64 = 60;
 const DEFAULT_PEER_CAPACITY: usize = 256;
+
+/// Practical upper bound on a single `udps:` listener's peer table. Set
+/// to `u16::MAX + 1` because a single source IP can produce at most that
+/// many distinct ports, and admitting more peers than that on one
+/// listener would always mean multiple source IPs — at which point an
+/// operator who needs higher capacity should split the bind across
+/// listeners (or processes) rather than fight RMR's per-listener memory
+/// plus task-spawn budget. Surfaced in the parse-time error so an
+/// operator pasting a typo'd value gets a concrete target range.
+pub const MAX_UDPS_PEER_CAPACITY: usize = 65_536;
 // Max IP datagram payload plus headroom; one `recv_from` cannot return more
 // than the kernel's MTU-bounded payload, but we size the buffer to the IP
 // theoretical max so a fragmented giant datagram couldn't be truncated.
