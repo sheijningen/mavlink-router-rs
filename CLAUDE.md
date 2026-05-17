@@ -258,7 +258,7 @@ All per-endpoint values are overridable via `?key=val` on the endpoint string or
 | `ingress_queue_frames`  | 1024        | Shared reader→router channel depth; senders await on full (backpressure, not drop) |
 | `event_queue_size`      | sized at spawn | Shared lifecycle channel (`EndpointEvent`) depth; sized at spawner-construction time using the same formula as `stats_event_tx` — `max(64, 2 × N)` where `N = top-level-endpoint-count + sum(udps_peer_capacity) + sum(tcps_peer_budget)` (`tcps_peer_budget` default 64). Senders await on full; lifecycle events are rare relative to frames so brief blocking is acceptable. |
 | `learn_capacity`        | 32          | `(sysid, compid)` entries per endpoint, LRU-evicted by last-seen when full |
-| `seq_tracker_capacity`  | 32          | `(sysid, compid) → last_seq` entries per endpoint. Parsed by the spec layer today; consumed by the per-source seq tracker in Phase 5b. Setting it before then is silently accepted (no WARN) but has no runtime effect. |
+| `seq_tracker_capacity`  | 32          | `(sysid, compid) → last_seq` entries per endpoint, LRU-evicted by last-seen when full. Drives `rx_lost_est`. |
 | `dedup_window_capacity` | 4096        | Total `(hash, deadline)` entries — single window owned by the router (global, not per-endpoint) |
 | `dedup_ms`              | 0 (off)     | Dedup TTL; >0 enables the window |
 | `idle_secs` (`udps:`)   | 60          | Peer expiry on inactivity (query key: `?idle_secs=N` on a `udps:` endpoint) |
@@ -382,7 +382,7 @@ A grab-bag of features that don't fit a single theme but are all required for a 
 ### Phase 7 — polish & documentation
 
 - [ ] Stats output: dedicated stats task draining a bounded `mpsc<StatsLine>` (`stats_queue_lines`, default 256); JSON-Lines on stdout, one object per `--stats-interval` (default 5s), enabled by `--stats`; `ts` field formatted by `time` crate as RFC 3339 UTC; `BrokenPipe` on stdout logs once at WARN and continues; overflow increments `stats_dropped` and emits a WARN at most once per interval. Schema documented in this file.
-- [ ] **README.** Replace the placeholder with the real document: what RMR is, install (cargo + prebuilt binaries + Docker), CLI cheatsheet, TOML cheatsheet, pointer to CLAUDE.md for design rationale, link to the use-case examples below.
+- [ ] **README.** Write the user-facing top-level `README.md`: what RMR is, install (cargo + prebuilt binaries + Docker), CLI cheatsheet, TOML cheatsheet, pointer to CLAUDE.md for design rationale, link to the use-case examples below.
 - [ ] **Use-case examples** under `examples/`. Each is a runnable TOML config (and/or CLI args) with a short README walking through the scenario, the chosen endpoints, and which filters/flags do the work. Cover at minimum:
   1. **Serial FC exposed to the network** — `serial:/dev/ttyACM0:921600` + `tcps:0.0.0.0:5760` + `udps:0.0.0.0:14550`. The "hello world" of RMR.
   2. **Companion computer with internal microservice mavlink** — multiple `udps:` endpoints for on-board microservices + `serial:` to the FC + `tcpc:` to a remote GCS, with `block_msgid_out=...` on the GCS leg so internal-only traffic stays off the radio.
@@ -395,7 +395,7 @@ A grab-bag of features that don't fit a single theme but are all required for a 
   9. **Docker Compose deployment** — one `docker-compose.yml` bringing up RMR with a bind-mounted TOML config, the necessary serial device passthrough, and the relevant UDP/TCP port mappings; shows the multi-arch image in a realistic deployment.
   10. **systemd unit deployment** — `examples/systemd/rmr.service` paired with a TOML config under the same directory, for running RMR as a bare-metal service. Documents the unit's `Type=exec`, `ExecStart` (pointing at the binary from Phase 6's release artifacts), `Restart=on-failure` (deliberate: a config-fatal start should not infinitely respawn), dedicated `User`/`Group` (`rmr:rmr`), device-access notes (e.g. `SupplementaryGroups=dialout` on Debian/Ubuntu, `uucp` on Arch, for `serial:` endpoints), and a noted-but-not-prescribed pointer to systemd hardening directives (`ProtectSystem`, `NoNewPrivileges`).
 - [ ] **Shell completions and man page** generated at build time. `clap_complete::generate_to` emits `bash` / `zsh` / `fish` completions and `clap_mangen::Man` emits `rmr.1` (roff) — both `[build-dependencies]`, both consume the same `clap::Command` value, both write into `OUT_DIR`. Implementation constraint: both generators need the `clap::Command` value, so the clap derive struct must live in a module that can be `include!`d by both `build.rs` and `src/` — same `include!`-from-source pattern the build-support modules use, with the same self-contained constraint (no `use crate::*`). Shipped alongside the binary in the release tarballs and bundled into the Docker image at standard FHS locations — completions under `share/bash-completion/completions/`, `share/zsh/site-functions/`, `share/fish/vendor_completions.d/`; the man page under `share/man/man1/rmr.1`. Install paths documented in the README and in the systemd example.
-- [ ] Remove the temporary `[lints.rust] dead_code = "allow"` from `Cargo.toml` and delete any code that is genuinely unused
+- [ ] Sweep any code that has become genuinely unused now that Phase 5b is complete (e.g. the `#[allow(dead_code)]` scaffold on `src/stats.rs::RegisteredEndpoint`, kept until the JSON-Lines sink consumes it)
 
 ### Stretch (not v1)
 
@@ -420,7 +420,7 @@ The repo is one binary crate. Module boundaries match the architecture diagram s
 rmr/
 ├── Cargo.toml
 ├── CLAUDE.md                         ← this file
-├── README.md                         ← user-facing intro (eventually)
+├── README.md                         ← user-facing intro (lands in Phase 7; not yet present)
 ├── build.rs                          ← parses vendored MAVLink XML, emits const msgid table
 ├── build_support/                    ← build-only Rust modules `include!`d by build.rs (and by tests/build_support.rs for unit-test coverage); not part of the runtime crate
 ├── vendor/mavlink/                   ← in-tree copy of mavlink/mavlink XML at a pinned release tag (common.xml, ardupilotmega.xml, transitive includes, UPSTREAM.md)
@@ -429,9 +429,10 @@ rmr/
 │   ├── main.rs                       ← binary entrypoint: argv → spawn tasks → wait
 │   ├── lib.rs                        ← library entrypoint (re-exports for integration tests)
 │   ├── cli.rs                        ← clap derive structs, EndpointSpec string parser
-│   ├── config.rs                     ← TOML schema (serde), CLI+file merge rules
+│   ├── config.rs                     ← TOML schema (serde), CLI+file merge rules (Phase 6; empty placeholder today)
 │   ├── error.rs                      ← top-level Error enum, From impls for module errors
 │   ├── shutdown.rs                   ← CancellationToken plumbing, signal handling
+│   ├── stats.rs                      ← dedicated stats task: registry mirror, interval timer (Phase 7 wires the JSON-Lines sink)
 │   ├── mavlink/
 │   │   ├── mod.rs                    ← re-exports
 │   │   ├── frame.rs                  ← Frame view, FrameHeader, version detection
@@ -446,11 +447,13 @@ rmr/
 │   │   │   ├── endpoint_kinds.rs     ← `EndpointKind` + the five per-scheme `*Endpoint` structs, each carrying a `common: CommonQuery` (plumbing knobs: `read_buf_bytes`, `tx_queue_frames`) and an `identity: IdentityFlags` (filters, sniffer, group, learn/seq capacities)
 │   │   │   ├── error.rs              ← `SpecError`
 │   │   │   ├── parse.rs              ← body/address parsers, name validation, scheme dispatch
-│   │   │   └── query.rs              ← query-string parser, per-scheme `QueryApplier`s, `CommonQuery::apply`, value parsers, did-you-mean suggestion (walks `COMMON_KEYS`, `IdentityFlags::KEYS`, `Filters::KEYS`, and the per-scheme `*_EXTRA` lists)
+│   │   │   ├── query.rs              ← query-string parser, per-scheme `QueryApplier`s, `CommonQuery::apply`, value parsers, did-you-mean suggestion (walks `COMMON_KEYS`, `IdentityFlags::KEYS`, `Filters::KEYS`, and the per-scheme `*_EXTRA` lists)
+│   │   │   └── bounds.rs             ← shared range-checked numeric parsers (`check_u64_range`, etc.) used by `query.rs` and `identity_flags.rs`
 │   │   ├── filters.rs                ← `Filters` struct (12 `allow_*`/`block_*` lists), `MsgIdRange` / `U8Range`, range-list parsers. Phase 5b hangs `passes_in_filter` / `passes_out_filter` off `Filters`.
 │   │   ├── identity_flags.rs        ← `IdentityFlags`: `filters: Filters` + `sniffer` + `group` + `learn_capacity` + `seq_tracker_capacity`. Travels with every `*Spec`; cloned onto each sub-endpoint at admission.
 │   │   ├── events.rs                 ← `RouterFrame`, `EndpointEvent` (`EndpointAdded` / `PeerAdded` / `PeerRemoved`), `PeerRemovalReason`
 │   │   ├── stats.rs                  ← `EndpointStats` (per-endpoint counters + `state: AtomicU8`), `EndpointState` enum, `FramerCounters` delta helper
+│   │   ├── seq_tracker.rs            ← per-source `(sysid, compid) → last_seq` LRU; computes the `rx_lost_est` gap signal at ingress
 │   │   ├── tx_queue.rs               ← bounded queue with drop-oldest (`force_push` + `pop_or_wait` + `drain_and_discard`)
 │   │   ├── backoff.rs                ← capped-exponential `Backoff` with ±20% jitter + `bind_with_backoff` helper shared by `tcps:`, `udps:`, `udpc:`
 │   │   ├── defaults.rs               ← cross-endpoint default constants (read buf, tx queue, reconnect curve)
@@ -476,22 +479,30 @@ rmr/
 │   ├── framer_replay.rs
 │   ├── build_support.rs              ← integration test binary that `include!`s each file under `build_support/` inside its own `mod`, so their `#[cfg(test)] mod tests` blocks run under `cargo test`
 │   ├── tcp/
-│   │   ├── main.rs                   ← aggregator: `mod common; mod bind_retry; mod identity; mod reconnect; mod roundtrip;`
+│   │   ├── main.rs                   ← aggregator: `mod common; mod bind_retry; mod identity; mod in_filter; mod reconnect; mod roundtrip; mod seq_tracker; mod state;`
 │   │   ├── roundtrip.rs
 │   │   ├── bind_retry.rs
 │   │   ├── identity.rs               ← asserts every `tcps:` accepted child inherits a clone of the parent listener's `IdentityFlags` via `PeerAdded`
-│   │   └── reconnect.rs
+│   │   ├── in_filter.rs
+│   │   ├── reconnect.rs
+│   │   ├── seq_tracker.rs
+│   │   └── state.rs
 │   ├── udp/
-│   │   ├── main.rs                   ← aggregator: `mod common; mod bind_retry; mod identity; mod idle_reap; mod latch; mod roundtrip;`
+│   │   ├── main.rs                   ← aggregator: `mod common; mod bind_retry; mod identity; mod idle_reap; mod in_filter; mod latch; mod roundtrip; mod state;`
 │   │   ├── roundtrip.rs
 │   │   ├── bind_retry.rs
 │   │   ├── identity.rs               ← asserts every `udps:` learned peer inherits a clone of the parent listener's `IdentityFlags` via `PeerAdded`
+│   │   ├── in_filter.rs
 │   │   ├── latch.rs
-│   │   └── idle_reap.rs
+│   │   ├── idle_reap.rs
+│   │   └── state.rs
 │   ├── serial.rs                     ← PTY-pair session coverage (Unix only via `#[cfg(unix)]`)
 │   ├── filters.rs
 │   ├── sniffer.rs
-│   └── dedup.rs
+│   ├── dedup.rs
+│   ├── groups.rs                     ← endpoint-group shared learn-set + per-endpoint filter independence, asserted at the wire
+│   ├── shutdown.rs                   ← per-task drain budget + 5s wall-clock abort
+│   └── spawner_e2e.rs                ← lib::run orchestration: spec parse → spawn → cancel
 └── benches/                          ← criterion benchmarks (Phase 7+)
     ├── framer.rs
     └── routing.rs
@@ -525,7 +536,7 @@ Specific test requirements per phase:
 | 6     | TOML config parses and round-trips; CLI+file merge precedence verified; multi-transport fan-out, reconnect-under-load, and shutdown-soak e2e tests (driven through `lib::run`) all green; CI matrix green on linux-x86_64 + linux-aarch64 + windows-x86_64 + macos; multi-arch Docker image builds for `linux/amd64` and `linux/arm64`. |
 | 7     | Stats output schema; README and `examples/` walkthroughs render correctly; each example config parses and the documented endpoints come up against a local loopback fixture. |
 
-Fixtures live in `fixtures/` and are version-controlled. Capture binaries should be small (< 1 MB each) and reproducible — document the source of each in a `fixtures/README.md`.
+Fixtures live in `fixtures/` and are version-controlled. The directory is currently empty (only `.gitkeep`). Capture binaries should be small (< 1 MB each) and reproducible — when the first fixture lands, add a `fixtures/README.md` that documents its source.
 
 CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all-features` on every push — all three are required to pass.
 
