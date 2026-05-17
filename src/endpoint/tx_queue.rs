@@ -8,9 +8,10 @@ use tokio::sync::Notify;
 use super::stats::EndpointStats;
 
 /// Bounded router→writer queue with drop-oldest overflow. The router pushes
-/// frames as `Bytes` clones; the writer task pops in a loop and awaits
-/// `wait_for_push` when empty. Each push that displaces an older entry
-/// increments `dropped_tx` on the shared stats.
+/// frames as `Bytes` clones; the writer task drains with `pop_or_wait`, which
+/// returns the next frame or `await`s a notify wake when the queue is empty.
+/// Each push that displaces an older entry increments `dropped_tx` on the
+/// shared stats.
 #[derive(Clone, Debug)]
 pub struct TxQueue {
     inner: Arc<ArrayQueue<Bytes>>,
@@ -44,14 +45,9 @@ impl TxQueue {
         self.inner.pop()
     }
 
-    pub async fn wait_for_push(&self) {
-        self.notify.notified().await;
-    }
-
-    /// Block until a frame is available, then return it. Spins through
-    /// `pop`/`wait_for_push` so a writer task can `select!` on
-    /// `queue.pop_or_wait()` without re-implementing the loop in every
-    /// endpoint module.
+    /// Block until a frame is available, then return it. Lets a writer task
+    /// `select!` on `queue.pop_or_wait()` without re-implementing the
+    /// pop-or-notify-wait loop in every endpoint module.
     pub async fn pop_or_wait(&self) -> Bytes {
         loop {
             if let Some(b) = self.inner.pop() {
@@ -79,16 +75,8 @@ impl TxQueue {
         self.inner.len()
     }
 
-    pub fn capacity(&self) -> usize {
-        self.inner.capacity()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
-    }
-
-    pub fn stats(&self) -> &Arc<EndpointStats> {
-        &self.stats
     }
 }
 
@@ -144,21 +132,18 @@ mod tests {
     }
 
     #[test]
-    fn capacity_at_least_one() {
+    fn new_clamps_zero_capacity_to_one() {
         let stats = Arc::new(EndpointStats::default());
         let q = TxQueue::new(0, stats);
-        assert!(q.capacity() >= 1);
+        assert!(q.inner.capacity() >= 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn wait_for_push_wakes_on_push() {
+    async fn pop_or_wait_wakes_on_push() {
         let (q, _) = make(2);
         let waiter = {
             let q = q.clone();
-            tokio::spawn(async move {
-                q.wait_for_push().await;
-                q.pop()
-            })
+            tokio::spawn(async move { q.pop_or_wait().await })
         };
         tokio::time::sleep(Duration::from_millis(5)).await;
         q.push(Bytes::from_static(b"x"));
@@ -166,6 +151,6 @@ mod tests {
             .await
             .expect("waiter timed out")
             .expect("waiter task panicked");
-        assert_eq!(popped.as_deref(), Some(b"x" as &[u8]));
+        assert_eq!(popped.as_ref(), b"x");
     }
 }

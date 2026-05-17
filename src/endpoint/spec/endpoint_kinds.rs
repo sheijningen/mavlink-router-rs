@@ -1,6 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use super::super::defaults::DEFAULT_TX_QUEUE_FRAMES;
 use super::super::identity_flags::IdentityFlags;
 
 /// Supported endpoint schemes.
@@ -11,39 +10,6 @@ pub enum EndpointKind {
     UdpClient(UdpClientEndpoint),
     TcpServer(TcpServerEndpoint),
     TcpClient(TcpClientEndpoint),
-}
-
-impl EndpointKind {
-    pub fn scheme(&self) -> &'static str {
-        match self {
-            EndpointKind::Serial(_) => "serial",
-            EndpointKind::UdpServer(_) => "udps",
-            EndpointKind::UdpClient(_) => "udpc",
-            EndpointKind::TcpServer(_) => "tcps",
-            EndpointKind::TcpClient(_) => "tcpc",
-        }
-    }
-
-    pub fn identity(&self) -> IdentityFlags {
-        match self {
-            EndpointKind::Serial(e) => e.identity.clone(),
-            EndpointKind::UdpServer(e) => e.identity.clone(),
-            EndpointKind::UdpClient(e) => e.identity.clone(),
-            EndpointKind::TcpServer(e) => e.identity.clone(),
-            EndpointKind::TcpClient(e) => e.identity.clone(),
-        }
-    }
-
-    pub fn tx_queue_frames(&self) -> usize {
-        let common = match self {
-            EndpointKind::Serial(e) => &e.common,
-            EndpointKind::UdpServer(e) => &e.common,
-            EndpointKind::UdpClient(e) => &e.common,
-            EndpointKind::TcpServer(e) => &e.common,
-            EndpointKind::TcpClient(e) => &e.common,
-        };
-        common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES)
-    }
 }
 
 /// Plumbing knobs every endpoint type understands. Identity knobs (filters,
@@ -146,52 +112,4 @@ pub struct TcpClientEndpoint {
     pub reconnect_max_ms: Option<u64>,
     pub common: CommonQuery,
     pub identity: IdentityFlags,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::endpoint::spec::EndpointSpec;
-
-    #[test]
-    fn endpoint_kind_scheme_roundtrip() {
-        for input in &[
-            "serial:/dev/ttyUSB0:115200",
-            "udps:0.0.0.0:1",
-            "udpc:1.2.3.4:1",
-            "tcps:0.0.0.0:1",
-            "tcpc:host:1",
-        ] {
-            let s = EndpointSpec::parse(input).expect("parse");
-            assert!(input.starts_with(&format!("{}:", s.kind.scheme())));
-        }
-    }
-
-    #[test]
-    fn tx_queue_frames_returns_default_when_unset() {
-        for input in &[
-            "serial:/dev/ttyUSB0:115200",
-            "udps:0.0.0.0:1",
-            "udpc:1.2.3.4:1",
-            "tcps:0.0.0.0:1",
-            "tcpc:host:1",
-        ] {
-            let s = EndpointSpec::parse(input).expect("parse");
-            assert_eq!(s.kind.tx_queue_frames(), DEFAULT_TX_QUEUE_FRAMES);
-        }
-    }
-
-    #[test]
-    fn tx_queue_frames_honours_override() {
-        let s = EndpointSpec::parse("tcpc:host:1?tx_queue_frames=64").expect("parse");
-        assert_eq!(s.kind.tx_queue_frames(), 64);
-    }
-
-    #[test]
-    fn identity_carries_sniffer_flag() {
-        let plain = EndpointSpec::parse("udps:0.0.0.0:1").expect("parse");
-        assert!(!plain.kind.identity().sniffer);
-        let sniffing = EndpointSpec::parse("udps:0.0.0.0:1?sniffer=true").expect("parse");
-        assert!(sniffing.kind.identity().sniffer);
-    }
 }

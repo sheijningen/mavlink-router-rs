@@ -53,12 +53,6 @@ pub fn peer_endpoint_name(parent_name: &str, addr: SocketAddr) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EndpointId(u64);
 
-impl EndpointId {
-    pub fn as_u64(self) -> u64 {
-        self.0
-    }
-}
-
 impl fmt::Display for EndpointId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
@@ -129,9 +123,9 @@ mod tests {
         let id0 = a.alloc();
         let id1 = a.alloc();
         let id2 = a.alloc();
-        assert_eq!(id0.as_u64(), 0);
-        assert_eq!(id1.as_u64(), 1);
-        assert_eq!(id2.as_u64(), 2);
+        assert_eq!(id0.0, 0);
+        assert_eq!(id1.0, 1);
+        assert_eq!(id2.0, 2);
         assert_ne!(id0, id1);
     }
 
