@@ -25,13 +25,17 @@ pub struct RouterFrame {
 /// owns construction of `EndpointId`, `TxQueue`, `Arc<EndpointStats>`, and
 /// `IdentityFlags` and announces them here.
 ///
-/// `EndpointAdded` is emitted by the top-level spawner for every CLI/TOML
-/// endpoint. `PeerAdded` / `PeerRemoved` are emitted by `tcps:` listeners (per
-/// accepted client) and `udps:` listeners (per learned peer). There is no
-/// top-level `EndpointRemoved` variant in v1 — top-level endpoints live for the
-/// process; on shutdown the router writes `state = Down` and emits one final
-/// synthetic stats line per CLAUDE.md's "Endpoint registration is symmetric"
-/// decision.
+/// `EndpointAdded` is emitted by the top-level spawner for every leaf routing
+/// endpoint (`tcpc:` / `udpc:` / `serial:`). `ParentListenerAdded` is emitted
+/// for `tcps:` / `udps:` parent listeners — they're configured endpoints
+/// visible in stats but have no `TxQueue` (children own real readers/writers),
+/// so the router holds them in a separate registry that is never iterated as
+/// a routing destination. `PeerAdded` / `PeerRemoved` are emitted by `tcps:`
+/// listeners (per accepted client) and `udps:` listeners (per learned peer).
+/// There is no top-level `EndpointRemoved` variant in v1 — top-level
+/// endpoints live for the process; on shutdown the router writes `state =
+/// Down` and emits one final synthetic stats line per CLAUDE.md's "Endpoint
+/// registration is symmetric" decision.
 #[derive(Debug)]
 pub enum EndpointEvent {
     EndpointAdded {
@@ -40,13 +44,11 @@ pub enum EndpointEvent {
         tx_queue: TxQueue,
         stats: Arc<EndpointStats>,
         identity: IdentityFlags,
-        /// `false` for `tcps:` / `udps:` parent listeners — they're
-        /// configured endpoints visible in stats but their `TxQueue` has
-        /// no consumer task, so the router must skip them as routing
-        /// destinations. `true` for `tcpc:` / `udpc:` / `serial:` and any
-        /// other leaf top-level endpoint whose TxQueue is drained by a
-        /// real writer.
-        routable: bool,
+    },
+    ParentListenerAdded {
+        id: EndpointId,
+        name: String,
+        stats: Arc<EndpointStats>,
     },
     PeerAdded {
         parent_id: EndpointId,

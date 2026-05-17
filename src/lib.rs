@@ -207,25 +207,34 @@ async fn spawn_endpoint(
     let endpoint_id = allocator.alloc();
     let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
     let identity = kind.identity();
-    let tx_queue = TxQueue::new(kind.tx_queue_frames(), stats.clone());
-    let routable = is_routable_top_level(&kind);
+    // Parent listeners have no consumer for a TxQueue, so we don't build
+    // one for them — the event variant the router receives encodes the
+    // distinction.
+    let tx_queue = if is_routable_top_level(&kind) {
+        Some(TxQueue::new(kind.tx_queue_frames(), stats.clone()))
+    } else {
+        None
+    };
 
-    // CLAUDE.md "Endpoint registration is symmetric": send EndpointAdded
-    // and wait for delivery BEFORE spawning the endpoint task, so the
+    // CLAUDE.md "Endpoint registration is symmetric": send the lifecycle
+    // event and wait for delivery BEFORE spawning the endpoint task, so the
     // router (biased over event_rx then frame_rx) processes the
     // registration before any RouterFrame this endpoint produces.
-    if event_tx
-        .send(EndpointEvent::EndpointAdded {
+    let event = match &tx_queue {
+        Some(tx_queue) => EndpointEvent::EndpointAdded {
             id: endpoint_id,
             name: name.clone(),
             tx_queue: tx_queue.clone(),
             stats: stats.clone(),
             identity,
-            routable,
-        })
-        .await
-        .is_err()
-    {
+        },
+        None => EndpointEvent::ParentListenerAdded {
+            id: endpoint_id,
+            name: name.clone(),
+            stats: stats.clone(),
+        },
+    };
+    if event_tx.send(event).await.is_err() {
         warn!(
             %endpoint_id, %name,
             "router event channel closed during endpoint registration; skipping spawn"
@@ -254,7 +263,7 @@ fn spawn_endpoint_task(
     name: String,
     endpoint_id: EndpointId,
     stats: Arc<EndpointStats>,
-    tx_queue: TxQueue,
+    tx_queue: Option<TxQueue>,
     frame_tx: &mpsc::Sender<RouterFrame>,
     event_tx: &mpsc::Sender<EndpointEvent>,
     cancel: &CancellationToken,
@@ -265,7 +274,7 @@ fn spawn_endpoint_task(
             let spec = SerialSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = SerialWiring {
                 frame_tx: frame_tx.clone(),
-                tx_queue,
+                tx_queue: tx_queue.expect("leaf endpoint missing TxQueue"),
                 stats,
                 cancel: cancel.clone(),
             };
@@ -277,7 +286,7 @@ fn spawn_endpoint_task(
             let spec = TcpClientSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = TcpClientWiring {
                 frame_tx: frame_tx.clone(),
-                tx_queue,
+                tx_queue: tx_queue.expect("leaf endpoint missing TxQueue"),
                 stats,
                 cancel: cancel.clone(),
             };
@@ -289,7 +298,7 @@ fn spawn_endpoint_task(
             let spec = UdpClientSpec::from_endpoint(ep, endpoint_id, name);
             let wiring = UdpClientWiring {
                 frame_tx: frame_tx.clone(),
-                tx_queue,
+                tx_queue: tx_queue.expect("leaf endpoint missing TxQueue"),
                 stats,
                 cancel: cancel.clone(),
             };
@@ -298,6 +307,10 @@ fn spawn_endpoint_task(
             });
         }
         EndpointKind::TcpServer(ep) => {
+            debug_assert!(
+                tx_queue.is_none(),
+                "parent listener should not own a TxQueue"
+            );
             let listen_addr = listen_addr_for("tcps", &ep.host, ep.port)?;
             let spec = TcpServerSpec::from_endpoint(ep, listen_addr, endpoint_id, name);
             let wiring = TcpServerWiring {
@@ -313,6 +326,10 @@ fn spawn_endpoint_task(
             });
         }
         EndpointKind::UdpServer(ep) => {
+            debug_assert!(
+                tx_queue.is_none(),
+                "parent listener should not own a TxQueue"
+            );
             let listen_addr = listen_addr_for("udps", &ep.host, ep.port)?;
             let spec = UdpServerSpec::from_endpoint(ep, listen_addr, endpoint_id, name);
             let wiring = UdpServerWiring {
