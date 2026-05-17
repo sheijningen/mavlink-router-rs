@@ -1,9 +1,9 @@
 // Bake the MAVLink msgid table (crc_extra, target field offsets) at compile
 // time from the vendored dialect XML.
 //
-// `crc_extra.rs` is `include!`d at the top of this file so that
-// `crc_extra_for_message` (the runtime crate's single source of truth) is also
-// what runs here — there is no second implementation to drift.
+// All build-only logic — CRC primitives, the `crc_extra_for_message`
+// algorithm, the XML include-graph walker, and the dialect-parse transforms
+// — lives under `build_support/` and is `include!`d here.
 //
 // Output is one generated file in `$OUT_DIR/generated_msgid_table.rs`
 // containing `pub(crate) const SORTED: &[(u32, MsgEntry)]` (sorted by msgid),
@@ -11,7 +11,7 @@
 
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/src/mavlink/crc_extra.rs"
+    "/build_support/crc_extra.rs"
 ));
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -34,8 +34,8 @@ const DIALECTS: &[&str] = &["common.xml", "ardupilotmega.xml"];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=src/mavlink/crc_extra.rs");
     println!("cargo:rerun-if-changed=build_support");
+    println!("cargo:rerun-if-changed=build_support/crc_extra.rs");
     println!("cargo:rerun-if-changed=build_support/xml_loader.rs");
     println!("cargo:rerun-if-changed=build_support/dialect_parse.rs");
 

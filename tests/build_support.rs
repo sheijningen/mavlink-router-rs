@@ -11,6 +11,14 @@
 // the include! boundary into the integration-test binary's compilation.
 
 #[allow(dead_code)]
+mod crc_extra {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/build_support/crc_extra.rs"
+    ));
+}
+
+#[allow(dead_code)]
 mod xml_loader {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),

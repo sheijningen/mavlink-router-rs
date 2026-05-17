@@ -13,8 +13,8 @@
 //! sorted ascending by msgid so `msgid_table::lookup` can binary-search it.
 //! For each `<message>` in the parsed dialects, `build.rs` computes:
 //!
-//! - `crc_extra` via [`crc_extra::crc_extra_for_message`](super::crc_extra),
-//!   the single source of truth shared between build- and runtime-side code.
+//! - `crc_extra` via `build_support/crc_extra.rs::crc_extra_for_message`, the
+//!   build-side implementation of the algorithm.
 //! - `target_sys_offset` / `target_comp_offset` — payload offsets of the
 //!   `target_system` / `target_component` fields when present, else `None`.
 

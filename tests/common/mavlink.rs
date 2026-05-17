@@ -10,11 +10,12 @@
 //!   carries its `MSGID` and `CRC_EXTRA` as associated constants and knows how
 //!   to serialise itself to the size-sorted byte layout MAVLink prescribes.
 //!
-//! The `crc_extra` constants here are anchored by the runtime unit tests in
-//! `src/mavlink/crc_extra.rs` (which compute them from the XML at build time
-//! and compare against the published reference values). The CRC algorithm
-//! itself comes from the production [`rmr::mavlink::crc::Crc16`] type — no
-//! second implementation in the test fixtures.
+//! The `crc_extra` constants here are anchored by the build-support unit
+//! tests in `build_support/crc_extra.rs` (which compute them via the same
+//! algorithm `build.rs` runs at build time and compare against the published
+//! reference values). The CRC algorithm itself comes from the production
+//! [`rmr::mavlink::crc::Crc16`] type — no second implementation in the test
+//! fixtures.
 
 use rmr::mavlink::crc::Crc16;
 use rmr::mavlink::frame::{STX_V1, STX_V2, V2_IFLAG_SIGNED, V2_SIGNATURE_LEN};
