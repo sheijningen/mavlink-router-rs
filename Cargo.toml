@@ -37,7 +37,3 @@ quick-xml = "0.36"
 
 [dev-dependencies]
 proptest = "1"
-
-# Temporary: phases 0-6 introduce code ahead of its callers. Remove after phase 7.
-[lints.rust]
-dead_code = "allow"

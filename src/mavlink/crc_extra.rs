@@ -11,9 +11,16 @@ pub(crate) fn crc16_update(crc: &mut u16, b: u8) {
     *crc = (*crc >> 8) ^ (tmp16 << 8) ^ (tmp16 << 3) ^ (tmp16 >> 4);
 }
 
+// The items below are load-bearing in build.rs (via `include!`) and in this
+// file's own tests, but never called at runtime — runtime code reads the
+// const msgid table that build.rs emits, not the algorithm itself. The lint
+// can't see across the include! boundary, so each item carries an explicit
+// allow.
+
 /// Field description passed to `crc_extra_for_message`. Borrowed strings keep
 /// the caller (build.rs) in charge of XML lifetime; the algorithm only reads.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct CrcExtraField<'a> {
     pub name: &'a str,
     /// XML type, as-is. `uint8_t_mavlink_version` is stripped to `uint8_t`
@@ -26,6 +33,7 @@ pub(crate) struct CrcExtraField<'a> {
     pub is_extension: bool,
 }
 
+#[allow(dead_code)]
 fn type_size(type_name: &str) -> u8 {
     match type_name {
         "char" | "int8_t" | "uint8_t" | "uint8_t_mavlink_version" => 1,
@@ -36,6 +44,7 @@ fn type_size(type_name: &str) -> u8 {
     }
 }
 
+#[allow(dead_code)]
 fn crc_type(type_name: &str) -> &str {
     if type_name == "uint8_t_mavlink_version" {
         "uint8_t"
@@ -44,6 +53,7 @@ fn crc_type(type_name: &str) -> &str {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn crc_extra_for_message(msg_name: &str, fields: &[CrcExtraField<'_>]) -> u8 {
     let mut base: Vec<&CrcExtraField<'_>> = fields.iter().filter(|f| !f.is_extension).collect();
     // Stable sort by element size, descending.

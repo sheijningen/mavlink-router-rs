@@ -40,8 +40,11 @@ pub enum StatsEvent {
     },
 }
 
-/// One row of the stats task's registry mirror.
+/// One row of the stats task's registry mirror. Phase 7 reads `name` and
+/// `stats` when emitting JSON-Lines; today the scaffold just inserts and
+/// removes rows so the registry view is complete when Phase 7 lands.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct RegisteredEndpoint {
     name: String,
     stats: Arc<EndpointStats>,

@@ -6,6 +6,11 @@
 // Each include is wrapped in its own `mod` so the two `#[cfg(test)] mod
 // tests { ... }` blocks inside the included files don't collide.
 
+// `#[allow(dead_code)]`: build.rs is the real consumer; the items pulled in
+// here exist so the included tests can call them. The lint can't see across
+// the include! boundary into the integration-test binary's compilation.
+
+#[allow(dead_code)]
 mod xml_loader {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -13,6 +18,7 @@ mod xml_loader {
     ));
 }
 
+#[allow(dead_code)]
 mod dialect_parse {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
