@@ -10,8 +10,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
 use super::EndpointId;
+use super::defaults::READ_BUF_BYTES;
 use super::events::RouterFrame;
 use super::filters::Filters;
+use super::identity_flags::SEQ_TRACKER_CAPACITY;
 use super::seq_tracker::SeqTracker;
 use super::stats::{EndpointStats, FramerCounters};
 use super::tx_queue::TxQueue;
@@ -48,17 +50,15 @@ pub async fn run_session<S>(
     frame_tx: &mpsc::Sender<RouterFrame>,
     tx_queue: &TxQueue,
     cancel: &CancellationToken,
-    read_buf_bytes: usize,
     filters: &Filters,
-    seq_tracker_capacity: usize,
 ) -> SessionOutcome
 where
     S: AsyncRead + AsyncWrite,
 {
     let (mut rh, mut wh) = tokio::io::split(stream);
-    let mut framer = Framer::with_capacity(read_buf_bytes);
+    let mut framer = Framer::with_capacity(READ_BUF_BYTES);
     let mut framer_counters = FramerCounters::new();
-    let mut seq_tracker = SeqTracker::new(seq_tracker_capacity);
+    let mut seq_tracker = SeqTracker::new(SEQ_TRACKER_CAPACITY);
 
     loop {
         tokio::select! {

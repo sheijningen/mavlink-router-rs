@@ -30,8 +30,6 @@ async fn tcps_child_inherits_parent_identity() {
     let parent_identity = IdentityFlags {
         sniffer: true,
         group: Some(Arc::from("uplink")),
-        learn_capacity: 11,
-        seq_tracker_capacity: 7,
         filters: Filters {
             block_msgid_in: vec![MsgIdRange::single(33), MsgIdRange { lo: 100, hi: 150 }],
             allow_src_sys_out: vec![U8Range::single(1)],

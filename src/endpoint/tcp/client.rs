@@ -9,9 +9,7 @@ use tracing::{Instrument, info_span, trace, warn};
 
 use super::super::EndpointId;
 use super::super::backoff::Backoff;
-use super::super::defaults::{
-    DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
-};
+use super::super::defaults::{DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS};
 use super::super::events::RouterFrame;
 use super::super::identity_flags::IdentityFlags;
 use super::super::session::{SessionOutcome, run_session};
@@ -23,32 +21,14 @@ use super::super::wait_or_cancel;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// `reconnect_initial_ms` lower bound — below 10 ms the dial loop hammers
-/// the peer's accept path and burns CPU without giving the OS any time to
-/// observe a connection refusal.
-pub const MIN_RECONNECT_INITIAL_MS: u64 = 10;
-
-/// `reconnect_initial_ms` upper bound (60 s). If the initial step is
-/// already a minute, the curve never gets to retry quickly after a real
-/// outage clears.
-pub const MAX_RECONNECT_INITIAL_MS: u64 = 60_000;
-
-/// `reconnect_max_ms` lower bound — should give the backoff curve room to
-/// double at least a few times above `reconnect_initial_ms`'s floor.
-pub const MIN_RECONNECT_MAX_MS: u64 = 100;
-
-/// `reconnect_max_ms` upper bound (10 minutes). Capped-exponential with a
-/// 10-minute ceiling is already a very gentle retry; longer ceilings just
-/// hide outages.
-pub const MAX_RECONNECT_MAX_MS: u64 = 600_000;
-
 /// Inputs that distinguish one `tcpc:` endpoint from another: where to dial,
-/// what to call it, and the per-endpoint knobs from the query string with
-/// CLAUDE.md defaults already substituted. `identity` carries the filter /
-/// sniffer / group / capacity bundle (CLAUDE.md "Filters, group, sniffer,
-/// and learn/seq capacities travel with the `*Spec`"); the reader applies
-/// the in-filter snapshot, the router applies out-filter / sniffer / group
-/// from this same bundle.
+/// what to call it, and the reconnect curve. The `reconnect_*_ms` fields are
+/// always the hardcoded `tcpc:` curve at the user-facing layer (CLAUDE.md
+/// "Hardcoded plumbing knobs"); the field is exposed on the Spec so tests
+/// can shrink the curve to keep test runtimes tight. `identity` carries the
+/// filter / sniffer / group bundle (CLAUDE.md "Filters, group, sniffer
+/// travel with the `*Spec`"); the reader applies the in-filter snapshot,
+/// the router applies out-filter / sniffer / group from this same bundle.
 pub struct TcpClientSpec {
     pub host: String,
     pub port: u16,
@@ -56,28 +36,23 @@ pub struct TcpClientSpec {
     pub name: String,
     pub reconnect_initial_ms: u64,
     pub reconnect_max_ms: u64,
-    pub read_buf_bytes: usize,
     pub identity: IdentityFlags,
 }
 
 impl TcpClientSpec {
-    /// Build a runtime `TcpClientSpec` from the parsed-but-not-defaulted
-    /// `TcpClientEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
-    /// defaults for any unset knob. The spawner supplies `endpoint_id` and
-    /// `name` because the parser doesn't allocate IDs. The TxQueue's depth
-    /// (`tx_queue_frames`) is consumed by the spawner before the spec is
-    /// built — it sizes the queue and never appears here.
+    /// Build a runtime `TcpClientSpec` from the parsed `TcpClientEndpoint`,
+    /// stamping the hardcoded reconnect curve. The spawner supplies
+    /// `endpoint_id` and `name` because the parser doesn't allocate IDs. The
+    /// TxQueue's depth (`tx_queue_frames`) is consumed by the spawner before
+    /// the spec is built — it sizes the queue and never appears here.
     pub fn from_endpoint(ep: TcpClientEndpoint, endpoint_id: EndpointId, name: String) -> Self {
         Self {
             host: ep.host,
             port: ep.port,
             endpoint_id,
             name,
-            reconnect_initial_ms: ep
-                .reconnect_initial_ms
-                .unwrap_or(DEFAULT_RECONNECT_INITIAL_MS),
-            reconnect_max_ms: ep.reconnect_max_ms.unwrap_or(DEFAULT_RECONNECT_MAX_MS),
-            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
+            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
+            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
             identity: ep.identity,
         }
     }
@@ -112,7 +87,6 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
         name: _,
         reconnect_initial_ms,
         reconnect_max_ms,
-        read_buf_bytes,
         identity,
     } = spec;
     let TcpClientWiring {
@@ -163,9 +137,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
             &frame_tx,
             &tx_queue,
             &cancel,
-            read_buf_bytes,
             &identity.filters,
-            identity.seq_tracker_capacity,
         )
         .await
         {
@@ -270,25 +242,6 @@ mod tests {
         let spec = TcpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
-        assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
-    }
-
-    #[test]
-    fn spec_overrides_from_endpoint() {
-        use crate::endpoint::spec::CommonQuery;
-        let ep = TcpClientEndpoint {
-            reconnect_initial_ms: Some(50),
-            reconnect_max_ms: Some(2000),
-            common: CommonQuery {
-                read_buf_bytes: Some(1024),
-                tx_queue_frames: Some(8),
-            },
-            ..TcpClientEndpoint::default()
-        };
-        let spec = TcpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
-        assert_eq!(spec.reconnect_initial_ms, 50);
-        assert_eq!(spec.reconnect_max_ms, 2000);
-        assert_eq!(spec.read_buf_bytes, 1024);
     }
 
     #[tokio::test]

@@ -30,7 +30,7 @@ use crate::endpoint::tcp::client::{TcpClientSpec, TcpClientWiring};
 use crate::endpoint::tcp::server::{TcpServerSpec, TcpServerWiring};
 use crate::endpoint::tx_queue::TxQueue;
 use crate::endpoint::udp::client::{UdpClientSpec, UdpClientWiring};
-use crate::endpoint::udp::server::{UdpServerSpec, UdpServerWiring};
+use crate::endpoint::udp::server::{DEFAULT_PEER_CAPACITY, UdpServerSpec, UdpServerWiring};
 use crate::router::RouterWiring;
 use crate::stats::StatsEvent;
 
@@ -38,11 +38,6 @@ use crate::stats::StatsEvent;
 /// `await` on full — backpressure flows to readers rather than silently
 /// dropping frames.
 const INGRESS_QUEUE_FRAMES: usize = 1024;
-
-/// Default udps peer table size when the spec doesn't override (matches
-/// the constant `udp::server` uses internally). Used by `n_estimate` for
-/// channel sizing — we never instantiate this many peers up front.
-const DEFAULT_UDPS_PEER_CAPACITY: usize = 256;
 
 /// CLAUDE.md "Stats sink architecture": `tcps_peer_budget` defaults to 64
 /// per listener as a sizing hint (`tcps:` has no hard cap on accepted
@@ -204,14 +199,12 @@ fn warn_on_groups_without_dedup(specs: &[EndpointSpec], dedup_ms: u64) {
 }
 
 /// CLAUDE.md "Stats sink architecture": channel sizing formula
-/// N = top-level + sum(udps_peer_capacity) + sum(tcps_peer_budget).
+/// N = top-level + sum(DEFAULT_PEER_CAPACITY for each udps:) + sum(tcps_peer_budget).
 fn estimate_registry_size(specs: &[EndpointSpec]) -> usize {
     let mut n = specs.len();
     for s in specs {
         match &s.kind {
-            EndpointKind::UdpServer(e) => {
-                n = n.saturating_add(e.udps_peer_capacity.unwrap_or(DEFAULT_UDPS_PEER_CAPACITY))
-            }
+            EndpointKind::UdpServer(_) => n = n.saturating_add(DEFAULT_PEER_CAPACITY),
             EndpointKind::TcpServer(_) => n = n.saturating_add(DEFAULT_TCPS_PEER_BUDGET),
             _ => {}
         }
@@ -476,13 +469,7 @@ mod tests {
             EndpointSpec::parse("tcps:0.0.0.0:2").unwrap(),
         ];
         let n = estimate_registry_size(&specs);
-        assert_eq!(n, 2 + DEFAULT_UDPS_PEER_CAPACITY + DEFAULT_TCPS_PEER_BUDGET);
-    }
-
-    #[test]
-    fn estimate_registry_size_uses_udps_peer_capacity_override() {
-        let specs = vec![EndpointSpec::parse("udps:0.0.0.0:1?udps_peer_capacity=8").unwrap()];
-        assert_eq!(estimate_registry_size(&specs), 1 + 8);
+        assert_eq!(n, 2 + DEFAULT_PEER_CAPACITY + DEFAULT_TCPS_PEER_BUDGET);
     }
 
     fn group_names(groups: &[(Arc<str>, usize)]) -> Vec<(&str, usize)> {

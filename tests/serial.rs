@@ -42,8 +42,6 @@ async fn run_returns_when_cancelled_while_open_retrying() {
         flow_control: SerialFlowControl::None,
         endpoint_id,
         name: "test-serial".to_string(),
-        serial_reopen_ms: 1000,
-        read_buf_bytes: 8192,
         identity: IdentityFlags::default(),
     };
     let wiring = SerialWiring {
@@ -86,9 +84,7 @@ async fn pty_pair_round_trips_frame() {
                 &frame_tx,
                 &tx_queue,
                 &cancel,
-                4096,
                 &Filters::default(),
-                32,
             )
             .await
         })
@@ -152,9 +148,7 @@ async fn session_surfaces_disconnected_on_slave_drop() {
                 &frame_tx,
                 &tx_queue,
                 &cancel,
-                4096,
                 &Filters::default(),
-                32,
             )
             .await
         })

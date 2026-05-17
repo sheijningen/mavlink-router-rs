@@ -29,8 +29,6 @@ async fn udps_peer_inherits_parent_identity() {
     let parent_identity = IdentityFlags {
         sniffer: true,
         group: Some(Arc::from("uplink")),
-        learn_capacity: 13,
-        seq_tracker_capacity: 5,
         filters: Filters {
             allow_msgid_out: vec![MsgIdRange::single(0), MsgIdRange { lo: 30, hi: 40 }],
             block_src_comp_in: vec![U8Range::single(42)],

@@ -13,11 +13,11 @@ use tracing::{Instrument, debug, info_span, trace, warn};
 use super::super::EndpointId;
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
-    DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
+    DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, READ_BUF_BYTES,
 };
 use super::super::events::RouterFrame;
 use super::super::filters::Filters;
-use super::super::identity_flags::IdentityFlags;
+use super::super::identity_flags::{IdentityFlags, SEQ_TRACKER_CAPACITY};
 use super::super::seq_tracker::SeqTracker;
 use super::super::session::forward_inbound_frames;
 use super::super::socket::bind_udp_dual_stack;
@@ -41,22 +41,19 @@ const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REVERT_TICK: Duration = Duration::from_secs(1);
 
 /// Inputs that distinguish one `udpc:` endpoint from another: where to send,
-/// what to call it, and the per-endpoint knobs from the query string with
-/// CLAUDE.md defaults already substituted. The `reconnect_*_ms` fields are
-/// always the `tcpc:` curve (CLAUDE.md "Bind/open failure at startup is not
-/// fatal" + "Same reasoning applies to `udps:`" — `udpc:` follows the same
-/// rule) — `udpc:` does not expose per-endpoint bind-retry overrides in v1.
-/// `identity` carries the filter / sniffer / group / capacity bundle
-/// (CLAUDE.md "Filters, group, sniffer, and learn/seq capacities travel
-/// with the `*Spec`"); the reader applies the in-filter snapshot, the
-/// router applies out-filter / sniffer / group from the same bundle.
+/// what to call it, and the latch-idle threshold. The `reconnect_*_ms`
+/// fields are always the hardcoded `tcpc:` curve (CLAUDE.md "Hardcoded
+/// plumbing knobs"); `udpc:` reuses the curve for its local-bind retry.
+/// `identity` carries the filter / sniffer / group bundle (CLAUDE.md
+/// "Filters, group, sniffer travel with the `*Spec`"); the reader applies
+/// the in-filter snapshot, the router applies out-filter / sniffer / group
+/// from the same bundle.
 pub struct UdpClientSpec {
     pub host: String,
     pub port: u16,
     pub endpoint_id: EndpointId,
     pub name: String,
     pub latch_idle_secs: u64,
-    pub read_buf_bytes: usize,
     pub reconnect_initial_ms: u64,
     pub reconnect_max_ms: u64,
     pub identity: IdentityFlags,
@@ -76,7 +73,6 @@ impl UdpClientSpec {
             endpoint_id,
             name,
             latch_idle_secs: ep.latch_idle_secs.unwrap_or(DEFAULT_LATCH_IDLE_SECS),
-            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
             identity: ep.identity,
@@ -212,7 +208,6 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
         endpoint_id,
         name: _,
         latch_idle_secs,
-        read_buf_bytes,
         reconnect_initial_ms,
         reconnect_max_ms,
         identity,
@@ -249,9 +244,9 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
     // see `send_frame` for the recovery / failure writes.
     stats.store_state(EndpointState::Connected);
 
-    let mut framer = Framer::with_capacity(read_buf_bytes);
+    let mut framer = Framer::with_capacity(READ_BUF_BYTES);
     let mut framer_counters = FramerCounters::new();
-    let mut seq_tracker = SeqTracker::new(identity.seq_tracker_capacity);
+    let mut seq_tracker = SeqTracker::new(SEQ_TRACKER_CAPACITY);
     let mut buf = vec![0u8; MAX_DATAGRAM_BYTES];
 
     let mut revert_tick = interval(REVERT_TICK);
@@ -432,25 +427,18 @@ mod tests {
         let ep = UdpClientEndpoint::default();
         let spec = UdpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.latch_idle_secs, DEFAULT_LATCH_IDLE_SECS);
-        assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     }
 
     #[test]
     fn spec_overrides_from_endpoint() {
-        use crate::endpoint::spec::CommonQuery;
         let ep = UdpClientEndpoint {
             latch_idle_secs: Some(5),
-            common: CommonQuery {
-                tx_queue_frames: Some(8),
-                read_buf_bytes: Some(1024),
-            },
             ..UdpClientEndpoint::default()
         };
         let spec = UdpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.latch_idle_secs, 5);
-        assert_eq!(spec.read_buf_bytes, 1024);
     }
 
     #[test]

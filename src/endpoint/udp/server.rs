@@ -14,11 +14,10 @@ use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
-    DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
-    DEFAULT_TX_QUEUE_FRAMES,
+    DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES, READ_BUF_BYTES,
 };
 use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
-use super::super::identity_flags::IdentityFlags;
+use super::super::identity_flags::{IdentityFlags, SEQ_TRACKER_CAPACITY};
 use super::super::peer_endpoint_name;
 use super::super::seq_tracker::SeqTracker;
 use super::super::session::forward_inbound_frames;
@@ -29,19 +28,15 @@ use super::super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_IDLE_SECS: u64 = 60;
-const DEFAULT_PEER_CAPACITY: usize = 256;
 
-/// Practical lower bound: 0 would silently degenerate to a 1-peer rotating
-/// slot (admission evicts the previous peer before inserting), so the parser
-/// rejects 0 and forces an explicit floor of 1.
-pub const MIN_UDPS_PEER_CAPACITY: usize = 1;
-
-/// Practical upper bound on a single `udps:` listener's peer table.
-/// Deployments that need higher capacity should split the bind across
-/// listeners (or processes) rather than fight RMR's per-listener memory
-/// plus task-spawn budget — each admitted peer holds a `TxQueue` (~4KB at
-/// the default queue depth) and a writer task.
-pub const MAX_UDPS_PEER_CAPACITY: usize = 1024;
+/// Per-listener cap on simultaneously-tracked peers (LRU-evicted by
+/// last-seen). Hardcoded at the user-facing layer — 256 is well above any
+/// realistic single-listener fleet size; deployments that need more peers
+/// should split across listeners or processes rather than tune the cap.
+/// Each admitted peer holds a `TxQueue` (~4KB at the default queue depth)
+/// and a writer task. Exposed on [`UdpServerSpec`] so tests can shrink it
+/// to exercise the eviction branch without 256 dummy peers.
+pub const DEFAULT_PEER_CAPACITY: usize = 256;
 
 /// Default `idle_secs` lower bound — 0 would reap every peer on the very
 /// next reaper tick.
@@ -71,12 +66,12 @@ struct PeerEntry {
 }
 
 /// Inputs that distinguish one `udps:` listener from another: where to bind,
-/// what to call it, and the per-listener knobs from the query string with
-/// CLAUDE.md defaults already substituted. The `reconnect_*_ms` fields are
-/// always the `tcpc:` curve (CLAUDE.md: "`tcps:` bind-retry shares the
-/// `tcpc:` curve, no per-listener override. Same reasoning applies to
-/// `udps:`") — `udps:` does not expose per-listener reconnect overrides in
-/// v1. `identity` carries the filter / sniffer / group / capacity bundle —
+/// what to call it, and the peer idle-reap threshold. The `reconnect_*_ms`
+/// fields are always the hardcoded `tcpc:` curve (CLAUDE.md "Hardcoded
+/// plumbing knobs"); the field stays on the Spec so bind-retry tests can
+/// shrink the curve. `peer_capacity` stays mutable for the same reason —
+/// production defaults it to [`DEFAULT_PEER_CAPACITY`], eviction tests
+/// shrink it. `identity` carries the filter / sniffer / group bundle —
 /// inherited by every learned peer at admission time (CLAUDE.md "Sub-
 /// endpoints inherit their parent's `IdentityFlags` by clone at spawn
 /// time"); the per-peer reader applies the in-filter snapshot, the router
@@ -87,7 +82,6 @@ pub struct UdpServerSpec {
     pub parent_name: String,
     pub idle_secs: u64,
     pub peer_capacity: usize,
-    pub read_buf_bytes: usize,
     pub tx_queue_frames: usize,
     pub reconnect_initial_ms: u64,
     pub reconnect_max_ms: u64,
@@ -109,8 +103,7 @@ impl UdpServerSpec {
             parent_id,
             parent_name,
             idle_secs: ep.idle_secs.unwrap_or(DEFAULT_IDLE_SECS),
-            peer_capacity: ep.udps_peer_capacity.unwrap_or(DEFAULT_PEER_CAPACITY),
-            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
+            peer_capacity: DEFAULT_PEER_CAPACITY,
             tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
@@ -288,10 +281,10 @@ async fn handle_packet(
 
         let entry = PeerEntry {
             child_id,
-            framer: Framer::with_capacity(ctx.spec.read_buf_bytes),
+            framer: Framer::with_capacity(READ_BUF_BYTES),
             last_seen: Instant::now(),
             framer_counters: FramerCounters::new(),
-            seq_tracker: SeqTracker::new(ctx.spec.identity.seq_tracker_capacity),
+            seq_tracker: SeqTracker::new(SEQ_TRACKER_CAPACITY),
             stats,
             writer_cancel,
         };
@@ -430,7 +423,6 @@ mod tests {
         let spec = UdpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.idle_secs, DEFAULT_IDLE_SECS);
         assert_eq!(spec.peer_capacity, DEFAULT_PEER_CAPACITY);
-        assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
         assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
@@ -441,17 +433,13 @@ mod tests {
         use crate::endpoint::spec::CommonQuery;
         let ep = UdpServerEndpoint {
             idle_secs: Some(10),
-            udps_peer_capacity: Some(4),
             common: CommonQuery {
-                read_buf_bytes: Some(1024),
                 tx_queue_frames: Some(8),
             },
             ..UdpServerEndpoint::default()
         };
         let spec = UdpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.idle_secs, 10);
-        assert_eq!(spec.peer_capacity, 4);
-        assert_eq!(spec.read_buf_bytes, 1024);
         assert_eq!(spec.tx_queue_frames, 8);
         // Reconnect curve stays at the tcpc defaults — CLAUDE.md "udps: bind-
         // retry shares the tcpc: curve, no per-listener override".
@@ -556,7 +544,6 @@ mod tests {
             parent_name: "test".to_string(),
             idle_secs: DEFAULT_IDLE_SECS,
             peer_capacity: 2,
-            read_buf_bytes: DEFAULT_READ_BUF_BYTES,
             tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,

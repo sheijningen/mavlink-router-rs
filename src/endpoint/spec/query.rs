@@ -1,18 +1,10 @@
 use std::collections::BTreeSet;
 
-use super::super::defaults::{
-    MAX_READ_BUF_BYTES, MAX_TX_QUEUE_FRAMES, MIN_READ_BUF_BYTES, MIN_TX_QUEUE_FRAMES,
-};
+use super::super::defaults::{MAX_TX_QUEUE_FRAMES, MIN_TX_QUEUE_FRAMES};
 use super::super::filters::Filters;
 use super::super::identity_flags::IdentityFlags;
-use super::super::serial::{MAX_SERIAL_REOPEN_MS, MIN_SERIAL_REOPEN_MS};
-use super::super::tcp::client::{
-    MAX_RECONNECT_INITIAL_MS, MAX_RECONNECT_MAX_MS, MIN_RECONNECT_INITIAL_MS, MIN_RECONNECT_MAX_MS,
-};
 use super::super::udp::client::{MAX_LATCH_IDLE_SECS, MIN_LATCH_IDLE_SECS};
-use super::super::udp::server::{
-    MAX_IDLE_SECS, MAX_UDPS_PEER_CAPACITY, MIN_IDLE_SECS, MIN_UDPS_PEER_CAPACITY,
-};
+use super::super::udp::server::{MAX_IDLE_SECS, MIN_IDLE_SECS};
 use super::bounds::{check_u64_range, check_usize_range};
 use super::endpoint_kinds::{
     CommonQuery, SerialEndpoint, SerialFlowControl, TcpClientEndpoint, TcpServerEndpoint,
@@ -23,13 +15,13 @@ use super::error::SpecError;
 /// Plumbing keys handled by [`CommonQuery::apply`]. Identity-side keys live
 /// on [`IdentityFlags::KEYS`] and [`Filters::KEYS`]; the "did you mean"
 /// suggestion walks all three.
-pub const COMMON_KEYS: &[&str] = &["read_buf_bytes", "tx_queue_frames"];
+pub const COMMON_KEYS: &[&str] = &["tx_queue_frames"];
 
-const SERIAL_EXTRA: &[&str] = &["flow_control", "serial_reopen_ms"];
-const UDPS_EXTRA: &[&str] = &["idle_secs", "udps_peer_capacity"];
+const SERIAL_EXTRA: &[&str] = &["flow_control"];
+const UDPS_EXTRA: &[&str] = &["idle_secs"];
 const UDPC_EXTRA: &[&str] = &["latch_idle_secs"];
 const TCPS_EXTRA: &[&str] = &[];
-const TCPC_EXTRA: &[&str] = &["reconnect_initial_ms", "reconnect_max_ms"];
+const TCPC_EXTRA: &[&str] = &[];
 
 fn known_keys_for(scheme: &str) -> &'static [&'static str] {
     match scheme {
@@ -76,16 +68,6 @@ impl CommonQuery {
     /// handling), or `Err` on a malformed value.
     pub fn apply(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
         match key {
-            "read_buf_bytes" => {
-                let n = parse_usize(value, "read_buf_bytes")?;
-                self.read_buf_bytes = Some(check_usize_range(
-                    n,
-                    "read_buf_bytes",
-                    MIN_READ_BUF_BYTES,
-                    MAX_READ_BUF_BYTES,
-                )?);
-                Ok(true)
-            }
             "tx_queue_frames" => {
                 let n = parse_usize(value, "tx_queue_frames")?;
                 self.tx_queue_frames = Some(check_usize_range(
@@ -124,16 +106,6 @@ pub struct SerialApplier<'a>(pub &'a mut SerialEndpoint);
 impl QueryApplier for SerialApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
         match key {
-            "serial_reopen_ms" => {
-                let n = parse_u64(value, "serial_reopen_ms")?;
-                self.0.serial_reopen_ms = Some(check_u64_range(
-                    n,
-                    "serial_reopen_ms",
-                    MIN_SERIAL_REOPEN_MS,
-                    MAX_SERIAL_REOPEN_MS,
-                )?);
-                Ok(true)
-            }
             "flow_control" => {
                 self.0.flow_control = parse_flow_control(value)?;
                 Ok(true)
@@ -165,16 +137,6 @@ impl QueryApplier for UdpServerApplier<'_> {
                     "idle_secs",
                     MIN_IDLE_SECS,
                     MAX_IDLE_SECS,
-                )?);
-                Ok(true)
-            }
-            "udps_peer_capacity" => {
-                let n = parse_usize(value, "udps_peer_capacity")?;
-                self.0.udps_peer_capacity = Some(check_usize_range(
-                    n,
-                    "udps_peer_capacity",
-                    MIN_UDPS_PEER_CAPACITY,
-                    MAX_UDPS_PEER_CAPACITY,
                 )?);
                 Ok(true)
             }
@@ -210,29 +172,7 @@ impl QueryApplier for TcpServerApplier<'_> {
 pub struct TcpClientApplier<'a>(pub &'a mut TcpClientEndpoint);
 impl QueryApplier for TcpClientApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
-        match key {
-            "reconnect_initial_ms" => {
-                let n = parse_u64(value, "reconnect_initial_ms")?;
-                self.0.reconnect_initial_ms = Some(check_u64_range(
-                    n,
-                    "reconnect_initial_ms",
-                    MIN_RECONNECT_INITIAL_MS,
-                    MAX_RECONNECT_INITIAL_MS,
-                )?);
-                Ok(true)
-            }
-            "reconnect_max_ms" => {
-                let n = parse_u64(value, "reconnect_max_ms")?;
-                self.0.reconnect_max_ms = Some(check_u64_range(
-                    n,
-                    "reconnect_max_ms",
-                    MIN_RECONNECT_MAX_MS,
-                    MAX_RECONNECT_MAX_MS,
-                )?);
-                Ok(true)
-            }
-            _ => apply_shared(&mut self.0.identity, &mut self.0.common, key, value),
-        }
+        apply_shared(&mut self.0.identity, &mut self.0.common, key, value)
     }
 }
 
@@ -405,42 +345,6 @@ mod tests {
         }
     }
 
-    // -- udps_peer_capacity (1..=1024) --
-
-    #[test]
-    fn udps_peer_capacity_zero_rejected() {
-        assert_bounds_err(
-            "udps:0.0.0.0:1?udps_peer_capacity=0",
-            "udps_peer_capacity",
-            1,
-            1024,
-            0,
-        );
-    }
-
-    #[test]
-    fn udps_peer_capacity_one_accepted() {
-        let s = parse_ok("udps:0.0.0.0:1?udps_peer_capacity=1");
-        assert_eq!(as_udps(&s).udps_peer_capacity, Some(1));
-    }
-
-    #[test]
-    fn udps_peer_capacity_max_accepted() {
-        let s = parse_ok("udps:0.0.0.0:1?udps_peer_capacity=1024");
-        assert_eq!(as_udps(&s).udps_peer_capacity, Some(1024));
-    }
-
-    #[test]
-    fn udps_peer_capacity_above_max_rejected() {
-        assert_bounds_err(
-            "udps:0.0.0.0:1?udps_peer_capacity=1025",
-            "udps_peer_capacity",
-            1,
-            1024,
-            1025,
-        );
-    }
-
     // -- idle_secs (1..=86400) --
 
     #[test]
@@ -483,78 +387,6 @@ mod tests {
         );
     }
 
-    // -- serial_reopen_ms (100..=60000) --
-
-    #[test]
-    fn serial_reopen_ms_below_min_rejected() {
-        assert_bounds_err(
-            "serial:/dev/foo:9600?serial_reopen_ms=50",
-            "serial_reopen_ms",
-            100,
-            60_000,
-            50,
-        );
-    }
-
-    #[test]
-    fn serial_reopen_ms_above_max_rejected() {
-        assert_bounds_err(
-            "serial:/dev/foo:9600?serial_reopen_ms=60001",
-            "serial_reopen_ms",
-            100,
-            60_000,
-            60_001,
-        );
-    }
-
-    // -- reconnect_initial_ms (10..=60000) --
-
-    #[test]
-    fn reconnect_initial_ms_below_min_rejected() {
-        assert_bounds_err(
-            "tcpc:h:1?reconnect_initial_ms=5",
-            "reconnect_initial_ms",
-            10,
-            60_000,
-            5,
-        );
-    }
-
-    #[test]
-    fn reconnect_initial_ms_above_max_rejected() {
-        assert_bounds_err(
-            "tcpc:h:1?reconnect_initial_ms=60001",
-            "reconnect_initial_ms",
-            10,
-            60_000,
-            60_001,
-        );
-    }
-
-    // -- reconnect_max_ms (100..=600000) --
-
-    #[test]
-    fn reconnect_max_ms_below_min_rejected() {
-        assert_bounds_err(
-            "tcpc:h:1?reconnect_max_ms=50",
-            "reconnect_max_ms",
-            100,
-            600_000,
-            50,
-        );
-    }
-
-    #[test]
-    fn reconnect_max_ms_above_max_rejected() {
-        assert_bounds_err(
-            "tcpc:h:1?reconnect_max_ms=600001",
-            "reconnect_max_ms",
-            100,
-            600_000,
-            600_001,
-        );
-    }
-
     // -- tx_queue_frames (1..=65536) — CommonQuery on every scheme --
 
     #[test]
@@ -576,78 +408,6 @@ mod tests {
             1,
             65_536,
             65_537,
-        );
-    }
-
-    // -- read_buf_bytes (1024..=1048576) --
-
-    #[test]
-    fn read_buf_bytes_below_min_rejected() {
-        assert_bounds_err(
-            "tcpc:h:1?read_buf_bytes=512",
-            "read_buf_bytes",
-            1024,
-            1_048_576,
-            512,
-        );
-    }
-
-    #[test]
-    fn read_buf_bytes_above_max_rejected() {
-        assert_bounds_err(
-            "tcpc:h:1?read_buf_bytes=1048577",
-            "read_buf_bytes",
-            1024,
-            1_048_576,
-            1_048_577,
-        );
-    }
-
-    // -- learn_capacity (1..=1024) — IdentityFlags --
-
-    #[test]
-    fn learn_capacity_zero_rejected() {
-        assert_bounds_err(
-            "udps:0.0.0.0:1?learn_capacity=0",
-            "learn_capacity",
-            1,
-            1024,
-            0,
-        );
-    }
-
-    #[test]
-    fn learn_capacity_above_max_rejected() {
-        assert_bounds_err(
-            "udps:0.0.0.0:1?learn_capacity=1025",
-            "learn_capacity",
-            1,
-            1024,
-            1025,
-        );
-    }
-
-    // -- seq_tracker_capacity (1..=1024) — IdentityFlags --
-
-    #[test]
-    fn seq_tracker_capacity_zero_rejected() {
-        assert_bounds_err(
-            "udps:0.0.0.0:1?seq_tracker_capacity=0",
-            "seq_tracker_capacity",
-            1,
-            1024,
-            0,
-        );
-    }
-
-    #[test]
-    fn seq_tracker_capacity_above_max_rejected() {
-        assert_bounds_err(
-            "udps:0.0.0.0:1?seq_tracker_capacity=1025",
-            "seq_tracker_capacity",
-            1,
-            1024,
-            1025,
         );
     }
 
@@ -737,12 +497,6 @@ mod tests {
     // -- scheme-specific knobs reach their scheme --
 
     #[test]
-    fn serial_reopen_ms_typed() {
-        let e = as_serial(&parse_ok("serial:/dev/foo:9600?serial_reopen_ms=750")).clone();
-        assert_eq!(e.serial_reopen_ms, Some(750));
-    }
-
-    #[test]
     fn serial_flow_control_default_none() {
         let e = as_serial(&parse_ok("serial:/dev/foo:9600")).clone();
         assert_eq!(
@@ -826,27 +580,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tcpc_specific_key_on_tcps_is_unknown() {
-        match parse_err("tcps:0.0.0.0:5760?reconnect_initial_ms=250") {
-            SpecError::UnknownQueryKey { key, scheme, .. } => {
-                assert_eq!(key, "reconnect_initial_ms");
-                assert_eq!(scheme, "tcps");
-            }
-            other => panic!("wrong error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn serial_specific_key_on_udps_is_unknown() {
-        match parse_err("udps:0.0.0.0:1?serial_reopen_ms=1000") {
-            SpecError::UnknownQueryKey { key, scheme, .. } => {
-                assert_eq!(key, "serial_reopen_ms");
-                assert_eq!(scheme, "udps");
-            }
-            other => panic!("wrong error: {other:?}"),
-        }
-    }
+    // (`serial_flow_control_rejected_on_non_serial_scheme` above already
+    // covers a serial-only key rejected on `udps:`; no separate case here.)
 
     // -- did-you-mean suggestions --
 
@@ -1007,11 +742,7 @@ mod tests {
 
     #[test]
     fn plumbing_keys_typed() {
-        let e = as_tcpc(&parse_ok(
-            "tcpc:x:1?read_buf_bytes=4096&tx_queue_frames=128",
-        ))
-        .clone();
-        assert_eq!(e.common.read_buf_bytes, Some(4096));
+        let e = as_tcpc(&parse_ok("tcpc:x:1?tx_queue_frames=128")).clone();
         assert_eq!(e.common.tx_queue_frames, Some(128));
     }
 

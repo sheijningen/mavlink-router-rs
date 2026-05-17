@@ -15,11 +15,11 @@
 //!   produces `gap = 255`).
 //! - First observation of a `(sysid, compid)` → no gap; record and return.
 //!
-//! Capacity is the per-endpoint `seq_tracker_capacity` knob (default 32,
-//! parser-clamped 1..=1024). LRU eviction by oldest `last_seen` on
-//! insert when full. The seq tracker is **independent** of the learn
-//! table — they share no state per the locked decision "the reader-side
-//! seq tracker uses an independent LRU at seq_tracker_capacity".
+//! Capacity is the hardcoded
+//! [`crate::endpoint::identity_flags::SEQ_TRACKER_CAPACITY`] (32). LRU
+//! eviction by oldest `last_seen` on insert when full. The seq tracker is
+//! **independent** of the learn table — they share no state per the locked
+//! decision "the reader-side seq tracker uses an independent LRU".
 
 use tokio::time::Instant;
 

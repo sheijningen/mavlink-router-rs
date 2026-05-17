@@ -60,7 +60,7 @@ use tracing::{debug, trace};
 
 use crate::endpoint::EndpointId;
 use crate::endpoint::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
-use crate::endpoint::identity_flags::IdentityFlags;
+use crate::endpoint::identity_flags::{IdentityFlags, LEARN_CAPACITY};
 use crate::endpoint::stats::{EndpointState, EndpointStats};
 use crate::endpoint::tx_queue::TxQueue;
 use crate::stats::StatsEvent;
@@ -194,9 +194,9 @@ async fn handle_event(
             identity,
         } => {
             if let Some(group) = &identity.group {
-                groups.join(group.clone(), identity.learn_capacity);
+                groups.join(group.clone(), LEARN_CAPACITY);
             }
-            let learn = LearnTable::new(identity.learn_capacity);
+            let learn = LearnTable::new(LEARN_CAPACITY);
             let entry = RegisteredEndpoint {
                 name: name.clone(),
                 is_top_level: true,
@@ -234,9 +234,9 @@ async fn handle_event(
             identity,
         } => {
             if let Some(group) = &identity.group {
-                groups.join(group.clone(), identity.learn_capacity);
+                groups.join(group.clone(), LEARN_CAPACITY);
             }
-            let learn = LearnTable::new(identity.learn_capacity);
+            let learn = LearnTable::new(LEARN_CAPACITY);
             let entry = RegisteredEndpoint {
                 name: name.clone(),
                 is_top_level: false,

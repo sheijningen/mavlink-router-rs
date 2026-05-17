@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::{EndpointIdAllocator, spec::TcpClientEndpoint, stats::EndpointState};
 
-use crate::common::tcp::{spawn_tcpc, spawn_tcps};
+use crate::common::tcp::{spawn_tcpc_with, spawn_tcps};
 use crate::common::{shutdown_all, wait_for_state};
 
 #[tokio::test]
@@ -40,12 +40,17 @@ async fn tcpc_transitions_through_connect_then_reconnect_cycle() {
         .expect("bind test server");
     let addr = listener.local_addr().expect("local_addr");
 
-    let endpoint = TcpClientEndpoint {
-        reconnect_initial_ms: Some(50),
-        reconnect_max_ms: Some(500),
-        ..TcpClientEndpoint::default()
-    };
-    let h = spawn_tcpc(&allocator, cancel.clone(), addr, endpoint, "c");
+    let h = spawn_tcpc_with(
+        &allocator,
+        cancel.clone(),
+        addr,
+        TcpClientEndpoint::default(),
+        "c",
+        |spec| {
+            spec.reconnect_initial_ms = 50;
+            spec.reconnect_max_ms = 500;
+        },
+    );
 
     // Reconnecting at spawn time (harness constructs EndpointStats::new(
     // Reconnecting) just like the production spawner will).

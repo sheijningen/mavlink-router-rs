@@ -1,5 +1,5 @@
 //! `serial:` endpoint: open the device, run the shared session loop, and
-//! reopen on disconnect via a fixed `serial_reopen_ms` poll.
+//! reopen on disconnect via the fixed [`REOPEN_DELAY`] poll.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +10,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info_span, trace, warn};
 
 use super::EndpointId;
-use super::defaults::DEFAULT_READ_BUF_BYTES;
 use super::events::RouterFrame;
 use super::identity_flags::IdentityFlags;
 use super::session::{SessionOutcome, run_session};
@@ -19,44 +18,33 @@ use super::stats::{EndpointState, EndpointStats};
 use super::tx_queue::TxQueue;
 use super::wait_or_cancel;
 
-const DEFAULT_SERIAL_REOPEN_MS: u64 = 1000;
-
-/// `serial_reopen_ms` lower bound — below 100 ms the open-retry loop
-/// spins on a missing device and burns CPU without speeding recovery
-/// (USB enumeration is on the order of seconds).
-pub const MIN_SERIAL_REOPEN_MS: u64 = 100;
-
-/// `serial_reopen_ms` upper bound (60 seconds). Devices that take longer
-/// to reappear typically need an operator action anyway, so polling
-/// slower than once a minute just delays the eventual reopen.
-pub const MAX_SERIAL_REOPEN_MS: u64 = 60_000;
+/// Fixed hot-replug poll interval. Below ~100 ms the open-retry loop spins
+/// on a missing device for nothing (USB re-enumeration is on the order of
+/// seconds); above ~1 s the operator-visible MTTR after a replug climbs
+/// for no benefit. 1 s is the right answer for every deployment.
+const REOPEN_DELAY: Duration = Duration::from_millis(1000);
 
 /// Inputs that distinguish one `serial:` endpoint from another: which device
-/// to open at what baud (with optional hardware flow control), what to call
-/// it, and the per-endpoint knobs from the query string with CLAUDE.md
-/// defaults already substituted. `identity` carries the filter / sniffer /
-/// group / capacity bundle (CLAUDE.md "Filters, group, sniffer, and
-/// learn/seq capacities travel with the `*Spec`"); the reader applies the
-/// in-filter snapshot, the router applies out-filter / sniffer / group
-/// from the same bundle.
+/// to open at what baud (with optional hardware flow control) and what to
+/// call it. `identity` carries the filter / sniffer / group bundle
+/// (CLAUDE.md "Filters, group, sniffer travel with the `*Spec`"); the reader
+/// applies the in-filter snapshot, the router applies out-filter / sniffer /
+/// group from the same bundle.
 pub struct SerialSpec {
     pub path: String,
     pub baud: u32,
     pub flow_control: SerialFlowControl,
     pub endpoint_id: EndpointId,
     pub name: String,
-    pub serial_reopen_ms: u64,
-    pub read_buf_bytes: usize,
     pub identity: IdentityFlags,
 }
 
 impl SerialSpec {
     /// Build a runtime `SerialSpec` from the parsed-but-not-defaulted
-    /// `SerialEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
-    /// defaults for any unset knob. The spawner supplies `endpoint_id` and
-    /// `name` because the parser doesn't allocate IDs. The TxQueue's depth
-    /// (`tx_queue_frames`) is consumed by the spawner before the spec is
-    /// built — it sizes the queue and never appears here.
+    /// `SerialEndpoint` the CLI/TOML layer produced. The spawner supplies
+    /// `endpoint_id` and `name` because the parser doesn't allocate IDs. The
+    /// TxQueue's depth (`tx_queue_frames`) is consumed by the spawner before
+    /// the spec is built — it sizes the queue and never appears here.
     pub fn from_endpoint(ep: SerialEndpoint, endpoint_id: EndpointId, name: String) -> Self {
         Self {
             path: ep.path,
@@ -64,8 +52,6 @@ impl SerialSpec {
             flow_control: ep.flow_control,
             endpoint_id,
             name,
-            serial_reopen_ms: ep.serial_reopen_ms.unwrap_or(DEFAULT_SERIAL_REOPEN_MS),
-            read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
             identity: ep.identity,
         }
     }
@@ -86,7 +72,7 @@ pub struct SerialWiring {
 ///
 /// On startup, opens the configured device at `baud` with the requested
 /// flow-control. On open failure or mid-stream disconnect, polls every
-/// `serial_reopen_ms` (fixed; CLAUDE.md "devices appear or they don't —
+/// [`REOPEN_DELAY`] (fixed; CLAUDE.md "devices appear or they don't —
 /// backoff doesn't help") until the device is reachable again or the cancel
 /// token trips. The TxQueue is drained-and-discarded on every disconnect so a
 /// fresh device never inherits telemetry that aged out while unplugged
@@ -103,8 +89,6 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
         flow_control,
         endpoint_id,
         name: _,
-        serial_reopen_ms,
-        read_buf_bytes,
         identity,
     } = spec;
     let SerialWiring {
@@ -114,16 +98,13 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
         cancel,
     } = wiring;
 
-    let reopen_delay = Duration::from_millis(serial_reopen_ms);
-
     loop {
         if cancel.is_cancelled() {
             tx_queue.drain_and_discard();
             return;
         }
 
-        let stream = match open_until_cancel(&path, baud, flow_control, reopen_delay, &cancel).await
-        {
+        let stream = match open_until_cancel(&path, baud, flow_control, &cancel).await {
             OpenOutcome::Opened(s) => s,
             OpenOutcome::Cancelled => {
                 tx_queue.drain_and_discard();
@@ -147,9 +128,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
             &frame_tx,
             &tx_queue,
             &cancel,
-            read_buf_bytes,
             &identity.filters,
-            identity.seq_tracker_capacity,
         )
         .await
         {
@@ -163,7 +142,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
                 // Sleep one reopen interval before reattempting so we don't
                 // spin if the device disappeared and `open_until_cancel`
                 // would succeed immediately on a zombie path.
-                if !wait_or_cancel(&cancel, reopen_delay).await {
+                if !wait_or_cancel(&cancel, REOPEN_DELAY).await {
                     return;
                 }
             }
@@ -178,7 +157,7 @@ enum OpenOutcome {
     Cancelled,
 }
 
-/// Try to open the device, retrying every `reopen_delay` until success or
+/// Try to open the device, retrying every [`REOPEN_DELAY`] until success or
 /// cancellation. The poll interval is *fixed* — capped-exponential backoff is
 /// the wrong shape here because a missing serial device doesn't "come back
 /// faster" if we wait longer.
@@ -186,7 +165,6 @@ async fn open_until_cancel(
     path: &str,
     baud: u32,
     flow_control: SerialFlowControl,
-    reopen_delay: Duration,
     cancel: &CancellationToken,
 ) -> OpenOutcome {
     loop {
@@ -199,8 +177,8 @@ async fn open_until_cancel(
                 return OpenOutcome::Opened(s);
             }
             Err(e) => {
-                warn!(error = %e, %path, baud, "serial open failed; retrying after serial_reopen_ms");
-                if !wait_or_cancel(cancel, reopen_delay).await {
+                warn!(error = %e, %path, baud, "serial open failed; retrying");
+                if !wait_or_cancel(cancel, REOPEN_DELAY).await {
                     return OpenOutcome::Cancelled;
                 }
             }
@@ -229,41 +207,16 @@ fn try_open(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::spec::{CommonQuery, SerialEndpoint};
     use std::time::Duration;
     use tokio::time::timeout;
 
-    #[test]
-    fn spec_defaults_when_endpoint_unset() {
-        let ep = SerialEndpoint::default();
-        let spec = SerialSpec::from_endpoint(ep, EndpointId(0), "n".into());
-        assert_eq!(spec.serial_reopen_ms, DEFAULT_SERIAL_REOPEN_MS);
-        assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
-    }
-
-    #[test]
-    fn spec_overrides_from_endpoint() {
-        let ep = SerialEndpoint {
-            serial_reopen_ms: Some(250),
-            common: CommonQuery {
-                read_buf_bytes: Some(1024),
-                tx_queue_frames: Some(16),
-            },
-            ..SerialEndpoint::default()
-        };
-        let spec = SerialSpec::from_endpoint(ep, EndpointId(0), "n".into());
-        assert_eq!(spec.serial_reopen_ms, 250);
-        assert_eq!(spec.read_buf_bytes, 1024);
-    }
-
     #[tokio::test]
-    async fn open_until_cancel_retries_then_yields_on_cancel() {
-        // Bad path + 5ms reopen → loop retries multiple times before cancel
-        // takes effect. We can't observe the attempt count directly without
-        // instrumentation, but cancelling the loop after 50ms with a 5ms
-        // poll proves both halves of the loop (retry + cancel-during-sleep)
-        // are reachable and well-formed. Tests a private function — must
-        // live next to it; the public-API equivalents are in `tests/serial.rs`.
+    async fn open_until_cancel_yields_on_cancel_during_sleep() {
+        // Bad path → first `try_open` fails and the loop drops into a
+        // [`REOPEN_DELAY`] sleep; cancelling mid-sleep must return
+        // `OpenOutcome::Cancelled` rather than wait out the full delay.
+        // Tests a private function — must live next to it; the public-API
+        // equivalents are in `tests/serial.rs`.
         let cancel = CancellationToken::new();
         let task = {
             let cancel = cancel.clone();
@@ -272,7 +225,6 @@ mod tests {
                     "/this/path/definitely/does/not/exist",
                     115200,
                     SerialFlowControl::None,
-                    Duration::from_millis(5),
                     &cancel,
                 )
                 .await

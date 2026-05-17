@@ -287,7 +287,7 @@ mod tests {
     fn apply_returns_false_on_non_filter_key() {
         let mut f = Filters::default();
         assert!(!f.apply("sniffer", "true").unwrap());
-        assert!(!f.apply("read_buf_bytes", "8192").unwrap());
+        assert!(!f.apply("tx_queue_frames", "8").unwrap());
         assert_eq!(f, Filters::default());
     }
 

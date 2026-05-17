@@ -1,7 +1,6 @@
-//! Range-check helpers shared by the query-string applier (`query.rs`) and
-//! the identity-flag applier (`identity_flags.rs`). Each helper takes the
-//! already-parsed numeric value, the key name (for error reporting), and
-//! the inclusive bounds; on out-of-range it builds
+//! Range-check helpers used by the query-string applier (`query.rs`). Each
+//! helper takes the already-parsed numeric value, the key name (for error
+//! reporting), and the inclusive bounds; on out-of-range it builds
 //! [`SpecError::InvalidQueryValue`] with a uniform `"must be in MIN..=MAX,
 //! got N"` reason so operator-visible error text is consistent across every
 //! knob the parser bounds-checks.

@@ -14,7 +14,7 @@ use rmr::endpoint::{EndpointIdAllocator, spec::TcpClientEndpoint};
 
 use crate::common;
 use crate::common::shutdown_all;
-use crate::common::tcp::spawn_tcpc;
+use crate::common::tcp::spawn_tcpc_with;
 
 #[tokio::test]
 async fn tcpc_reconnects_after_server_disconnect() {
@@ -26,12 +26,17 @@ async fn tcpc_reconnects_after_server_disconnect() {
         .expect("bind test server");
     let listen_addr = listener.local_addr().expect("local_addr");
 
-    let endpoint = TcpClientEndpoint {
-        reconnect_initial_ms: Some(50),
-        reconnect_max_ms: Some(500),
-        ..TcpClientEndpoint::default()
-    };
-    let mut h = spawn_tcpc(&allocator, cancel.clone(), listen_addr, endpoint, "c");
+    let mut h = spawn_tcpc_with(
+        &allocator,
+        cancel.clone(),
+        listen_addr,
+        TcpClientEndpoint::default(),
+        "c",
+        |spec| {
+            spec.reconnect_initial_ms = 50;
+            spec.reconnect_max_ms = 500;
+        },
+    );
 
     let (mut server_stream, _peer) = timeout(Duration::from_secs(2), listener.accept())
         .await
@@ -82,12 +87,17 @@ async fn tcpc_drains_queue_on_reconnect() {
         .expect("bind test server");
     let listen_addr = listener.local_addr().expect("local_addr");
 
-    let endpoint = TcpClientEndpoint {
-        reconnect_initial_ms: Some(80),
-        reconnect_max_ms: Some(500),
-        ..TcpClientEndpoint::default()
-    };
-    let h = spawn_tcpc(&allocator, cancel.clone(), listen_addr, endpoint, "c");
+    let h = spawn_tcpc_with(
+        &allocator,
+        cancel.clone(),
+        listen_addr,
+        TcpClientEndpoint::default(),
+        "c",
+        |spec| {
+            spec.reconnect_initial_ms = 80;
+            spec.reconnect_max_ms = 500;
+        },
+    );
 
     let (server_stream, _peer) = timeout(Duration::from_secs(2), listener.accept())
         .await

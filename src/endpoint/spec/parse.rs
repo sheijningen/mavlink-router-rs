@@ -1,6 +1,5 @@
 use std::net::{IpAddr, SocketAddr};
 
-use super::super::defaults::{DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS};
 use super::endpoint_kinds::{
     EndpointKind, SerialEndpoint, TcpClientEndpoint, TcpServerEndpoint, UdpClientEndpoint,
     UdpServerEndpoint,
@@ -79,7 +78,6 @@ pub fn parse_kind(
                 ..TcpClientEndpoint::default()
             };
             apply_pairs(&mut TcpClientApplier(&mut ep), "tcpc", pairs)?;
-            validate_reconnect_pair(&ep)?;
             Ok(EndpointKind::TcpClient(ep))
         }),
         other => Err(SpecError::UnknownScheme(other.to_string())),
@@ -131,26 +129,6 @@ fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> {
         });
     }
     Ok((path.to_string(), baud))
-}
-
-/// Reject a `tcpc:` spec whose `reconnect_initial_ms` ends up larger than
-/// `reconnect_max_ms` once defaults are filled in. Per-field bounds are
-/// checked by the applier; this catches the cross-field invariant the
-/// applier can't see (e.g. user sets `reconnect_initial_ms=60000` and
-/// leaves `reconnect_max_ms` at its 30 000 default — the curve degenerates
-/// silently otherwise).
-fn validate_reconnect_pair(ep: &TcpClientEndpoint) -> Result<(), SpecError> {
-    let initial = ep
-        .reconnect_initial_ms
-        .unwrap_or(DEFAULT_RECONNECT_INITIAL_MS);
-    let max = ep.reconnect_max_ms.unwrap_or(DEFAULT_RECONNECT_MAX_MS);
-    if initial > max {
-        return Err(SpecError::InvalidQueryValue {
-            key: "reconnect_max_ms",
-            reason: format!("reconnect_max_ms ({max}) must be >= reconnect_initial_ms ({initial})"),
-        });
-    }
-    Ok(())
 }
 
 /// Listen-side parser used by `tcps:` and `udps:`: same `host:port` grammar
@@ -502,58 +480,6 @@ mod tests {
         assert_eq!(e.host, "companion.local");
         assert_eq!(e.port, 5760);
         assert_eq!(s.name, "vehicle");
-    }
-
-    // -- tcpc reconnect_initial_ms <= reconnect_max_ms (cross-field invariant
-    //    that per-knob bounds can't catch). Defaults are applied during the
-    //    check so silent-degenerate cases like
-    //    `?reconnect_initial_ms=60000` (max stays at 30 000 default) are
-    //    rejected. --
-
-    fn assert_reconnect_cross_field_err(input: &str, max: u64, initial: u64) {
-        match parse_err(input) {
-            SpecError::InvalidQueryValue { key, reason } => {
-                assert_eq!(key, "reconnect_max_ms", "wrong key for {input}");
-                assert!(
-                    reason.contains(&format!("({max})")),
-                    "expected effective max in reason; got: {reason}"
-                );
-                assert!(
-                    reason.contains(&format!("({initial})")),
-                    "expected effective initial in reason; got: {reason}"
-                );
-            }
-            other => panic!("expected InvalidQueryValue for {input}, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn tcpc_reconnect_initial_above_explicit_max_rejected() {
-        assert_reconnect_cross_field_err(
-            "tcpc:h:1?reconnect_initial_ms=5000&reconnect_max_ms=1000",
-            1000,
-            5000,
-        );
-    }
-
-    #[test]
-    fn tcpc_reconnect_initial_above_default_max_rejected() {
-        // Default reconnect_max_ms is 30_000 and not overridden here.
-        assert_reconnect_cross_field_err("tcpc:h:1?reconnect_initial_ms=60000", 30_000, 60_000);
-    }
-
-    #[test]
-    fn tcpc_reconnect_max_below_default_initial_rejected() {
-        // Default reconnect_initial_ms is 250 and not overridden here.
-        assert_reconnect_cross_field_err("tcpc:h:1?reconnect_max_ms=100", 100, 250);
-    }
-
-    #[test]
-    fn tcpc_reconnect_initial_equal_to_max_accepted() {
-        let s = parse_ok("tcpc:h:1?reconnect_initial_ms=500&reconnect_max_ms=500");
-        let e = as_tcpc(&s);
-        assert_eq!(e.reconnect_initial_ms, Some(500));
-        assert_eq!(e.reconnect_max_ms, Some(500));
     }
 
     #[test]

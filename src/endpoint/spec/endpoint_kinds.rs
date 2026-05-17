@@ -13,11 +13,10 @@ pub enum EndpointKind {
 }
 
 /// Plumbing knobs every endpoint type understands. Identity knobs (filters,
-/// sniffer, group, learn/seq capacities) live on [`IdentityFlags`] alongside
-/// the structures that consume them.
+/// sniffer, group) live on [`IdentityFlags`] alongside the structures that
+/// consume them.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommonQuery {
-    pub read_buf_bytes: Option<usize>,
     pub tx_queue_frames: Option<usize>,
 }
 
@@ -38,7 +37,6 @@ pub struct SerialEndpoint {
     pub path: String,
     pub baud: u32,
     pub flow_control: SerialFlowControl,
-    pub serial_reopen_ms: Option<u64>,
     pub common: CommonQuery,
     pub identity: IdentityFlags,
 }
@@ -50,7 +48,6 @@ pub struct SerialEndpoint {
 pub struct UdpServerEndpoint {
     pub bind_addr: SocketAddr,
     pub idle_secs: Option<u64>,
-    pub udps_peer_capacity: Option<usize>,
     pub common: CommonQuery,
     pub identity: IdentityFlags,
 }
@@ -63,7 +60,6 @@ impl Default for UdpServerEndpoint {
             // override it before constructing a spec.
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             idle_secs: None,
-            udps_peer_capacity: None,
             common: CommonQuery::default(),
             identity: IdentityFlags::default(),
         }
@@ -108,8 +104,6 @@ impl Default for TcpServerEndpoint {
 pub struct TcpClientEndpoint {
     pub host: String,
     pub port: u16,
-    pub reconnect_initial_ms: Option<u64>,
-    pub reconnect_max_ms: Option<u64>,
     pub common: CommonQuery,
     pub identity: IdentityFlags,
 }

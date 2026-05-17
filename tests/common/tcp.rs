@@ -136,6 +136,20 @@ pub fn spawn_tcpc(
     endpoint: TcpClientEndpoint,
     name: &str,
 ) -> TcpcHarness {
+    spawn_tcpc_with(allocator, cancel, target_addr, endpoint, name, |_| {})
+}
+
+/// Same as [`spawn_tcpc`] but lets the caller mutate the runtime `TcpClientSpec`
+/// after defaults have been applied — used by tests that need to shrink the
+/// hardcoded reconnect curve to keep test runtimes tight.
+pub fn spawn_tcpc_with(
+    allocator: &EndpointIdAllocator,
+    cancel: CancellationToken,
+    target_addr: SocketAddr,
+    endpoint: TcpClientEndpoint,
+    name: &str,
+    tune: impl FnOnce(&mut TcpClientSpec),
+) -> TcpcHarness {
     let endpoint_id = allocator.alloc();
     let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
     let endpoint = TcpClientEndpoint {
@@ -151,7 +165,8 @@ pub fn spawn_tcpc(
         .tx_queue_frames
         .unwrap_or(rmr::endpoint::defaults::DEFAULT_TX_QUEUE_FRAMES)
         .max(8);
-    let spec = TcpClientSpec::from_endpoint(endpoint, endpoint_id, name.to_string());
+    let mut spec = TcpClientSpec::from_endpoint(endpoint, endpoint_id, name.to_string());
+    tune(&mut spec);
     let tx_queue = TxQueue::new(tx_queue_frames, stats.clone());
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let task = {

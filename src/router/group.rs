@@ -13,12 +13,10 @@
 //! mutation (`touch`, `join`, `leave`) happens inside `handle_event` /
 //! `handle_frame`, both of which run on the router's loop.
 //!
-//! Per CLAUDE.md `learn_capacity` is "per-endpoint" — when members of a
-//! group disagree on `learn_capacity`, **first-member-wins**: the group's
-//! table is sized at admission of the first member, and later members'
-//! `learn_capacity` overrides are silently ignored. Mixing capacities
-//! across group members is operator misconfiguration, not a routing
-//! correctness concern.
+//! Every group's learn table is sized at admission of its first member.
+//! The per-endpoint learn-table capacity is the hardcoded
+//! [`crate::endpoint::identity_flags::LEARN_CAPACITY`], so every group
+//! converges on the same size regardless of admission order.
 
 use std::collections::HashMap;
 use std::sync::Arc;

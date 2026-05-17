@@ -1,62 +1,35 @@
 //! Per-endpoint identity bundle: filter rules, sniffer flag, optional group
-//! label, and learn/seq-tracker capacities. See [`IdentityFlags`].
+//! label. See [`IdentityFlags`].
 
 use std::sync::Arc;
 
 use super::filters::Filters;
 use super::spec::SpecError;
-use super::spec::bounds::check_usize_range;
 
-const DEFAULT_LEARN_CAPACITY: usize = 32;
-const DEFAULT_SEQ_TRACKER_CAPACITY: usize = 32;
+/// Per-endpoint `(sysid, compid)` learn-table size. Hardcoded — 32 covers
+/// any realistic deployment (a multi-drone endpoint sees ~5–10 distinct
+/// pairs), and the router scans this LRU on every routed frame so growing
+/// it costs more than it ever buys.
+pub const LEARN_CAPACITY: usize = 32;
 
-/// `learn_capacity` lower bound — 0 silently clamps to 1 inside
-/// `LearnTable::new`, but the parser rejects it so the operator gets a
-/// concrete bounds error instead of a hidden clamp.
-pub const MIN_LEARN_CAPACITY: usize = 1;
-
-/// `learn_capacity` upper bound. The router uses the table for a linear
-/// scan on every routed frame, so growing it past 1024 entries hurts the
-/// hot path far more than it helps the rare deployment that genuinely
-/// needs >1024 distinct `(sysid, compid)` pairs per endpoint.
-pub const MAX_LEARN_CAPACITY: usize = 1024;
-
-/// `seq_tracker_capacity` lower bound — 0 disables the tracker silently
-/// via `LearnTable::new`'s clamp, so the parser rejects it.
-pub const MIN_SEQ_TRACKER_CAPACITY: usize = 1;
-
-/// `seq_tracker_capacity` upper bound. Same rationale as
-/// [`MAX_LEARN_CAPACITY`] — sequence-loss accounting is also a linear
-/// scan per-source-endpoint.
-pub const MAX_SEQ_TRACKER_CAPACITY: usize = 1024;
+/// Per-endpoint seq-tracker LRU size. Same rationale as [`LEARN_CAPACITY`]:
+/// sequence-loss accounting is per-source on a small ring, and 32 is more
+/// than any real fleet needs.
+pub const SEQ_TRACKER_CAPACITY: usize = 32;
 
 /// Per-endpoint identity bundle: filter rules, sniffer flag, optional group
-/// label, and learn/seq-tracker capacities. Travels on the `*Spec` (not the
-/// `*Wiring`) per CLAUDE.md's "Filters, group, sniffer, and learn/seq
-/// capacities travel with the `*Spec`, not the `*Wiring`" decision — these
-/// are per-endpoint identity, not shared plumbing. The parser populates
-/// fields directly during query-string apply; missing knobs keep the
-/// CLAUDE.md defaults baked in by [`IdentityFlags::default`]. Sub-endpoints
-/// inherit a clone of the parent's `IdentityFlags` at spawn time.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// label. Travels on the `*Spec` (not the `*Wiring`) per CLAUDE.md's
+/// "Filters, group, sniffer travel with the `*Spec`, not the `*Wiring`"
+/// decision — these are per-endpoint identity, not shared plumbing. The
+/// parser populates fields directly during query-string apply; missing
+/// knobs keep the CLAUDE.md defaults baked in by [`IdentityFlags::default`].
+/// Sub-endpoints inherit a clone of the parent's `IdentityFlags` at spawn
+/// time.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IdentityFlags {
     pub filters: Filters,
     pub sniffer: bool,
     pub group: Option<Arc<str>>,
-    pub learn_capacity: usize,
-    pub seq_tracker_capacity: usize,
-}
-
-impl Default for IdentityFlags {
-    fn default() -> Self {
-        Self {
-            filters: Filters::default(),
-            sniffer: false,
-            group: None,
-            learn_capacity: DEFAULT_LEARN_CAPACITY,
-            seq_tracker_capacity: DEFAULT_SEQ_TRACKER_CAPACITY,
-        }
-    }
 }
 
 impl IdentityFlags {
@@ -64,11 +37,10 @@ impl IdentityFlags {
     /// directly. Filter keys live on [`Filters::KEYS`]; the parser's "did you
     /// mean" suggestion walks both. Kept here so the field set and the key
     /// set don't drift.
-    pub const KEYS: &'static [&'static str] =
-        &["group", "learn_capacity", "seq_tracker_capacity", "sniffer"];
+    pub const KEYS: &'static [&'static str] = &["group", "sniffer"];
 
     /// Apply one query key/value pair if it names an identity knob. Delegates
-    /// filter keys to [`Filters::apply`]; otherwise handles the four
+    /// filter keys to [`Filters::apply`]; otherwise handles the two
     /// non-filter identity keys directly. Returns `Ok(true)` when consumed,
     /// `Ok(false)` when the key isn't ours (caller falls through to plumbing
     /// / scheme-specific keys), or `Err` on a malformed value.
@@ -83,22 +55,6 @@ impl IdentityFlags {
             }
             "group" => {
                 self.group = Some(Arc::from(value));
-                Ok(true)
-            }
-            "learn_capacity" => {
-                let n = parse_usize(value, "learn_capacity")?;
-                self.learn_capacity =
-                    check_usize_range(n, "learn_capacity", MIN_LEARN_CAPACITY, MAX_LEARN_CAPACITY)?;
-                Ok(true)
-            }
-            "seq_tracker_capacity" => {
-                let n = parse_usize(value, "seq_tracker_capacity")?;
-                self.seq_tracker_capacity = check_usize_range(
-                    n,
-                    "seq_tracker_capacity",
-                    MIN_SEQ_TRACKER_CAPACITY,
-                    MAX_SEQ_TRACKER_CAPACITY,
-                )?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -117,32 +73,23 @@ fn parse_bool(v: &str, key: &'static str) -> Result<bool, SpecError> {
     }
 }
 
-fn parse_usize(v: &str, key: &'static str) -> Result<usize, SpecError> {
-    v.parse().map_err(|_| SpecError::InvalidQueryValue {
-        key,
-        reason: format!("expected a non-negative integer, got '{v}'"),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::endpoint::filters::{MsgIdRange, U8Range};
 
     #[test]
-    fn default_is_allow_all_no_sniffer_no_group_default_capacities() {
+    fn default_is_allow_all_no_sniffer_no_group() {
         let f = IdentityFlags::default();
         assert_eq!(f.filters, Filters::default());
         assert!(!f.sniffer);
         assert!(f.group.is_none());
-        assert_eq!(f.learn_capacity, DEFAULT_LEARN_CAPACITY);
-        assert_eq!(f.seq_tracker_capacity, DEFAULT_SEQ_TRACKER_CAPACITY);
     }
 
     #[test]
     fn apply_returns_false_on_unknown_key() {
         let mut f = IdentityFlags::default();
-        assert!(!f.apply("read_buf_bytes", "8192").unwrap());
+        assert!(!f.apply("tx_queue_frames", "8").unwrap());
         assert_eq!(f, IdentityFlags::default());
     }
 
@@ -166,15 +113,6 @@ mod tests {
             panic!("group should be Some after clone");
         };
         assert!(Arc::ptr_eq(a, b));
-    }
-
-    #[test]
-    fn apply_capacities_overwrite_defaults() {
-        let mut f = IdentityFlags::default();
-        assert!(f.apply("learn_capacity", "8").unwrap());
-        assert!(f.apply("seq_tracker_capacity", "16").unwrap());
-        assert_eq!(f.learn_capacity, 8);
-        assert_eq!(f.seq_tracker_capacity, 16);
     }
 
     #[test]
