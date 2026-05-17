@@ -130,7 +130,7 @@ async fn pty_pair_round_trips_frame() {
         .await
         .expect("session join timeout")
         .expect("session join");
-    assert_eq!(outcome, SessionOutcome::Cancelled);
+    assert_eq!(outcome, SessionOutcome::Terminated);
 }
 
 #[tokio::test]

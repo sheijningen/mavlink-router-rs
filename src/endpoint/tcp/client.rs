@@ -158,7 +158,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) -> Result<(), T
         )
         .await
         {
-            SessionOutcome::Cancelled | SessionOutcome::RouterGone => {
+            SessionOutcome::Terminated => {
                 tx_queue.drain_and_discard();
                 return Ok(());
             }

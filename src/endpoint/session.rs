@@ -16,15 +16,13 @@ use crate::mavlink::framer::Framer;
 /// `AsyncRead + AsyncWrite` transport (`serial:`, `tcpc:`, `tcps:` accepted
 /// children).
 ///
-/// `Cancelled` and `RouterGone` are handled identically by callers — both
-/// terminate the endpoint task — but kept distinct so tracing/logs can tell
-/// "the cancel token fired" apart from "the router task exited and dropped
-/// the frame channel" during debugging. `Disconnected` is the recoverable
-/// case: the caller drains its TxQueue, then re-opens / reconnects.
+/// `Terminated` is the unrecoverable case — either the cancel token fired
+/// or the router channel closed — and callers wind down the endpoint task
+/// on it. `Disconnected` is the recoverable case: the caller drains its
+/// TxQueue, then re-opens / reconnects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionOutcome {
-    Cancelled,
-    RouterGone,
+    Terminated,
     Disconnected,
 }
 
@@ -54,7 +52,7 @@ where
     loop {
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => return SessionOutcome::Cancelled,
+            _ = cancel.cancelled() => return SessionOutcome::Terminated,
             res = rh.read_buf(framer.buffer_mut()) => {
                 match res {
                     Ok(0) => {
@@ -75,7 +73,7 @@ where
                                 .is_err()
                             {
                                 debug!("router channel closed; ending session");
-                                return SessionOutcome::RouterGone;
+                                return SessionOutcome::Terminated;
                             }
                         }
                         framer_counters.sync(&framer, stats);

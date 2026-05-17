@@ -152,7 +152,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) -> Result<(), SerialE
         )
         .await
         {
-            SessionOutcome::Cancelled | SessionOutcome::RouterGone => {
+            SessionOutcome::Terminated => {
                 tx_queue.drain_and_discard();
                 return Ok(());
             }
