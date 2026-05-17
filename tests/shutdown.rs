@@ -60,6 +60,8 @@ fn spawn_router() -> RouterHarness {
                 event_rx,
                 stats_event_tx,
                 cancel,
+                dedup_ms: 0,
+                dedup_window_capacity: 16,
             })
             .await
         })

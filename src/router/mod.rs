@@ -30,12 +30,18 @@
 //!   joins / leaves on `EndpointAdded` / `PeerAdded` / `PeerRemoved` and
 //!   routes source-learn writes and per-destination loop-prevent reads
 //!   through the group's table when present.
+//! - **Global dedup window** — when `dedup_ms > 0`, a single
+//!   [`DedupWindow`] hashes each frame with xxh3-64 *before* learn and
+//!   per-destination dispatch. A hit drops the frame and bumps the
+//!   source endpoint's `dedup_drops` counter; this is what protects the
+//!   redundant-uplink use case (LTE + RFD900 each deliver the same
+//!   vehicle frame; the second arrival is suppressed).
 //! - **Shutdown sweep** — on cancel, write `state = Down` for every
 //!   remaining entry in both registries and forward `Finalize` so the
 //!   stats task can drop its registry mirror.
 //!
-//! The remaining Phase 5b deliverables (dedup, per-source seq tracker)
-//! land in [`dedup`] and the reader tasks respectively.
+//! The remaining Phase 5b deliverable (per-source seq tracker) lands in
+//! the reader tasks.
 
 pub mod decide;
 pub mod dedup;
@@ -59,6 +65,7 @@ use crate::endpoint::tx_queue::TxQueue;
 use crate::stats::StatsEvent;
 
 use decide::{Decision, decide as decide_for_dest};
+use dedup::DedupWindow;
 use group::GroupRegistry;
 use learn::LearnTable;
 
@@ -102,12 +109,16 @@ struct ParentListenerEntry {
 /// Bundle the spawner hands to the router task. The two `mpsc::Receiver`s
 /// drive the entire data plane (lifecycle events + frames); the
 /// `stats_event_tx` is fire-and-forget per CLAUDE.md ("the router does not
-/// await a stats-task acknowledgement").
+/// await a stats-task acknowledgement"). `dedup_ms == 0` (the default)
+/// turns the global dedup window off — no hashing, no allocation, no
+/// per-frame cost.
 pub struct RouterWiring {
     pub frame_rx: mpsc::Receiver<RouterFrame>,
     pub event_rx: mpsc::Receiver<EndpointEvent>,
     pub stats_event_tx: mpsc::Sender<StatsEvent>,
     pub cancel: CancellationToken,
+    pub dedup_ms: u64,
+    pub dedup_window_capacity: usize,
 }
 
 /// Run the router task until the cancellation token fires. Biased select
@@ -122,11 +133,17 @@ pub async fn run(wiring: RouterWiring) {
         mut event_rx,
         stats_event_tx,
         cancel,
+        dedup_ms,
+        dedup_window_capacity,
     } = wiring;
 
     let mut routing: HashMap<EndpointId, RegisteredEndpoint> = HashMap::new();
     let mut listeners: HashMap<EndpointId, ParentListenerEntry> = HashMap::new();
     let mut groups = GroupRegistry::new();
+    let mut dedup = DedupWindow::new(
+        std::time::Duration::from_millis(dedup_ms),
+        dedup_window_capacity,
+    );
 
     loop {
         tokio::select! {
@@ -136,7 +153,7 @@ pub async fn run(wiring: RouterWiring) {
                 handle_event(&mut routing, &mut listeners, &mut groups, ev, &stats_event_tx).await;
             }
             Some(fr) = frame_rx.recv() => {
-                handle_frame(&mut routing, &mut groups, fr);
+                handle_frame(&mut routing, &mut groups, &mut dedup, fr);
             }
             else => break,
         }
@@ -269,6 +286,7 @@ async fn handle_event(
 fn handle_frame(
     routing: &mut HashMap<EndpointId, RegisteredEndpoint>,
     groups: &mut GroupRegistry,
+    dedup: &mut DedupWindow,
     fr: RouterFrame,
 ) {
     let RouterFrame {
@@ -290,6 +308,16 @@ fn handle_frame(
         };
         (src_ep.stats.clone(), src_ep.identity.group.clone())
     };
+
+    // Dedup runs BEFORE learn and per-destination dispatch (CLAUDE.md
+    // "Sniffer + dedup ordering": sniffer destinations see the post-dedup
+    // frame set). Disabled when `dedup_ms == 0` — `check_and_insert` is
+    // then a no-op `false`.
+    if dedup.check_and_insert(&frame, now) {
+        src_stats.dedup_drops.fetch_add(1, Ordering::Relaxed);
+        trace!(%src_id, "router: dedup suppressed duplicate frame");
+        return;
+    }
 
     // Touch the source's effective learn-set (per-endpoint or shared via
     // a group). Always publish the current length to the source's
@@ -485,8 +513,27 @@ mod tests {
                 event_rx,
                 stats_event_tx,
                 cancel,
+                dedup_ms: 0,
+                dedup_window_capacity: 16,
             },
         )
+    }
+
+    /// Variant of [`make_wiring`] with the global dedup window enabled at
+    /// `ttl_ms`. Used by the dedup-specific tests below.
+    fn make_wiring_with_dedup(
+        ttl_ms: u64,
+        capacity: usize,
+    ) -> (
+        mpsc::Sender<RouterFrame>,
+        mpsc::Sender<EndpointEvent>,
+        mpsc::Receiver<StatsEvent>,
+        RouterWiring,
+    ) {
+        let (frame_tx, event_tx, stats_rx, mut wiring) = make_wiring();
+        wiring.dedup_ms = ttl_ms;
+        wiring.dedup_window_capacity = capacity;
+        (frame_tx, event_tx, stats_rx, wiring)
     }
 
     #[tokio::test]
@@ -1277,6 +1324,267 @@ mod tests {
             0,
             "b's dropped_tx must not move when a's queue overflows"
         );
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("router exit")
+            .expect("router join");
+    }
+
+    #[tokio::test]
+    async fn dedup_disabled_admits_duplicate_frames() {
+        // dedup_ms == 0 (default) — duplicate frames are admitted, the
+        // dedup_drops counter stays at zero.
+        let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
+        let cancel = wiring.cancel.clone();
+        let task = tokio::spawn(run(wiring));
+        let alloc = EndpointIdAllocator::new();
+        let src = make_endpoint(&alloc, true);
+        let dst = make_endpoint(&alloc, true);
+
+        event_tx
+            .send(endpoint_added(&src, "src"))
+            .await
+            .expect("src");
+        event_tx
+            .send(endpoint_added(&dst, "dst"))
+            .await
+            .expect("dst");
+        tokio::task::yield_now().await;
+
+        for _ in 0..3 {
+            frame_tx
+                .send(RouterFrame {
+                    endpoint_id: src.id,
+                    frame: Bytes::from_static(b"identical"),
+                    header: header(7, 1, None),
+                })
+                .await
+                .expect("send");
+        }
+        // All three should reach dst's queue.
+        for _ in 0..3 {
+            let _ = tokio::time::timeout(Duration::from_secs(1), dst.tx_queue.pop_or_wait())
+                .await
+                .expect("dst got duplicate");
+        }
+        assert_eq!(src.stats.dedup_drops.load(Ordering::Relaxed), 0);
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("router exit")
+            .expect("router join");
+    }
+
+    #[tokio::test]
+    async fn dedup_suppresses_redundant_uplink_at_router_ingress() {
+        // CLAUDE.md "redundant-uplink use case": same vehicle frame arrives
+        // on two different routing endpoints (LTE + RFD900); the global
+        // window suppresses the second arrival regardless of source.
+        let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring_with_dedup(500, 16);
+        let cancel = wiring.cancel.clone();
+        let task = tokio::spawn(run(wiring));
+        let alloc = EndpointIdAllocator::new();
+        let lte = make_endpoint(&alloc, true);
+        let rfd = make_endpoint(&alloc, true);
+        let gcs = make_endpoint(&alloc, true);
+
+        event_tx
+            .send(endpoint_added(&lte, "lte"))
+            .await
+            .expect("lte");
+        event_tx
+            .send(endpoint_added(&rfd, "rfd"))
+            .await
+            .expect("rfd");
+        event_tx
+            .send(endpoint_added(&gcs, "gcs"))
+            .await
+            .expect("gcs");
+        tokio::task::yield_now().await;
+
+        // First copy arrives on the LTE leg.
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: lte.id,
+                frame: Bytes::from_static(b"vehicle-telemetry"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send #1");
+        let _ = tokio::time::timeout(Duration::from_secs(1), gcs.tx_queue.pop_or_wait())
+            .await
+            .expect("gcs got #1");
+
+        // Identical second copy arrives on the RFD leg — must be
+        // suppressed at the dedup window and never reach gcs.
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: rfd.id,
+                frame: Bytes::from_static(b"vehicle-telemetry"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send #2");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            gcs.tx_queue.pop().is_none(),
+            "duplicate frame must not reach gcs"
+        );
+        // dedup_drops is credited to the *source* of the suppressed frame
+        // (rfd), not the lte leg that admitted the first copy.
+        for _ in 0..20 {
+            if rfd.stats.dedup_drops.load(Ordering::Relaxed) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(rfd.stats.dedup_drops.load(Ordering::Relaxed), 1);
+        assert_eq!(lte.stats.dedup_drops.load(Ordering::Relaxed), 0);
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("router exit")
+            .expect("router join");
+    }
+
+    #[tokio::test]
+    async fn sniffer_sees_post_dedup_traffic() {
+        // CLAUDE.md "Sniffer + dedup ordering: ingress dedup runs before
+        // the per-destination decision, so a sniffer sees the post-dedup
+        // frame set." Duplicate suppression therefore hides the second
+        // arrival from the sniffer too.
+        let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring_with_dedup(500, 16);
+        let cancel = wiring.cancel.clone();
+        let task = tokio::spawn(run(wiring));
+        let alloc = EndpointIdAllocator::new();
+        let lte = make_endpoint(&alloc, true);
+        let rfd = make_endpoint(&alloc, true);
+        let tap = make_endpoint(&alloc, true);
+
+        let sniffer = IdentityFlags {
+            sniffer: true,
+            ..IdentityFlags::default()
+        };
+
+        event_tx
+            .send(endpoint_added(&lte, "lte"))
+            .await
+            .expect("lte");
+        event_tx
+            .send(endpoint_added(&rfd, "rfd"))
+            .await
+            .expect("rfd");
+        event_tx
+            .send(endpoint_added_with_identity(&tap, "tap", sniffer))
+            .await
+            .expect("tap");
+        tokio::task::yield_now().await;
+
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: lte.id,
+                frame: Bytes::from_static(b"telem"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send #1");
+        let _ = tokio::time::timeout(Duration::from_secs(1), tap.tx_queue.pop_or_wait())
+            .await
+            .expect("tap got #1");
+
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: rfd.id,
+                frame: Bytes::from_static(b"telem"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send #2 (dup)");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            tap.tx_queue.pop().is_none(),
+            "sniffer must not see the post-dedup duplicate"
+        );
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("router exit")
+            .expect("router join");
+    }
+
+    #[tokio::test]
+    async fn dedup_does_not_run_learn_on_suppressed_frame() {
+        // CLAUDE.md ingress pipeline order: dedup runs BEFORE learn. A
+        // suppressed duplicate must not advance the source's learn-set.
+        let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring_with_dedup(500, 16);
+        let cancel = wiring.cancel.clone();
+        let task = tokio::spawn(run(wiring));
+        let alloc = EndpointIdAllocator::new();
+        let src = make_endpoint(&alloc, true);
+        let dst = make_endpoint(&alloc, true);
+
+        event_tx
+            .send(endpoint_added(&src, "src"))
+            .await
+            .expect("src");
+        event_tx
+            .send(endpoint_added(&dst, "dst"))
+            .await
+            .expect("dst");
+        tokio::task::yield_now().await;
+
+        // First arrival learns (7, 1) on src; learn_entries → 1.
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: src.id,
+                frame: Bytes::from_static(b"telem"),
+                header: header(7, 1, None),
+            })
+            .await
+            .expect("send #1");
+        let _ = tokio::time::timeout(Duration::from_secs(1), dst.tx_queue.pop_or_wait())
+            .await
+            .expect("dst got #1");
+        for _ in 0..20 {
+            if src.stats.learn_entries.load(Ordering::Relaxed) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(src.stats.learn_entries.load(Ordering::Relaxed), 1);
+
+        // A *different* sysid on a duplicate (same bytes) is impossible —
+        // hashing the bytes pins (sysid, compid). Instead, send the dup
+        // with a *different* header but identical bytes; check that the
+        // dedup path runs purely on the bytes — but more importantly,
+        // confirm a duplicate *byte* frame doesn't grow learn_entries
+        // even though we'd otherwise see (header.sysid, header.compid).
+        frame_tx
+            .send(RouterFrame {
+                endpoint_id: src.id,
+                frame: Bytes::from_static(b"telem"),
+                header: header(8, 1, None),
+            })
+            .await
+            .expect("send #2 (dup bytes, different header)");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            src.stats.learn_entries.load(Ordering::Relaxed),
+            1,
+            "suppressed frame must not advance learn_entries"
+        );
+        for _ in 0..20 {
+            if src.stats.dedup_drops.load(Ordering::Relaxed) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(src.stats.dedup_drops.load(Ordering::Relaxed), 1);
 
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(1), task)

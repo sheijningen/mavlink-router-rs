@@ -19,7 +19,7 @@ use tracing::{info, warn};
 
 use crate::endpoint::EndpointId;
 use crate::endpoint::EndpointIdAllocator;
-use crate::endpoint::defaults::DEFAULT_TX_QUEUE_FRAMES;
+use crate::endpoint::defaults::{DEFAULT_DEDUP_WINDOW_CAPACITY, DEFAULT_TX_QUEUE_FRAMES};
 use crate::endpoint::events::{EndpointEvent, RouterFrame};
 use crate::endpoint::identity_flags::IdentityFlags;
 use crate::endpoint::serial::{SerialSpec, SerialWiring};
@@ -93,6 +93,8 @@ pub async fn run_with_cancel(cli: cli::Cli, token: CancellationToken) -> Result<
         event_rx,
         stats_event_tx,
         token.clone(),
+        cli.dedup_ms,
+        DEFAULT_DEDUP_WINDOW_CAPACITY,
     );
     spawn_stats(&mut tasks, stats_event_rx, token.clone());
     spawn_endpoints(&mut tasks, &event_tx, &frame_tx, &token, specs).await?;
@@ -130,18 +132,23 @@ fn estimate_registry_size(specs: &[EndpointSpec]) -> usize {
     n
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_router(
     tasks: &mut JoinSet<()>,
     frame_rx: mpsc::Receiver<RouterFrame>,
     event_rx: mpsc::Receiver<EndpointEvent>,
     stats_event_tx: mpsc::Sender<StatsEvent>,
     cancel: CancellationToken,
+    dedup_ms: u64,
+    dedup_window_capacity: usize,
 ) {
     let wiring = RouterWiring {
         frame_rx,
         event_rx,
         stats_event_tx,
         cancel,
+        dedup_ms,
+        dedup_window_capacity,
     };
     tasks.spawn(async move {
         router::run(wiring).await;

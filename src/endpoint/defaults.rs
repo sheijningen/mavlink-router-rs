@@ -44,3 +44,8 @@ pub const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
 /// at draw time). Applies to `tcpc:` reconnects and to `tcps:` / `udps:`
 /// initial-bind retries.
 pub const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
+
+/// Global dedup window capacity (CLAUDE.md "Defaults" table:
+/// `dedup_window_capacity` default 4096). Total `(hash, deadline)`
+/// entries — single window owned by the router.
+pub const DEFAULT_DEDUP_WINDOW_CAPACITY: usize = 4096;
