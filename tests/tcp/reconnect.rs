@@ -1,7 +1,6 @@
-//! CLAUDE.md Phase 3 integration test: "kill a TCP client mid-stream, verify
-//! router stays up and reconnects within the backoff bound". The "router"
-//! here is the `tcpc:` endpoint task; we drive a real server using
-//! `tokio::net::TcpListener` so we control accept/close timing.
+//! `tcpc:` endpoint task survives a mid-stream server disconnect and
+//! reconnects within the backoff bound, draining any frames queued during the
+//! outage rather than replaying them.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,7 +26,6 @@ async fn tcpc_reconnects_after_server_disconnect() {
         .expect("bind test server");
     let listen_addr = listener.local_addr().expect("local_addr");
 
-    // Short backoff so the test runs fast.
     let endpoint = TcpClientEndpoint {
         reconnect_initial_ms: Some(50),
         reconnect_max_ms: Some(500),
@@ -35,7 +33,6 @@ async fn tcpc_reconnects_after_server_disconnect() {
     };
     let mut h = spawn_tcpc(&allocator, cancel.clone(), listen_addr, endpoint, "c");
 
-    // Accept the first connection and send a heartbeat.
     let (mut server_stream, _peer) = timeout(Duration::from_secs(2), listener.accept())
         .await
         .expect("initial accept timeout")
@@ -52,11 +49,8 @@ async fn tcpc_reconnects_after_server_disconnect() {
         .expect("frame_rx closed");
     assert_eq!(&f1.frame[..], &frame1[..]);
 
-    // Kill the server side mid-stream by dropping the accepted stream.
     drop(server_stream);
 
-    // tcpc should detect the disconnect, hit backoff (~50ms initial), and
-    // reconnect. Accept the reconnect within a generous bound (~3s).
     let (mut server_stream2, _peer2) = timeout(Duration::from_secs(3), listener.accept())
         .await
         .expect("reconnect accept timeout")
@@ -76,10 +70,8 @@ async fn tcpc_reconnects_after_server_disconnect() {
     shutdown_all(&cancel, [h.task]).await;
 }
 
-/// Frames the router pushed during the outage are stale by the time the link
-/// is back. CLAUDE.md: "On reconnect — before resuming normal pop — the
-/// writer drains the queue completely, incrementing `dropped_tx` by the
-/// drained count, and only then begins consuming new frames."
+/// Stale frames queued during the outage must be drained-and-discarded on
+/// reconnect, not replayed onto the new socket.
 #[tokio::test]
 async fn tcpc_drains_queue_on_reconnect() {
     let allocator = Arc::new(EndpointIdAllocator::new());
@@ -97,16 +89,14 @@ async fn tcpc_drains_queue_on_reconnect() {
     };
     let h = spawn_tcpc(&allocator, cancel.clone(), listen_addr, endpoint, "c");
 
-    // First session: accept then drop to force reconnect.
     let (server_stream, _peer) = timeout(Duration::from_secs(2), listener.accept())
         .await
         .expect("initial accept timeout")
         .expect("initial accept");
     drop(server_stream);
 
-    // Push frames onto the TxQueue while tcpc is in its backoff sleep. These
-    // frames will be drained-and-discarded on the next successful connect —
-    // the test asserts they did NOT make it onto the new socket.
+    // Push frames while tcpc is in its backoff sleep so the next connect
+    // observes a non-empty queue to drain.
     let stale = common::build_v2_heartbeat(42);
     let pre_drop = h
         .stats
@@ -117,17 +107,13 @@ async fn tcpc_drains_queue_on_reconnect() {
     }
     assert_eq!(h.tx_queue.len(), 3, "stale frames should be queued");
 
-    // Accept the reconnect. tcpc should drain the stale frames before writing
-    // anything new.
     let (mut server_stream2, _peer2) = timeout(Duration::from_secs(3), listener.accept())
         .await
         .expect("reconnect accept timeout")
         .expect("reconnect accept");
 
-    // Wait a beat to give tcpc time to drain.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // dropped_tx should reflect the drained frames.
     let post_drop = h
         .stats
         .dropped_tx
@@ -137,8 +123,7 @@ async fn tcpc_drains_queue_on_reconnect() {
         "dropped_tx did not increase by drained count: {pre_drop} → {post_drop}"
     );
 
-    // Confirm the server side received NO stale bytes. Use a short read
-    // timeout — silence is the assertion.
+    // Silence on the new socket is the assertion: no stale bytes replayed.
     let mut buf = [0u8; 64];
     let res = timeout(
         Duration::from_millis(200),
@@ -146,8 +131,7 @@ async fn tcpc_drains_queue_on_reconnect() {
     )
     .await;
     match res {
-        Err(_) => { /* timeout — good, no stale bytes */ }
-        Ok(Ok(0)) => { /* EOF — would happen if tcpc closed the link again */ }
+        Err(_) | Ok(Ok(0)) => {}
         Ok(Ok(n)) => panic!(
             "server received {n} stale bytes after reconnect: {:?}",
             &buf[..n]

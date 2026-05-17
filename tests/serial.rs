@@ -1,6 +1,4 @@
-//! Integration tests for the `serial:` endpoint. Drives the public surface
-//! (`serial::run`, `session::run_session`) over a Unix pty pair, which stands
-//! in for a real device without requiring hardware. Gated `#![cfg(unix)]`
+//! `serial:` endpoint tests over a Unix pty pair, gated on `#![cfg(unix)]`
 //! because `tokio_serial::SerialStream::pair()` is Unix-only.
 
 #![cfg(unix)]
@@ -28,10 +26,8 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn run_returns_when_cancelled_while_open_retrying() {
-    // /dev/null is not a tty so the open call fails immediately; the
-    // hot-replug loop then sleeps `serial_reopen_ms` and retries forever
-    // until cancellation. This proves the public `run()`'s open-retry arm
-    // honours the cancel token from inside its `wait_or_cancel` sleep.
+    // /dev/null is not a tty so open() fails immediately and the hot-replug
+    // loop retries forever — exercises cancel-during-reopen-sleep.
     let allocator = EndpointIdAllocator::new();
     let endpoint_id = allocator.alloc();
     let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
@@ -59,9 +55,6 @@ async fn run_returns_when_cancelled_while_open_retrying() {
 
     let handle = tokio::spawn(async move { run(spec, wiring).await });
     tokio::time::sleep(Duration::from_millis(50)).await;
-    // Open keeps failing on /dev/null so the task stays in Reconnecting —
-    // the Connected transition is unreachable without a real device, but
-    // we can at least assert the initial state isn't being clobbered.
     assert_eq!(stats.load_state(), EndpointState::Reconnecting);
     cancel.cancel();
     timeout(Duration::from_secs(2), handle)
@@ -135,11 +128,8 @@ async fn pty_pair_round_trips_frame() {
 
 #[tokio::test]
 async fn session_surfaces_disconnected_on_slave_drop() {
-    // Dropping the slave end of a pty pair makes the master side see EOF on
-    // the next read, which `run_session` must report as
-    // `SessionOutcome::Disconnected`. That outcome is what triggers the
-    // outer re-open loop — asserting the trigger here keeps the
-    // session-level contract separate from the run() loop coverage above.
+    // Slave drop → master EOF → SessionOutcome::Disconnected is the trigger
+    // run()'s outer re-open loop relies on.
     let (master, slave) = SerialStream::pair().expect("pty pair");
 
     let allocator = EndpointIdAllocator::new();
