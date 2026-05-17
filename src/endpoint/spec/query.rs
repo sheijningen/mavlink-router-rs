@@ -1,8 +1,19 @@
 use std::collections::BTreeSet;
 
+use super::super::defaults::{
+    MAX_READ_BUF_BYTES, MAX_TX_QUEUE_FRAMES, MIN_READ_BUF_BYTES, MIN_TX_QUEUE_FRAMES,
+};
 use super::super::filters::Filters;
 use super::super::identity_flags::IdentityFlags;
-use super::super::udp::server::MAX_UDPS_PEER_CAPACITY;
+use super::super::serial::{MAX_SERIAL_REOPEN_MS, MIN_SERIAL_REOPEN_MS};
+use super::super::tcp::client::{
+    MAX_RECONNECT_INITIAL_MS, MAX_RECONNECT_MAX_MS, MIN_RECONNECT_INITIAL_MS, MIN_RECONNECT_MAX_MS,
+};
+use super::super::udp::client::{MAX_LATCH_IDLE_SECS, MIN_LATCH_IDLE_SECS};
+use super::super::udp::server::{
+    MAX_IDLE_SECS, MAX_UDPS_PEER_CAPACITY, MIN_IDLE_SECS, MIN_UDPS_PEER_CAPACITY,
+};
+use super::bounds::{check_u64_range, check_usize_range};
 use super::endpoint_kinds::{
     CommonQuery, SerialEndpoint, SerialFlowControl, TcpClientEndpoint, TcpServerEndpoint,
     UdpClientEndpoint, UdpServerEndpoint,
@@ -66,11 +77,23 @@ impl CommonQuery {
     pub fn apply(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
         match key {
             "read_buf_bytes" => {
-                self.read_buf_bytes = Some(parse_usize(value, "read_buf_bytes")?);
+                let n = parse_usize(value, "read_buf_bytes")?;
+                self.read_buf_bytes = Some(check_usize_range(
+                    n,
+                    "read_buf_bytes",
+                    MIN_READ_BUF_BYTES,
+                    MAX_READ_BUF_BYTES,
+                )?);
                 Ok(true)
             }
             "tx_queue_frames" => {
-                self.tx_queue_frames = Some(parse_usize(value, "tx_queue_frames")?);
+                let n = parse_usize(value, "tx_queue_frames")?;
+                self.tx_queue_frames = Some(check_usize_range(
+                    n,
+                    "tx_queue_frames",
+                    MIN_TX_QUEUE_FRAMES,
+                    MAX_TX_QUEUE_FRAMES,
+                )?);
                 Ok(true)
             }
             _ => Ok(false),
@@ -102,7 +125,13 @@ impl QueryApplier for SerialApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
         match key {
             "serial_reopen_ms" => {
-                self.0.serial_reopen_ms = Some(parse_u64(value, "serial_reopen_ms")?);
+                let n = parse_u64(value, "serial_reopen_ms")?;
+                self.0.serial_reopen_ms = Some(check_u64_range(
+                    n,
+                    "serial_reopen_ms",
+                    MIN_SERIAL_REOPEN_MS,
+                    MAX_SERIAL_REOPEN_MS,
+                )?);
                 Ok(true)
             }
             "flow_control" => {
@@ -130,18 +159,23 @@ impl QueryApplier for UdpServerApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
         match key {
             "idle_secs" => {
-                self.0.idle_secs = Some(parse_u64(value, "idle_secs")?);
+                let n = parse_u64(value, "idle_secs")?;
+                self.0.idle_secs = Some(check_u64_range(
+                    n,
+                    "idle_secs",
+                    MIN_IDLE_SECS,
+                    MAX_IDLE_SECS,
+                )?);
                 Ok(true)
             }
             "udps_peer_capacity" => {
                 let n = parse_usize(value, "udps_peer_capacity")?;
-                if n == 0 || n > MAX_UDPS_PEER_CAPACITY {
-                    return Err(SpecError::InvalidQueryValue {
-                        key: "udps_peer_capacity",
-                        reason: format!("must be in 1..={MAX_UDPS_PEER_CAPACITY}, got {n}"),
-                    });
-                }
-                self.0.udps_peer_capacity = Some(n);
+                self.0.udps_peer_capacity = Some(check_usize_range(
+                    n,
+                    "udps_peer_capacity",
+                    MIN_UDPS_PEER_CAPACITY,
+                    MAX_UDPS_PEER_CAPACITY,
+                )?);
                 Ok(true)
             }
             _ => apply_shared(&mut self.0.identity, &mut self.0.common, key, value),
@@ -153,7 +187,13 @@ pub struct UdpClientApplier<'a>(pub &'a mut UdpClientEndpoint);
 impl QueryApplier for UdpClientApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
         if key == "latch_idle_secs" {
-            self.0.latch_idle_secs = Some(parse_u64(value, "latch_idle_secs")?);
+            let n = parse_u64(value, "latch_idle_secs")?;
+            self.0.latch_idle_secs = Some(check_u64_range(
+                n,
+                "latch_idle_secs",
+                MIN_LATCH_IDLE_SECS,
+                MAX_LATCH_IDLE_SECS,
+            )?);
             return Ok(true);
         }
         apply_shared(&mut self.0.identity, &mut self.0.common, key, value)
@@ -172,11 +212,23 @@ impl QueryApplier for TcpClientApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
         match key {
             "reconnect_initial_ms" => {
-                self.0.reconnect_initial_ms = Some(parse_u64(value, "reconnect_initial_ms")?);
+                let n = parse_u64(value, "reconnect_initial_ms")?;
+                self.0.reconnect_initial_ms = Some(check_u64_range(
+                    n,
+                    "reconnect_initial_ms",
+                    MIN_RECONNECT_INITIAL_MS,
+                    MAX_RECONNECT_INITIAL_MS,
+                )?);
                 Ok(true)
             }
             "reconnect_max_ms" => {
-                self.0.reconnect_max_ms = Some(parse_u64(value, "reconnect_max_ms")?);
+                let n = parse_u64(value, "reconnect_max_ms")?;
+                self.0.reconnect_max_ms = Some(check_u64_range(
+                    n,
+                    "reconnect_max_ms",
+                    MIN_RECONNECT_MAX_MS,
+                    MAX_RECONNECT_MAX_MS,
+                )?);
                 Ok(true)
             }
             _ => apply_shared(&mut self.0.identity, &mut self.0.common, key, value),
@@ -333,28 +385,45 @@ mod tests {
         }
     }
 
-    // -- udps_peer_capacity bounds (CLAUDE.md "Defaults" table + parse-time
-    //    validation so `0` and absurd values don't silently turn into a
-    //    1-peer rotating slot or eat all memory). --
+    // -- Parse-time bounds checks. Every numeric knob the parser accepts
+    //    must reject 0 and obviously-bogus large values with a uniform
+    //    `"must be in MIN..=MAX, got N"` reason so operator-visible error
+    //    text is consistent. The MIN/MAX literals are hardcoded here on
+    //    purpose so the wire-contract (the exact bytes an operator sees
+    //    in the error) is pinned — a silent retune of the constants
+    //    would otherwise pass tests. --
+
+    /// Assert that parsing `input` fails with `InvalidQueryValue { key }`
+    /// and that the error reason references both `min`/`max` (so an
+    /// operator sees the valid range) and the offending `got_value`.
+    fn assert_bounds_err(input: &str, key: &str, min: u64, max: u64, got_value: u64) {
+        match parse_err(input) {
+            SpecError::InvalidQueryValue { key: k, reason: r } => {
+                assert_eq!(k, key, "wrong key in error for {input}");
+                assert!(
+                    r.contains(&format!("{min}..={max}")),
+                    "expected '{min}..={max}' in reason; got: {r}"
+                );
+                assert!(
+                    r.contains(&format!("got {got_value}")),
+                    "expected 'got {got_value}' in reason; got: {r}"
+                );
+            }
+            other => panic!("expected InvalidQueryValue for {input}, got {other:?}"),
+        }
+    }
+
+    // -- udps_peer_capacity (1..=1024) --
 
     #[test]
     fn udps_peer_capacity_zero_rejected() {
-        match parse_err("udps:0.0.0.0:1?udps_peer_capacity=0") {
-            SpecError::InvalidQueryValue { key, reason } => {
-                assert_eq!(key, "udps_peer_capacity");
-                // The max-allowed value must be surfaced so an operator can
-                // see the valid range from the error alone.
-                assert!(
-                    reason.contains("65536"),
-                    "expected max to appear in reason, got: {reason}"
-                );
-                assert!(
-                    reason.contains("got 0"),
-                    "expected offending value in reason, got: {reason}"
-                );
-            }
-            other => panic!("wrong error: {other:?}"),
-        }
+        assert_bounds_err(
+            "udps:0.0.0.0:1?udps_peer_capacity=0",
+            "udps_peer_capacity",
+            1,
+            1024,
+            0,
+        );
     }
 
     #[test]
@@ -365,26 +434,229 @@ mod tests {
 
     #[test]
     fn udps_peer_capacity_max_accepted() {
-        let s = parse_ok("udps:0.0.0.0:1?udps_peer_capacity=65536");
-        assert_eq!(as_udps(&s).udps_peer_capacity, Some(65536));
+        let s = parse_ok("udps:0.0.0.0:1?udps_peer_capacity=1024");
+        assert_eq!(as_udps(&s).udps_peer_capacity, Some(1024));
     }
 
     #[test]
     fn udps_peer_capacity_above_max_rejected() {
-        match parse_err("udps:0.0.0.0:1?udps_peer_capacity=65537") {
-            SpecError::InvalidQueryValue { key, reason } => {
-                assert_eq!(key, "udps_peer_capacity");
-                assert!(
-                    reason.contains("65536"),
-                    "expected max to appear in reason, got: {reason}"
-                );
-                assert!(
-                    reason.contains("got 65537"),
-                    "expected offending value in reason, got: {reason}"
-                );
-            }
-            other => panic!("wrong error: {other:?}"),
-        }
+        assert_bounds_err(
+            "udps:0.0.0.0:1?udps_peer_capacity=1025",
+            "udps_peer_capacity",
+            1,
+            1024,
+            1025,
+        );
+    }
+
+    // -- idle_secs (1..=86400) --
+
+    #[test]
+    fn idle_secs_zero_rejected() {
+        assert_bounds_err("udps:0.0.0.0:1?idle_secs=0", "idle_secs", 1, 86_400, 0);
+    }
+
+    #[test]
+    fn idle_secs_above_max_rejected() {
+        assert_bounds_err(
+            "udps:0.0.0.0:1?idle_secs=86401",
+            "idle_secs",
+            1,
+            86_400,
+            86_401,
+        );
+    }
+
+    // -- latch_idle_secs (1..=86400) --
+
+    #[test]
+    fn latch_idle_secs_zero_rejected() {
+        assert_bounds_err(
+            "udpc:1.2.3.4:14550?latch_idle_secs=0",
+            "latch_idle_secs",
+            1,
+            86_400,
+            0,
+        );
+    }
+
+    #[test]
+    fn latch_idle_secs_above_max_rejected() {
+        assert_bounds_err(
+            "udpc:1.2.3.4:14550?latch_idle_secs=86401",
+            "latch_idle_secs",
+            1,
+            86_400,
+            86_401,
+        );
+    }
+
+    // -- serial_reopen_ms (100..=60000) --
+
+    #[test]
+    fn serial_reopen_ms_below_min_rejected() {
+        assert_bounds_err(
+            "serial:/dev/foo:9600?serial_reopen_ms=50",
+            "serial_reopen_ms",
+            100,
+            60_000,
+            50,
+        );
+    }
+
+    #[test]
+    fn serial_reopen_ms_above_max_rejected() {
+        assert_bounds_err(
+            "serial:/dev/foo:9600?serial_reopen_ms=60001",
+            "serial_reopen_ms",
+            100,
+            60_000,
+            60_001,
+        );
+    }
+
+    // -- reconnect_initial_ms (10..=60000) --
+
+    #[test]
+    fn reconnect_initial_ms_below_min_rejected() {
+        assert_bounds_err(
+            "tcpc:h:1?reconnect_initial_ms=5",
+            "reconnect_initial_ms",
+            10,
+            60_000,
+            5,
+        );
+    }
+
+    #[test]
+    fn reconnect_initial_ms_above_max_rejected() {
+        assert_bounds_err(
+            "tcpc:h:1?reconnect_initial_ms=60001",
+            "reconnect_initial_ms",
+            10,
+            60_000,
+            60_001,
+        );
+    }
+
+    // -- reconnect_max_ms (100..=600000) --
+
+    #[test]
+    fn reconnect_max_ms_below_min_rejected() {
+        assert_bounds_err(
+            "tcpc:h:1?reconnect_max_ms=50",
+            "reconnect_max_ms",
+            100,
+            600_000,
+            50,
+        );
+    }
+
+    #[test]
+    fn reconnect_max_ms_above_max_rejected() {
+        assert_bounds_err(
+            "tcpc:h:1?reconnect_max_ms=600001",
+            "reconnect_max_ms",
+            100,
+            600_000,
+            600_001,
+        );
+    }
+
+    // -- tx_queue_frames (1..=65536) — CommonQuery on every scheme --
+
+    #[test]
+    fn tx_queue_frames_zero_rejected() {
+        assert_bounds_err(
+            "tcpc:h:1?tx_queue_frames=0",
+            "tx_queue_frames",
+            1,
+            65_536,
+            0,
+        );
+    }
+
+    #[test]
+    fn tx_queue_frames_above_max_rejected() {
+        assert_bounds_err(
+            "tcpc:h:1?tx_queue_frames=65537",
+            "tx_queue_frames",
+            1,
+            65_536,
+            65_537,
+        );
+    }
+
+    // -- read_buf_bytes (1024..=1048576) --
+
+    #[test]
+    fn read_buf_bytes_below_min_rejected() {
+        assert_bounds_err(
+            "tcpc:h:1?read_buf_bytes=512",
+            "read_buf_bytes",
+            1024,
+            1_048_576,
+            512,
+        );
+    }
+
+    #[test]
+    fn read_buf_bytes_above_max_rejected() {
+        assert_bounds_err(
+            "tcpc:h:1?read_buf_bytes=1048577",
+            "read_buf_bytes",
+            1024,
+            1_048_576,
+            1_048_577,
+        );
+    }
+
+    // -- learn_capacity (1..=1024) — IdentityFlags --
+
+    #[test]
+    fn learn_capacity_zero_rejected() {
+        assert_bounds_err(
+            "udps:0.0.0.0:1?learn_capacity=0",
+            "learn_capacity",
+            1,
+            1024,
+            0,
+        );
+    }
+
+    #[test]
+    fn learn_capacity_above_max_rejected() {
+        assert_bounds_err(
+            "udps:0.0.0.0:1?learn_capacity=1025",
+            "learn_capacity",
+            1,
+            1024,
+            1025,
+        );
+    }
+
+    // -- seq_tracker_capacity (1..=1024) — IdentityFlags --
+
+    #[test]
+    fn seq_tracker_capacity_zero_rejected() {
+        assert_bounds_err(
+            "udps:0.0.0.0:1?seq_tracker_capacity=0",
+            "seq_tracker_capacity",
+            1,
+            1024,
+            0,
+        );
+    }
+
+    #[test]
+    fn seq_tracker_capacity_above_max_rejected() {
+        assert_bounds_err(
+            "udps:0.0.0.0:1?seq_tracker_capacity=1025",
+            "seq_tracker_capacity",
+            1,
+            1024,
+            1025,
+        );
     }
 
     // -- msgid filter list parsing --

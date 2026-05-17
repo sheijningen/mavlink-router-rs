@@ -21,6 +21,16 @@ use super::wait_or_cancel;
 
 const DEFAULT_SERIAL_REOPEN_MS: u64 = 1000;
 
+/// `serial_reopen_ms` lower bound — below 100 ms the open-retry loop
+/// spins on a missing device and burns CPU without speeding recovery
+/// (USB enumeration is on the order of seconds).
+pub const MIN_SERIAL_REOPEN_MS: u64 = 100;
+
+/// `serial_reopen_ms` upper bound (60 seconds). Devices that take longer
+/// to reappear typically need an operator action anyway, so polling
+/// slower than once a minute just delays the eventual reopen.
+pub const MAX_SERIAL_REOPEN_MS: u64 = 60_000;
+
 /// Inputs that distinguish one `serial:` endpoint from another: which device
 /// to open at what baud (with optional hardware flow control), what to call
 /// it, and the per-endpoint knobs from the query string with CLAUDE.md

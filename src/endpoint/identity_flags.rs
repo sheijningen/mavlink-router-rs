@@ -5,9 +5,30 @@ use std::sync::Arc;
 
 use super::filters::Filters;
 use super::spec::SpecError;
+use super::spec::bounds::check_usize_range;
 
 const DEFAULT_LEARN_CAPACITY: usize = 32;
 const DEFAULT_SEQ_TRACKER_CAPACITY: usize = 32;
+
+/// `learn_capacity` lower bound — 0 silently clamps to 1 inside
+/// `LearnTable::new`, but the parser rejects it so the operator gets a
+/// concrete bounds error instead of a hidden clamp.
+pub const MIN_LEARN_CAPACITY: usize = 1;
+
+/// `learn_capacity` upper bound. The router uses the table for a linear
+/// scan on every routed frame, so growing it past 1024 entries hurts the
+/// hot path far more than it helps the rare deployment that genuinely
+/// needs >1024 distinct `(sysid, compid)` pairs per endpoint.
+pub const MAX_LEARN_CAPACITY: usize = 1024;
+
+/// `seq_tracker_capacity` lower bound — 0 disables the tracker silently
+/// via `LearnTable::new`'s clamp, so the parser rejects it.
+pub const MIN_SEQ_TRACKER_CAPACITY: usize = 1;
+
+/// `seq_tracker_capacity` upper bound. Same rationale as
+/// [`MAX_LEARN_CAPACITY`] — sequence-loss accounting is also a linear
+/// scan per-source-endpoint.
+pub const MAX_SEQ_TRACKER_CAPACITY: usize = 1024;
 
 /// Per-endpoint identity bundle: filter rules, sniffer flag, optional group
 /// label, and learn/seq-tracker capacities. Travels on the `*Spec` (not the
@@ -65,11 +86,19 @@ impl IdentityFlags {
                 Ok(true)
             }
             "learn_capacity" => {
-                self.learn_capacity = parse_usize(value, "learn_capacity")?;
+                let n = parse_usize(value, "learn_capacity")?;
+                self.learn_capacity =
+                    check_usize_range(n, "learn_capacity", MIN_LEARN_CAPACITY, MAX_LEARN_CAPACITY)?;
                 Ok(true)
             }
             "seq_tracker_capacity" => {
-                self.seq_tracker_capacity = parse_usize(value, "seq_tracker_capacity")?;
+                let n = parse_usize(value, "seq_tracker_capacity")?;
+                self.seq_tracker_capacity = check_usize_range(
+                    n,
+                    "seq_tracker_capacity",
+                    MIN_SEQ_TRACKER_CAPACITY,
+                    MAX_SEQ_TRACKER_CAPACITY,
+                )?;
                 Ok(true)
             }
             _ => Ok(false),

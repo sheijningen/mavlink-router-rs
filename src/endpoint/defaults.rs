@@ -11,9 +11,29 @@
 /// `tcps:` accepted children, `udps:` per-peer, `udpc:`).
 pub const DEFAULT_READ_BUF_BYTES: usize = 8192;
 
+/// `read_buf_bytes` lower bound — well above the MAVLink v2 max signed
+/// frame (~280 B) so the framer's `reserve` path doesn't have to grow on
+/// every read. 1 KB is a generous floor.
+pub const MIN_READ_BUF_BYTES: usize = 1024;
+
+/// `read_buf_bytes` upper bound (1 MiB). Sized to keep per-endpoint
+/// memory bounded across many endpoints; beyond this the framer is no
+/// longer the bottleneck.
+pub const MAX_READ_BUF_BYTES: usize = 1_048_576;
+
 /// Per-endpoint writer queue depth. Drop-oldest via `force_push` on
 /// overflow. Applies to every endpoint that owns a `TxQueue`.
 pub const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
+
+/// `tx_queue_frames` lower bound — 0 silently clamps to 1 inside
+/// `TxQueue::new`, but the parser rejects it so the operator gets a
+/// concrete bounds error instead of a hidden clamp.
+pub const MIN_TX_QUEUE_FRAMES: usize = 1;
+
+/// `tx_queue_frames` upper bound. At the default frame size (~280 B
+/// signed v2) a 65 K-deep queue is ~18 MiB per endpoint — already
+/// well past the "you should be reading the consumer faster" zone.
+pub const MAX_TX_QUEUE_FRAMES: usize = 65_536;
 
 /// Floor of the capped-exponential reconnect curve. Applies to `tcpc:`
 /// reconnects and to `tcps:` / `udps:` initial-bind retries (CLAUDE.md

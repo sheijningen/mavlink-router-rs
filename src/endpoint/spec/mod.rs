@@ -2,6 +2,7 @@
 //! fully-typed [`EndpointSpec`]. See the "Project layout" section of
 //! `CLAUDE.md` for the per-file breakdown.
 
+pub(crate) mod bounds;
 mod endpoint_kinds;
 mod error;
 mod parse;

@@ -24,6 +24,14 @@ use super::super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_LATCH_IDLE_SECS: u64 = 30;
+
+/// `latch_idle_secs` lower bound — 0 would revert the latch on the very
+/// next REVERT_TICK, defeating the latching mechanism entirely.
+pub const MIN_LATCH_IDLE_SECS: u64 = 1;
+
+/// `latch_idle_secs` upper bound (24 hours). Same rationale as
+/// [`super::server::MAX_IDLE_SECS`]: a day is effectively "never revert".
+pub const MAX_LATCH_IDLE_SECS: u64 = 86_400;
 // Max IP datagram payload plus headroom; matches `udps:` for symmetry so
 // neither side truncates an oversized inbound packet.
 const MAX_DATAGRAM_BYTES: usize = 65_536;

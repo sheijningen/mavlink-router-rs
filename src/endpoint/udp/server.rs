@@ -29,15 +29,26 @@ use crate::mavlink::framer::Framer;
 const DEFAULT_IDLE_SECS: u64 = 60;
 const DEFAULT_PEER_CAPACITY: usize = 256;
 
-/// Practical upper bound on a single `udps:` listener's peer table. Set
-/// to `u16::MAX + 1` because a single source IP can produce at most that
-/// many distinct ports, and admitting more peers than that on one
-/// listener would always mean multiple source IPs — at which point an
-/// operator who needs higher capacity should split the bind across
+/// Practical lower bound: 0 would silently degenerate to a 1-peer rotating
+/// slot (admission evicts the previous peer before inserting), so the parser
+/// rejects 0 and forces an explicit floor of 1.
+pub const MIN_UDPS_PEER_CAPACITY: usize = 1;
+
+/// Practical upper bound on a single `udps:` listener's peer table.
+/// Deployments that need higher capacity should split the bind across
 /// listeners (or processes) rather than fight RMR's per-listener memory
-/// plus task-spawn budget. Surfaced in the parse-time error so an
-/// operator pasting a typo'd value gets a concrete target range.
-pub const MAX_UDPS_PEER_CAPACITY: usize = 65_536;
+/// plus task-spawn budget — each admitted peer holds a `TxQueue` (~4KB at
+/// the default queue depth) and a writer task.
+pub const MAX_UDPS_PEER_CAPACITY: usize = 1024;
+
+/// Default `idle_secs` lower bound — 0 would reap every peer on the very
+/// next reaper tick.
+pub const MIN_IDLE_SECS: u64 = 1;
+
+/// Default `idle_secs` upper bound (24 hours). Anything beyond a day means
+/// "never reap"; if that's intentional an operator should reconsider the
+/// retention model rather than push the knob through its sane range.
+pub const MAX_IDLE_SECS: u64 = 86_400;
 // Max IP datagram payload plus headroom; one `recv_from` cannot return more
 // than the kernel's MTU-bounded payload, but we size the buffer to the IP
 // theoretical max so a fragmented giant datagram couldn't be truncated.

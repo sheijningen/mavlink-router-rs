@@ -23,6 +23,25 @@ use super::super::wait_or_cancel;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// `reconnect_initial_ms` lower bound — below 10 ms the dial loop hammers
+/// the peer's accept path and burns CPU without giving the OS any time to
+/// observe a connection refusal.
+pub const MIN_RECONNECT_INITIAL_MS: u64 = 10;
+
+/// `reconnect_initial_ms` upper bound (60 s). If the initial step is
+/// already a minute, the curve never gets to retry quickly after a real
+/// outage clears.
+pub const MAX_RECONNECT_INITIAL_MS: u64 = 60_000;
+
+/// `reconnect_max_ms` lower bound — should give the backoff curve room to
+/// double at least a few times above `reconnect_initial_ms`'s floor.
+pub const MIN_RECONNECT_MAX_MS: u64 = 100;
+
+/// `reconnect_max_ms` upper bound (10 minutes). Capped-exponential with a
+/// 10-minute ceiling is already a very gentle retry; longer ceilings just
+/// hide outages.
+pub const MAX_RECONNECT_MAX_MS: u64 = 600_000;
+
 /// Inputs that distinguish one `tcpc:` endpoint from another: where to dial,
 /// what to call it, and the per-endpoint knobs from the query string with
 /// CLAUDE.md defaults already substituted. `identity` carries the filter /
