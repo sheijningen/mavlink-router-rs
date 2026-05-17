@@ -5,6 +5,7 @@ pub mod error;
 pub mod mavlink;
 pub mod router;
 pub mod shutdown;
+pub mod stats;
 
 pub use error::Error;
 
