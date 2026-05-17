@@ -137,3 +137,331 @@ async fn write_outbound_frame<W: AsyncWrite + Unpin>(
     stats.add_tx_frame(frame.len());
     ControlFlow::Continue(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::endpoint::EndpointIdAllocator;
+    use crate::mavlink::crc::Crc16;
+    use crate::mavlink::frame::STX_V1;
+    use bytes::BufMut;
+    use std::pin::Pin;
+    use std::sync::atomic::Ordering;
+    use std::task::{Context, Poll};
+
+    fn build_v1_heartbeat() -> Vec<u8> {
+        // msgid 0 (HEARTBEAT), crc_extra 50, 9-byte payload — the smallest
+        // known-msgid frame that exercises CRC-validated routing.
+        let payload = [0u8; 9];
+        let mut frame = vec![STX_V1, payload.len() as u8, 0, 1, 1, 0];
+        frame.extend_from_slice(&payload);
+        let mut crc = Crc16::new();
+        crc.update_slice(&frame[1..]);
+        crc.update(50);
+        let c = crc.finalize();
+        frame.push((c & 0xFF) as u8);
+        frame.push((c >> 8) as u8);
+        frame
+    }
+
+    fn fresh_id() -> EndpointId {
+        EndpointIdAllocator::new().alloc()
+    }
+
+    fn io_err() -> io::Error {
+        io::Error::other("boom")
+    }
+
+    #[tokio::test]
+    async fn handle_read_eof_breaks_disconnected() {
+        let mut framer = Framer::with_capacity(64);
+        let mut counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, _rx) = mpsc::channel(8);
+
+        let out =
+            handle_read_result(Ok(0), &mut framer, &mut counters, &stats, fresh_id(), &tx).await;
+        assert_eq!(out, ControlFlow::Break(SessionOutcome::Disconnected));
+    }
+
+    #[tokio::test]
+    async fn handle_read_err_breaks_disconnected() {
+        let mut framer = Framer::with_capacity(64);
+        let mut counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, _rx) = mpsc::channel(8);
+
+        let out = handle_read_result(
+            Err(io_err()),
+            &mut framer,
+            &mut counters,
+            &stats,
+            fresh_id(),
+            &tx,
+        )
+        .await;
+        assert_eq!(out, ControlFlow::Break(SessionOutcome::Disconnected));
+    }
+
+    #[tokio::test]
+    async fn handle_read_partial_frame_continues_without_send() {
+        let mut framer = Framer::with_capacity(64);
+        framer.buffer_mut().put_slice(&[STX_V1, 9, 0]);
+        let mut counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, mut rx) = mpsc::channel(8);
+
+        let out =
+            handle_read_result(Ok(3), &mut framer, &mut counters, &stats, fresh_id(), &tx).await;
+        assert_eq!(out, ControlFlow::Continue(()));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_read_complete_frame_forwards_and_bumps_stats() {
+        let bytes = build_v1_heartbeat();
+        let mut framer = Framer::with_capacity(64);
+        framer.buffer_mut().put_slice(&bytes);
+        let mut counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, mut rx) = mpsc::channel(8);
+        let id = fresh_id();
+
+        let out =
+            handle_read_result(Ok(bytes.len()), &mut framer, &mut counters, &stats, id, &tx).await;
+        assert_eq!(out, ControlFlow::Continue(()));
+
+        let rf = rx.try_recv().expect("frame should be forwarded");
+        assert_eq!(rf.endpoint_id, id);
+        assert_eq!(&rf.frame[..], &bytes[..]);
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.rx_bytes.load(Ordering::Relaxed), bytes.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn handle_read_router_closed_breaks_terminated_but_counts_rx() {
+        // rx counters bump before the send; a closed router still leaves the
+        // frame visible in stats. Locking that behaviour in.
+        let bytes = build_v1_heartbeat();
+        let mut framer = Framer::with_capacity(64);
+        framer.buffer_mut().put_slice(&bytes);
+        let mut counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, rx) = mpsc::channel(8);
+        drop(rx);
+
+        let out = handle_read_result(
+            Ok(bytes.len()),
+            &mut framer,
+            &mut counters,
+            &stats,
+            fresh_id(),
+            &tx,
+        )
+        .await;
+        assert_eq!(out, ControlFlow::Break(SessionOutcome::Terminated));
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn handle_read_syncs_framer_counters_to_stats() {
+        // Four garbage bytes ahead of a valid frame produce resync_bytes=4
+        // inside the framer; sync() must forward that delta to shared stats.
+        let frame = build_v1_heartbeat();
+        let mut buf = vec![0u8; 4];
+        buf.extend_from_slice(&frame);
+
+        let mut framer = Framer::with_capacity(128);
+        framer.buffer_mut().put_slice(&buf);
+        let mut counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, _rx) = mpsc::channel(8);
+
+        let out = handle_read_result(
+            Ok(buf.len()),
+            &mut framer,
+            &mut counters,
+            &stats,
+            fresh_id(),
+            &tx,
+        )
+        .await;
+        assert_eq!(out, ControlFlow::Continue(()));
+        assert_eq!(stats.resync_bytes.load(Ordering::Relaxed), 4);
+    }
+
+    #[tokio::test]
+    async fn handle_read_terminated_path_skips_framer_sync() {
+        // Lock in the contract: when forward_inbound_frames short-circuits
+        // with Break(Terminated), the trailing framer_counters.sync() is
+        // intentionally skipped — the session is winding down and the final
+        // resync_bytes/crc_errors delta is allowed to die with it.
+        let frame = build_v1_heartbeat();
+        let mut buf = vec![0u8; 4];
+        buf.extend_from_slice(&frame);
+
+        let mut framer = Framer::with_capacity(128);
+        framer.buffer_mut().put_slice(&buf);
+        let mut counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, rx) = mpsc::channel(8);
+        drop(rx);
+
+        let out = handle_read_result(
+            Ok(buf.len()),
+            &mut framer,
+            &mut counters,
+            &stats,
+            fresh_id(),
+            &tx,
+        )
+        .await;
+        assert_eq!(out, ControlFlow::Break(SessionOutcome::Terminated));
+        assert_eq!(stats.resync_bytes.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_read_corrupted_crc_propagates_to_stats() {
+        let mut frame = build_v1_heartbeat();
+        let last = frame.len() - 1;
+        frame[last] ^= 0xFF;
+
+        let mut framer = Framer::with_capacity(128);
+        framer.buffer_mut().put_slice(&frame);
+        let mut counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, mut rx) = mpsc::channel(8);
+
+        let out = handle_read_result(
+            Ok(frame.len()),
+            &mut framer,
+            &mut counters,
+            &stats,
+            fresh_id(),
+            &tx,
+        )
+        .await;
+        assert_eq!(out, ControlFlow::Continue(()));
+        assert_eq!(stats.crc_errors.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 0);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn handle_read_multiple_frames_in_one_buffer_fill_all_forward() {
+        let frame = build_v1_heartbeat();
+        let mut buf = frame.clone();
+        buf.extend_from_slice(&frame);
+
+        let mut framer = Framer::with_capacity(128);
+        framer.buffer_mut().put_slice(&buf);
+        let mut counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, mut rx) = mpsc::channel(8);
+
+        let out = handle_read_result(
+            Ok(buf.len()),
+            &mut framer,
+            &mut counters,
+            &stats,
+            fresh_id(),
+            &tx,
+        )
+        .await;
+        assert_eq!(out, ControlFlow::Continue(()));
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err());
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            stats.rx_bytes.load(Ordering::Relaxed),
+            2 * frame.len() as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_inbound_frames_empty_continues() {
+        let mut framer = Framer::with_capacity(64);
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, mut rx) = mpsc::channel(8);
+
+        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx).await;
+        assert_eq!(out, ControlFlow::Continue(()));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn forward_inbound_frames_drains_all_buffered() {
+        let bytes = build_v1_heartbeat();
+        let mut framer = Framer::with_capacity(128);
+        framer.buffer_mut().put_slice(&bytes);
+        framer.buffer_mut().put_slice(&bytes);
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, mut rx) = mpsc::channel(8);
+
+        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx).await;
+        assert_eq!(out, ControlFlow::Continue(()));
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err());
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            stats.rx_bytes.load(Ordering::Relaxed),
+            2 * bytes.len() as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_inbound_frames_closed_channel_breaks_terminated() {
+        let bytes = build_v1_heartbeat();
+        let mut framer = Framer::with_capacity(64);
+        framer.buffer_mut().put_slice(&bytes);
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, rx) = mpsc::channel(8);
+        drop(rx);
+
+        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx).await;
+        assert_eq!(out, ControlFlow::Break(SessionOutcome::Terminated));
+    }
+
+    #[tokio::test]
+    async fn write_outbound_frame_success_bumps_tx_stats() {
+        let stats = Arc::new(EndpointStats::default());
+        let mut sink = tokio::io::sink();
+        let frame = Bytes::from_static(b"some bytes");
+
+        let out = write_outbound_frame(&mut sink, frame.clone(), &stats).await;
+        assert_eq!(out, ControlFlow::Continue(()));
+        assert_eq!(stats.tx_frames.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.tx_bytes.load(Ordering::Relaxed), frame.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn write_outbound_frame_io_error_breaks_disconnected() {
+        struct AlwaysErr;
+        impl AsyncWrite for AlwaysErr {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
+            }
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let stats = Arc::new(EndpointStats::default());
+        let mut w = AlwaysErr;
+        let out = write_outbound_frame(&mut w, Bytes::from_static(b"hi"), &stats).await;
+        assert_eq!(out, ControlFlow::Break(SessionOutcome::Disconnected));
+        assert_eq!(stats.tx_frames.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.tx_bytes.load(Ordering::Relaxed), 0);
+    }
+}
