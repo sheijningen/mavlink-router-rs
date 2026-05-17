@@ -28,8 +28,6 @@ pub struct EndpointSpec {
     /// Either the explicit `#name` fragment or an auto-name derived from the
     /// scheme + address (sanitised to satisfy the explicit-name regex).
     pub name: String,
-    /// True when `name` came from `#name` rather than being auto-derived.
-    pub explicit_name: bool,
 }
 
 impl EndpointSpec {
@@ -58,11 +56,6 @@ impl EndpointSpec {
             }
             None => default_name(&kind),
         };
-        let explicit = explicit_name.is_some();
-        Ok(Self {
-            kind,
-            name,
-            explicit_name: explicit,
-        })
+        Ok(Self { kind, name })
     }
 }

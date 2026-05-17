@@ -323,7 +323,6 @@ mod tests {
         assert_eq!(e.path, "/dev/ttyUSB0");
         assert_eq!(e.baud, 921600);
         assert_eq!(s.name, "serial-_dev_ttyUSB0-921600");
-        assert!(!s.explicit_name);
     }
 
     #[test]
@@ -366,7 +365,6 @@ mod tests {
     fn serial_with_explicit_name() {
         let s = parse_ok("serial:/dev/ttyUSB0:921600#vehicle");
         assert_eq!(s.name, "vehicle");
-        assert!(s.explicit_name);
     }
 
     #[test]

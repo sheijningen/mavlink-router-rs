@@ -198,11 +198,7 @@ async fn spawn_endpoint(
     cancel: &CancellationToken,
     spec: EndpointSpec,
 ) -> Result<(), Error> {
-    let EndpointSpec {
-        kind,
-        name,
-        explicit_name: _,
-    } = spec;
+    let EndpointSpec { kind, name } = spec;
     let endpoint_id = allocator.alloc();
     let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
 
