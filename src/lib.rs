@@ -20,9 +20,7 @@ use tracing::{info, warn};
 
 use crate::endpoint::EndpointId;
 use crate::endpoint::EndpointIdAllocator;
-use crate::endpoint::defaults::DEFAULT_TX_QUEUE_FRAMES;
 use crate::endpoint::events::{EndpointEvent, RouterFrame};
-use crate::endpoint::identity_flags::IdentityFlags;
 use crate::endpoint::serial::{SerialSpec, SerialWiring};
 use crate::endpoint::spec::{EndpointKind, EndpointSpec};
 use crate::endpoint::stats::{EndpointState, EndpointStats};
@@ -131,27 +129,6 @@ fn estimate_registry_size(specs: &[EndpointSpec]) -> usize {
     n
 }
 
-fn identity_of(kind: &EndpointKind) -> IdentityFlags {
-    match kind {
-        EndpointKind::Serial(e) => e.identity.clone(),
-        EndpointKind::TcpClient(e) => e.identity.clone(),
-        EndpointKind::TcpServer(e) => e.identity.clone(),
-        EndpointKind::UdpClient(e) => e.identity.clone(),
-        EndpointKind::UdpServer(e) => e.identity.clone(),
-    }
-}
-
-fn tx_queue_frames_of(kind: &EndpointKind) -> usize {
-    let common = match kind {
-        EndpointKind::Serial(e) => &e.common,
-        EndpointKind::TcpClient(e) => &e.common,
-        EndpointKind::TcpServer(e) => &e.common,
-        EndpointKind::UdpClient(e) => &e.common,
-        EndpointKind::UdpServer(e) => &e.common,
-    };
-    common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES)
-}
-
 /// `tcps:` / `udps:` parent listeners exist as supervisory entries: they
 /// hold stats and an `EndpointId` but their `TxQueue` has no consumer
 /// (children own real readers/writers). The router must skip them as
@@ -229,9 +206,8 @@ async fn spawn_endpoint(
     } = spec;
     let endpoint_id = allocator.alloc();
     let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
-    let identity = identity_of(&kind);
-    let tx_queue_frames = tx_queue_frames_of(&kind);
-    let tx_queue = TxQueue::new(tx_queue_frames, stats.clone());
+    let identity = kind.identity();
+    let tx_queue = TxQueue::new(kind.tx_queue_frames(), stats.clone());
     let routable = is_routable_top_level(&kind);
 
     // CLAUDE.md "Endpoint registration is symmetric": send EndpointAdded
