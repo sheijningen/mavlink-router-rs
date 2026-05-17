@@ -89,12 +89,14 @@ pub async fn run_with_cancel(cli: cli::Cli, token: CancellationToken) -> Result<
 
     spawn_router(
         &mut tasks,
-        frame_rx,
-        event_rx,
-        stats_event_tx,
-        token.clone(),
-        cli.dedup_ms,
-        DEFAULT_DEDUP_WINDOW_CAPACITY,
+        RouterWiring {
+            frame_rx,
+            event_rx,
+            stats_event_tx,
+            cancel: token.clone(),
+            dedup_ms: cli.dedup_ms,
+            dedup_window_capacity: DEFAULT_DEDUP_WINDOW_CAPACITY,
+        },
     );
     spawn_stats(&mut tasks, stats_event_rx, token.clone());
     spawn_endpoints(&mut tasks, &event_tx, &frame_tx, &token, specs).await?;
@@ -132,24 +134,7 @@ fn estimate_registry_size(specs: &[EndpointSpec]) -> usize {
     n
 }
 
-#[allow(clippy::too_many_arguments)]
-fn spawn_router(
-    tasks: &mut JoinSet<()>,
-    frame_rx: mpsc::Receiver<RouterFrame>,
-    event_rx: mpsc::Receiver<EndpointEvent>,
-    stats_event_tx: mpsc::Sender<StatsEvent>,
-    cancel: CancellationToken,
-    dedup_ms: u64,
-    dedup_window_capacity: usize,
-) {
-    let wiring = RouterWiring {
-        frame_rx,
-        event_rx,
-        stats_event_tx,
-        cancel,
-        dedup_ms,
-        dedup_window_capacity,
-    };
+fn spawn_router(tasks: &mut JoinSet<()>, wiring: RouterWiring) {
     tasks.spawn(async move {
         router::run(wiring).await;
     });
