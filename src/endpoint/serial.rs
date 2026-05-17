@@ -105,7 +105,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
         name: _,
         serial_reopen_ms,
         read_buf_bytes,
-        identity: _,
+        identity,
     } = spec;
     let SerialWiring {
         frame_tx,
@@ -148,6 +148,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
             &tx_queue,
             &cancel,
             read_buf_bytes,
+            &identity.filters,
         )
         .await
         {

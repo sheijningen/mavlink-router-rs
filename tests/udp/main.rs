@@ -4,6 +4,7 @@ mod common;
 mod bind_retry;
 mod identity;
 mod idle_reap;
+mod in_filter;
 mod latch;
 mod roundtrip;
 mod state;

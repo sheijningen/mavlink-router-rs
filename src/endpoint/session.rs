@@ -1,15 +1,17 @@
 use std::io;
 use std::ops::ControlFlow;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use super::EndpointId;
 use super::events::RouterFrame;
+use super::filters::Filters;
 use super::stats::{EndpointStats, FramerCounters};
 use super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
@@ -36,6 +38,7 @@ pub enum SessionOutcome {
 /// life of the connection). The tracing span set by each caller (`serial`,
 /// `tcpc`, `tcps_child`) disambiguates log lines without needing transport
 /// prefixes inside this loop.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_session<S>(
     stream: S,
     endpoint_id: EndpointId,
@@ -44,6 +47,7 @@ pub async fn run_session<S>(
     tx_queue: &TxQueue,
     cancel: &CancellationToken,
     read_buf_bytes: usize,
+    filters: &Filters,
 ) -> SessionOutcome
 where
     S: AsyncRead + AsyncWrite,
@@ -64,6 +68,7 @@ where
                     stats,
                     endpoint_id,
                     frame_tx,
+                    filters,
                 ).await {
                     return outcome;
                 }
@@ -84,6 +89,7 @@ async fn handle_read_result(
     stats: &EndpointStats,
     endpoint_id: EndpointId,
     frame_tx: &mpsc::Sender<RouterFrame>,
+    filters: &Filters,
 ) -> ControlFlow<SessionOutcome> {
     match res {
         Ok(0) => {
@@ -96,7 +102,7 @@ async fn handle_read_result(
         }
         Ok(_) => {}
     }
-    forward_inbound_frames(framer, stats, endpoint_id, frame_tx).await?;
+    forward_inbound_frames(framer, stats, endpoint_id, frame_tx, filters).await?;
     framer_counters.sync(framer, stats);
     ControlFlow::Continue(())
 }
@@ -106,9 +112,22 @@ async fn forward_inbound_frames(
     stats: &EndpointStats,
     endpoint_id: EndpointId,
     frame_tx: &mpsc::Sender<RouterFrame>,
+    filters: &Filters,
 ) -> ControlFlow<SessionOutcome> {
     while let Some((header, frame)) = framer.try_next_frame() {
+        // rx_frames/rx_bytes count every framed frame at the wire, so the
+        // counter reflects link rate even when policy rejects the frame.
         stats.add_rx_frame(frame.len());
+        if !filters.passes_in_filter(header.msgid, header.sysid, header.compid) {
+            stats.in_filter_drops.fetch_add(1, Ordering::Relaxed);
+            trace!(
+                msgid = header.msgid,
+                sysid = header.sysid,
+                compid = header.compid,
+                "in-filter dropped frame at session ingress"
+            );
+            continue;
+        }
         if frame_tx
             .send(RouterFrame {
                 endpoint_id,
@@ -142,12 +161,17 @@ async fn write_outbound_frame<W: AsyncWrite + Unpin>(
 mod tests {
     use super::*;
     use crate::endpoint::EndpointIdAllocator;
+    use crate::endpoint::filters::{Filters, MsgIdRange};
     use crate::mavlink::crc::Crc16;
     use crate::mavlink::frame::STX_V1;
     use bytes::BufMut;
     use std::pin::Pin;
     use std::sync::atomic::Ordering;
     use std::task::{Context, Poll};
+
+    fn no_filter() -> Filters {
+        Filters::default()
+    }
 
     fn build_v1_heartbeat() -> Vec<u8> {
         // msgid 0 (HEARTBEAT), crc_extra 50, 9-byte payload — the smallest
@@ -179,8 +203,16 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, _rx) = mpsc::channel(8);
 
-        let out =
-            handle_read_result(Ok(0), &mut framer, &mut counters, &stats, fresh_id(), &tx).await;
+        let out = handle_read_result(
+            Ok(0),
+            &mut framer,
+            &mut counters,
+            &stats,
+            fresh_id(),
+            &tx,
+            &no_filter(),
+        )
+        .await;
         assert_eq!(out, ControlFlow::Break(SessionOutcome::Disconnected));
     }
 
@@ -198,6 +230,7 @@ mod tests {
             &stats,
             fresh_id(),
             &tx,
+            &no_filter(),
         )
         .await;
         assert_eq!(out, ControlFlow::Break(SessionOutcome::Disconnected));
@@ -211,8 +244,16 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, mut rx) = mpsc::channel(8);
 
-        let out =
-            handle_read_result(Ok(3), &mut framer, &mut counters, &stats, fresh_id(), &tx).await;
+        let out = handle_read_result(
+            Ok(3),
+            &mut framer,
+            &mut counters,
+            &stats,
+            fresh_id(),
+            &tx,
+            &no_filter(),
+        )
+        .await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_err());
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 0);
@@ -228,8 +269,16 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let id = fresh_id();
 
-        let out =
-            handle_read_result(Ok(bytes.len()), &mut framer, &mut counters, &stats, id, &tx).await;
+        let out = handle_read_result(
+            Ok(bytes.len()),
+            &mut framer,
+            &mut counters,
+            &stats,
+            id,
+            &tx,
+            &no_filter(),
+        )
+        .await;
         assert_eq!(out, ControlFlow::Continue(()));
 
         let rf = rx.try_recv().expect("frame should be forwarded");
@@ -258,6 +307,7 @@ mod tests {
             &stats,
             fresh_id(),
             &tx,
+            &no_filter(),
         )
         .await;
         assert_eq!(out, ControlFlow::Break(SessionOutcome::Terminated));
@@ -285,6 +335,7 @@ mod tests {
             &stats,
             fresh_id(),
             &tx,
+            &no_filter(),
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -315,6 +366,7 @@ mod tests {
             &stats,
             fresh_id(),
             &tx,
+            &no_filter(),
         )
         .await;
         assert_eq!(out, ControlFlow::Break(SessionOutcome::Terminated));
@@ -340,6 +392,7 @@ mod tests {
             &stats,
             fresh_id(),
             &tx,
+            &no_filter(),
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -367,6 +420,7 @@ mod tests {
             &stats,
             fresh_id(),
             &tx,
+            &no_filter(),
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -386,7 +440,7 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, mut rx) = mpsc::channel(8);
 
-        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx).await;
+        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &no_filter()).await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_err());
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 0);
@@ -401,7 +455,7 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, mut rx) = mpsc::channel(8);
 
-        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx).await;
+        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &no_filter()).await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_ok());
@@ -422,8 +476,49 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         drop(rx);
 
-        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx).await;
+        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &no_filter()).await;
         assert_eq!(out, ControlFlow::Break(SessionOutcome::Terminated));
+    }
+
+    #[tokio::test]
+    async fn in_filter_blocks_frame_and_bumps_drop_counter() {
+        // A frame whose msgid matches `block_msgid_in` must not reach the
+        // router and must increment `in_filter_drops`; `rx_frames` still
+        // bumps because the framer admitted the frame (CLAUDE.md "Counter
+        // overlap: in_filter_drops is the union of all ingress-side drops").
+        let bytes = build_v1_heartbeat(); // msgid 0 (HEARTBEAT)
+        let mut framer = Framer::with_capacity(128);
+        framer.buffer_mut().put_slice(&bytes);
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, mut rx) = mpsc::channel(8);
+        let filters = Filters {
+            block_msgid_in: vec![MsgIdRange::single(0)],
+            ..Filters::default()
+        };
+
+        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &filters).await;
+        assert_eq!(out, ControlFlow::Continue(()));
+        assert!(rx.try_recv().is_err(), "frame must not reach router");
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.in_filter_drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn in_filter_pass_lets_frame_through_without_counter_bump() {
+        let bytes = build_v1_heartbeat();
+        let mut framer = Framer::with_capacity(128);
+        framer.buffer_mut().put_slice(&bytes);
+        let stats = Arc::new(EndpointStats::default());
+        let (tx, mut rx) = mpsc::channel(8);
+        let filters = Filters {
+            allow_msgid_in: vec![MsgIdRange::single(0)],
+            ..Filters::default()
+        };
+
+        let out = forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &filters).await;
+        assert_eq!(out, ControlFlow::Continue(()));
+        assert!(rx.try_recv().is_ok());
+        assert_eq!(stats.in_filter_drops.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

@@ -112,7 +112,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
         reconnect_initial_ms,
         reconnect_max_ms,
         read_buf_bytes,
-        identity: _,
+        identity,
     } = spec;
     let TcpClientWiring {
         frame_tx,
@@ -163,6 +163,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
             &tx_queue,
             &cancel,
             read_buf_bytes,
+            &identity.filters,
         )
         .await
         {

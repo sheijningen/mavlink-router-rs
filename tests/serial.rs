@@ -12,6 +12,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::RouterFrame;
+use rmr::endpoint::filters::Filters;
 use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::serial::{SerialSpec, SerialWiring, run};
 use rmr::endpoint::session::{SessionOutcome, run_session};
@@ -86,6 +87,7 @@ async fn pty_pair_round_trips_frame() {
                 &tx_queue,
                 &cancel,
                 4096,
+                &Filters::default(),
             )
             .await
         })
@@ -150,6 +152,7 @@ async fn session_surfaces_disconnected_on_slave_drop() {
                 &tx_queue,
                 &cancel,
                 4096,
+                &Filters::default(),
             )
             .await
         })

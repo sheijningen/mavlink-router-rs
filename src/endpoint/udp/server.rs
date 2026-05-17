@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
@@ -333,6 +334,25 @@ async fn handle_packet(
     while let Some((header, frame)) = peer.framer.try_next_frame() {
         let frame_len = frame.len();
         peer.stats.add_rx_frame(frame_len);
+        // CLAUDE.md: "filters apply uniformly to every admitted child of a
+        // listener, so the listener evaluates against its own IdentityFlags
+        // rather than re-looking-up the peer's identical clone; only the drop
+        // credit goes to the peer's Arc<EndpointStats>".
+        if !ctx
+            .identity
+            .filters
+            .passes_in_filter(header.msgid, header.sysid, header.compid)
+        {
+            peer.stats.in_filter_drops.fetch_add(1, Ordering::Relaxed);
+            trace!(
+                msgid = header.msgid,
+                sysid = header.sysid,
+                compid = header.compid,
+                %src,
+                "udps in-filter dropped frame at ingress"
+            );
+            continue;
+        }
         if ctx
             .frame_tx
             .send(RouterFrame {

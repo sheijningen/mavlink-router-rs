@@ -16,6 +16,7 @@ use super::super::defaults::{
     DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
 };
 use super::super::events::RouterFrame;
+use super::super::filters::Filters;
 use super::super::identity_flags::IdentityFlags;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
@@ -212,7 +213,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
         read_buf_bytes,
         reconnect_initial_ms,
         reconnect_max_ms,
-        identity: _,
+        identity,
     } = spec;
     let UdpClientWiring {
         frame_tx,
@@ -278,6 +279,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
                             endpoint_id,
                             &stats,
                             &frame_tx,
+                            &identity.filters,
                         )
                         .await;
                     }
@@ -303,6 +305,7 @@ async fn handle_inbound(
     endpoint_id: EndpointId,
     stats: &Arc<EndpointStats>,
     frame_tx: &mpsc::Sender<RouterFrame>,
+    filters: &Filters,
 ) {
     match classify_inbound(dest, src.ip()) {
         InboundDecision::Reject => {
@@ -334,6 +337,20 @@ async fn handle_inbound(
     while let Some((header, frame)) = framer.try_next_frame() {
         let frame_len = frame.len();
         stats.add_rx_frame(frame_len);
+        // Per-frame In-filter check — CLAUDE.md "In-filter evaluation in the
+        // reader task". `in_filter_drops` is the union counter: the same slot
+        // bumped by the wrong-source-IP rejection above.
+        if !filters.passes_in_filter(header.msgid, header.sysid, header.compid) {
+            stats.in_filter_drops.fetch_add(1, Ordering::Relaxed);
+            trace!(
+                msgid = header.msgid,
+                sysid = header.sysid,
+                compid = header.compid,
+                %src,
+                "udpc in-filter dropped frame at ingress"
+            );
+            continue;
+        }
         if frame_tx
             .send(RouterFrame {
                 endpoint_id,
@@ -705,6 +722,7 @@ mod tests {
             EndpointId(0),
             &stats,
             &frame_tx,
+            &crate::endpoint::filters::Filters::default(),
         )
         .await;
         assert_eq!(stats.load_state(), EndpointState::Connected);
@@ -733,10 +751,60 @@ mod tests {
             EndpointId(0),
             &stats,
             &frame_tx,
+            &crate::endpoint::filters::Filters::default(),
         )
         .await;
         assert_eq!(stats.load_state(), EndpointState::Reconnecting);
         assert!(dest.latch.is_none());
+        assert_eq!(stats.in_filter_drops.load(Ordering::Relaxed), 1);
+    }
+
+    /// Per-frame In-filter (msgid blocklist) rejects a properly-sourced
+    /// frame and bumps `in_filter_drops` on the endpoint's stats. CRC + frame
+    /// counters still advance — `rx_frames` reflects link rate.
+    #[tokio::test]
+    async fn in_filter_drops_blocked_msgid() {
+        use crate::endpoint::filters::{Filters, MsgIdRange};
+        use crate::mavlink::crc::Crc16;
+        use crate::mavlink::frame::STX_V1;
+
+        // Build a v1 HEARTBEAT (msgid 0) by hand so the test does not depend
+        // on tests/common/.
+        let payload = [0u8; 9];
+        let mut bytes = vec![STX_V1, payload.len() as u8, 0, 1, 1, 0];
+        bytes.extend_from_slice(&payload);
+        let mut crc = Crc16::new();
+        crc.update_slice(&bytes[1..]);
+        crc.update(50);
+        let c = crc.finalize();
+        bytes.push((c & 0xFF) as u8);
+        bytes.push((c >> 8) as u8);
+
+        let mut dest = make_dest(&[v4(127, 0, 0, 1)], 14550);
+        let mut framer = Framer::with_capacity(1024);
+        let mut framer_counters = FramerCounters::new();
+        let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
+        let (frame_tx, mut frame_rx) = mpsc::channel::<RouterFrame>(8);
+
+        let filters = Filters {
+            block_msgid_in: vec![MsgIdRange::single(0)],
+            ..Filters::default()
+        };
+        let src = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 50000));
+        handle_inbound(
+            &bytes,
+            src,
+            &mut dest,
+            &mut framer,
+            &mut framer_counters,
+            EndpointId(0),
+            &stats,
+            &frame_tx,
+            &filters,
+        )
+        .await;
+        assert!(frame_rx.try_recv().is_err(), "frame must not reach router");
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 1);
         assert_eq!(stats.in_filter_drops.load(Ordering::Relaxed), 1);
     }
 }

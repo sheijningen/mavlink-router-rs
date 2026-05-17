@@ -15,6 +15,7 @@ use super::super::defaults::{
     DEFAULT_TX_QUEUE_FRAMES,
 };
 use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
+use super::super::filters::Filters;
 use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
 use super::super::session::{SessionOutcome, run_session};
@@ -265,6 +266,7 @@ async fn accept_one_client(
             event_tx.clone(),
             cancel.clone(),
             read_buf_bytes,
+            identity.filters.clone(),
         )
         .instrument(child_span),
     );
@@ -282,6 +284,7 @@ async fn run_client_session(
     event_tx: mpsc::Sender<EndpointEvent>,
     cancel: CancellationToken,
     read_buf_bytes: usize,
+    filters: Filters,
 ) {
     let outcome = run_session(
         stream,
@@ -291,6 +294,7 @@ async fn run_client_session(
         &tx_queue,
         &cancel,
         read_buf_bytes,
+        &filters,
     )
     .await;
     // Drain anything still queued for this client; the socket is going away.
