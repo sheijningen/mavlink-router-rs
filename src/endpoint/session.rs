@@ -109,26 +109,42 @@ async fn handle_read_result(
         }
         Ok(_) => {}
     }
-    forward_inbound_frames(framer, stats, endpoint_id, frame_tx, filters, seq_tracker).await?;
+    if forward_inbound_frames(framer, stats, endpoint_id, seq_tracker, filters, frame_tx)
+        .await
+        .is_break()
+    {
+        return ControlFlow::Break(SessionOutcome::Terminated);
+    }
     framer_counters.sync(framer, stats);
     ControlFlow::Continue(())
 }
 
-async fn forward_inbound_frames(
+/// CLAUDE.md ingress pipeline (steps 1–3 in the reader task): for every
+/// complete frame currently in the framer, count rx, account for seq-loss,
+/// evaluate the In-filter snapshot, and forward admitted frames to the
+/// router. Ordering matters: rx counting runs first (so rx_frames reflects
+/// link rate even on policy rejection), then seq-loss (so rx_lost_est
+/// reflects link quality, not policy), then In-filter, then send. CRC ran
+/// inside `framer.try_next_frame()` ahead of us.
+///
+/// Shared by `run_session` (`serial:` / `tcpc:` / `tcps:` children), the
+/// `udps:` per-peer reader, and the `udpc:` client reader. Callers are
+/// responsible for `FramerCounters::sync` after this returns — the
+/// parser-state counters move at a coarser granularity than per-frame.
+///
+/// Returns `ControlFlow::Break(())` when the router channel closes — each
+/// caller maps that to its own terminal outcome (a session task returns
+/// [`SessionOutcome::Terminated`]; the UDP tasks return from their handler).
+pub(crate) async fn forward_inbound_frames(
     framer: &mut Framer,
     stats: &EndpointStats,
     endpoint_id: EndpointId,
-    frame_tx: &mpsc::Sender<RouterFrame>,
-    filters: &Filters,
     seq_tracker: &mut SeqTracker,
-) -> ControlFlow<SessionOutcome> {
+    filters: &Filters,
+    frame_tx: &mpsc::Sender<RouterFrame>,
+) -> ControlFlow<()> {
     while let Some((header, frame)) = framer.try_next_frame() {
-        // rx_frames/rx_bytes count every framed frame at the wire, so the
-        // counter reflects link rate even when policy rejects the frame.
         stats.add_rx_frame(frame.len());
-        // CLAUDE.md ingress pipeline step 2: seq-loss accounting runs
-        // *before* In-filter so the counter reflects link quality, not
-        // policy. CRC ran inside `framer.try_next_frame()` ahead of us.
         let lost = seq_tracker.observe(header.sysid, header.compid, header.seq, Instant::now());
         if lost > 0 {
             stats.rx_lost_est.fetch_add(lost as u64, Ordering::Relaxed);
@@ -139,7 +155,7 @@ async fn forward_inbound_frames(
                 msgid = header.msgid,
                 sysid = header.sysid,
                 compid = header.compid,
-                "in-filter dropped frame at session ingress"
+                "in-filter dropped frame at ingress"
             );
             continue;
         }
@@ -152,8 +168,8 @@ async fn forward_inbound_frames(
             .await
             .is_err()
         {
-            debug!("router channel closed; ending session");
-            return ControlFlow::Break(SessionOutcome::Terminated);
+            debug!("router channel closed; stopping frame forwarding");
+            return ControlFlow::Break(());
         }
     }
     ControlFlow::Continue(())
@@ -472,9 +488,9 @@ mod tests {
             &mut framer,
             &stats,
             fresh_id(),
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
+            &no_filter(),
+            &tx,
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -495,9 +511,9 @@ mod tests {
             &mut framer,
             &stats,
             fresh_id(),
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
+            &no_filter(),
+            &tx,
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -512,7 +528,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forward_inbound_frames_closed_channel_breaks_terminated() {
+    async fn forward_inbound_frames_breaks_when_router_channel_closed() {
         let bytes = build_v1_heartbeat();
         let mut framer = Framer::with_capacity(64);
         framer.buffer_mut().put_slice(&bytes);
@@ -524,12 +540,12 @@ mod tests {
             &mut framer,
             &stats,
             fresh_id(),
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
+            &no_filter(),
+            &tx,
         )
         .await;
-        assert_eq!(out, ControlFlow::Break(SessionOutcome::Terminated));
+        assert_eq!(out, ControlFlow::Break(()));
     }
 
     #[tokio::test]
@@ -552,9 +568,9 @@ mod tests {
             &mut framer,
             &stats,
             fresh_id(),
-            &tx,
-            &filters,
             &mut fresh_tracker(),
+            &filters,
+            &tx,
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -579,9 +595,9 @@ mod tests {
             &mut framer,
             &stats,
             fresh_id(),
-            &tx,
-            &filters,
             &mut fresh_tracker(),
+            &filters,
+            &tx,
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -617,9 +633,9 @@ mod tests {
             &mut framer,
             &stats,
             fresh_id(),
-            &tx,
-            &no_filter(),
             &mut tracker,
+            &no_filter(),
+            &tx,
         )
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
@@ -646,7 +662,7 @@ mod tests {
         let mut tracker = fresh_tracker();
 
         let out =
-            forward_inbound_frames(&mut framer, &stats, fresh_id(), &tx, &filters, &mut tracker)
+            forward_inbound_frames(&mut framer, &stats, fresh_id(), &mut tracker, &filters, &tx)
                 .await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_err());
@@ -669,9 +685,9 @@ mod tests {
             &mut framer,
             &stats,
             fresh_id(),
-            &tx,
-            &no_filter(),
             &mut tracker,
+            &no_filter(),
+            &tx,
         )
         .await;
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 5);
@@ -693,9 +709,9 @@ mod tests {
             &mut framer,
             &stats,
             fresh_id(),
-            &tx,
-            &no_filter(),
             &mut tracker,
+            &no_filter(),
+            &tx,
         )
         .await;
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 2);

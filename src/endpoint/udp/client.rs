@@ -19,6 +19,7 @@ use super::super::events::RouterFrame;
 use super::super::filters::Filters;
 use super::super::identity_flags::IdentityFlags;
 use super::super::seq_tracker::SeqTracker;
+use super::super::session::forward_inbound_frames;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
@@ -338,41 +339,15 @@ async fn handle_inbound(
     stats.store_state(EndpointState::Connected);
 
     framer.buffer_mut().extend_from_slice(data);
-    while let Some((header, frame)) = framer.try_next_frame() {
-        let frame_len = frame.len();
-        stats.add_rx_frame(frame_len);
-        // CLAUDE.md ingress pipeline step 2: seq-loss accounting runs
-        // before In-filter so the counter reflects link quality, not policy.
-        let lost = seq_tracker.observe(header.sysid, header.compid, header.seq, Instant::now());
-        if lost > 0 {
-            stats.rx_lost_est.fetch_add(lost as u64, Ordering::Relaxed);
-        }
-        // Per-frame In-filter check — CLAUDE.md "In-filter evaluation in the
-        // reader task". `in_filter_drops` is the union counter: the same slot
-        // bumped by the wrong-source-IP rejection above.
-        if !filters.passes_in_filter(header.msgid, header.sysid, header.compid) {
-            stats.in_filter_drops.fetch_add(1, Ordering::Relaxed);
-            trace!(
-                msgid = header.msgid,
-                sysid = header.sysid,
-                compid = header.compid,
-                %src,
-                "udpc in-filter dropped frame at ingress"
-            );
-            continue;
-        }
-        if frame_tx
-            .send(RouterFrame {
-                endpoint_id,
-                frame,
-                header,
-            })
-            .await
-            .is_err()
-        {
-            debug!("udpc router channel closed; stopping frame forwarding");
-            return;
-        }
+    // `in_filter_drops` here is the union counter: the same slot bumped by
+    // the wrong-source-IP rejection above (CLAUDE.md "In-filter evaluation
+    // in the reader task" — `in_filter_drops` is the union of all
+    // ingress-side drops).
+    let pipeline =
+        forward_inbound_frames(framer, stats, endpoint_id, seq_tracker, filters, frame_tx)
+            .instrument(tracing::trace_span!("udpc_ingress", %src));
+    if pipeline.await.is_break() {
+        return;
     }
     framer_counters.sync(framer, stats);
 }

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
@@ -22,6 +21,7 @@ use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
 use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
 use super::super::seq_tracker::SeqTracker;
+use super::super::session::forward_inbound_frames;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
@@ -304,53 +304,21 @@ async fn handle_packet(
     peer.last_seen = Instant::now();
 
     peer.framer.buffer_mut().extend_from_slice(data);
-    while let Some((header, frame)) = peer.framer.try_next_frame() {
-        let frame_len = frame.len();
-        peer.stats.add_rx_frame(frame_len);
-        // CLAUDE.md ingress pipeline step 2: seq-loss accounting runs
-        // before In-filter so the counter reflects link quality, not policy.
-        let lost =
-            peer.seq_tracker
-                .observe(header.sysid, header.compid, header.seq, Instant::now());
-        if lost > 0 {
-            peer.stats
-                .rx_lost_est
-                .fetch_add(lost as u64, Ordering::Relaxed);
-        }
-        // CLAUDE.md: "filters apply uniformly to every admitted child of a
-        // listener, so the listener evaluates against its own IdentityFlags
-        // rather than re-looking-up the peer's identical clone; only the drop
-        // credit goes to the peer's Arc<EndpointStats>".
-        if !ctx
-            .spec
-            .identity
-            .filters
-            .passes_in_filter(header.msgid, header.sysid, header.compid)
-        {
-            peer.stats.in_filter_drops.fetch_add(1, Ordering::Relaxed);
-            trace!(
-                msgid = header.msgid,
-                sysid = header.sysid,
-                compid = header.compid,
-                %src,
-                "udps in-filter dropped frame at ingress"
-            );
-            continue;
-        }
-        if ctx
-            .wiring
-            .frame_tx
-            .send(RouterFrame {
-                endpoint_id: peer.child_id,
-                frame,
-                header,
-            })
-            .await
-            .is_err()
-        {
-            debug!("udps router channel closed; stopping frame forwarding");
-            return;
-        }
+    // CLAUDE.md: "filters apply uniformly to every admitted child of a
+    // listener, so the listener evaluates against its own IdentityFlags
+    // rather than re-looking-up the peer's identical clone; only the drop
+    // credit goes to the peer's Arc<EndpointStats>".
+    let pipeline = forward_inbound_frames(
+        &mut peer.framer,
+        &peer.stats,
+        peer.child_id,
+        &mut peer.seq_tracker,
+        &ctx.spec.identity.filters,
+        &ctx.wiring.frame_tx,
+    )
+    .instrument(tracing::trace_span!("udps_ingress", %src));
+    if pipeline.await.is_break() {
+        return;
     }
     peer.framer_counters.sync(&peer.framer, &peer.stats);
 }
