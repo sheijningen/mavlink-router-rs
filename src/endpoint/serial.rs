@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info_span, trace, warn};
 
 use super::EndpointId;
-use super::defaults::{DEFAULT_READ_BUF_BYTES, DEFAULT_TX_QUEUE_FRAMES};
+use super::defaults::DEFAULT_READ_BUF_BYTES;
 use super::events::RouterFrame;
 use super::identity_flags::IdentityFlags;
 use super::session::{SessionOutcome, run_session};
@@ -37,7 +37,6 @@ pub struct SerialSpec {
     pub name: String,
     pub serial_reopen_ms: u64,
     pub read_buf_bytes: usize,
-    pub tx_queue_frames: usize,
     pub identity: IdentityFlags,
 }
 
@@ -45,7 +44,9 @@ impl SerialSpec {
     /// Build a runtime `SerialSpec` from the parsed-but-not-defaulted
     /// `SerialEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
     /// defaults for any unset knob. The spawner supplies `endpoint_id` and
-    /// `name` because the parser doesn't allocate IDs.
+    /// `name` because the parser doesn't allocate IDs. The TxQueue's depth
+    /// (`tx_queue_frames`) is consumed by the spawner before the spec is
+    /// built — it sizes the queue and never appears here.
     pub fn from_endpoint(ep: SerialEndpoint, endpoint_id: EndpointId, name: String) -> Self {
         Self {
             path: ep.path,
@@ -55,7 +56,6 @@ impl SerialSpec {
             name,
             serial_reopen_ms: ep.serial_reopen_ms.unwrap_or(DEFAULT_SERIAL_REOPEN_MS),
             read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
-            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
             identity: ep.identity,
         }
     }
@@ -96,7 +96,6 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
         name: _,
         serial_reopen_ms,
         read_buf_bytes,
-        tx_queue_frames: _,
         identity: _,
     } = spec;
     let SerialWiring {
@@ -229,7 +228,6 @@ mod tests {
         let spec = SerialSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.serial_reopen_ms, DEFAULT_SERIAL_REOPEN_MS);
         assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
-        assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
     }
 
     #[test]
@@ -245,7 +243,6 @@ mod tests {
         let spec = SerialSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.serial_reopen_ms, 250);
         assert_eq!(spec.read_buf_bytes, 1024);
-        assert_eq!(spec.tx_queue_frames, 16);
     }
 
     #[tokio::test]

@@ -43,7 +43,6 @@ async fn run_returns_when_cancelled_while_open_retrying() {
         name: "test-serial".to_string(),
         serial_reopen_ms: 1000,
         read_buf_bytes: 8192,
-        tx_queue_frames: 256,
         identity: IdentityFlags::default(),
     };
     let wiring = SerialWiring {

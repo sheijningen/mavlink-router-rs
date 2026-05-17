@@ -139,8 +139,16 @@ pub fn spawn_tcpc(
         port: target_addr.port(),
         ..endpoint
     };
+    // The spawner sizes the queue from the endpoint's `tx_queue_frames`
+    // override before building the spec; mirror that pattern here so the
+    // harness honors the same knob.
+    let tx_queue_frames = endpoint
+        .common
+        .tx_queue_frames
+        .unwrap_or(rmr::endpoint::defaults::DEFAULT_TX_QUEUE_FRAMES)
+        .max(8);
     let spec = TcpClientSpec::from_endpoint(endpoint, endpoint_id, name.to_string());
-    let tx_queue = TxQueue::new(spec.tx_queue_frames.max(8), stats.clone());
+    let tx_queue = TxQueue::new(tx_queue_frames, stats.clone());
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let task = {
         let tx_queue = tx_queue.clone();

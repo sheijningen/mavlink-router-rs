@@ -14,7 +14,6 @@ use super::super::EndpointId;
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
-    DEFAULT_TX_QUEUE_FRAMES,
 };
 use super::super::events::RouterFrame;
 use super::super::identity_flags::IdentityFlags;
@@ -46,7 +45,6 @@ pub struct UdpClientSpec {
     pub endpoint_id: EndpointId,
     pub name: String,
     pub latch_idle_secs: u64,
-    pub tx_queue_frames: usize,
     pub read_buf_bytes: usize,
     pub reconnect_initial_ms: u64,
     pub reconnect_max_ms: u64,
@@ -57,7 +55,9 @@ impl UdpClientSpec {
     /// Build a runtime `UdpClientSpec` from the parsed-but-not-defaulted
     /// `UdpClientEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
     /// defaults for any unset knob. The spawner supplies `endpoint_id` and
-    /// `name` because the parser doesn't allocate IDs.
+    /// `name` because the parser doesn't allocate IDs. The TxQueue's depth
+    /// (`tx_queue_frames`) is consumed by the spawner before the spec is
+    /// built — it sizes the queue and never appears here.
     pub fn from_endpoint(ep: UdpClientEndpoint, endpoint_id: EndpointId, name: String) -> Self {
         Self {
             host: ep.host,
@@ -65,7 +65,6 @@ impl UdpClientSpec {
             endpoint_id,
             name,
             latch_idle_secs: ep.latch_idle_secs.unwrap_or(DEFAULT_LATCH_IDLE_SECS),
-            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
             read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
@@ -202,7 +201,6 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
         endpoint_id,
         name: _,
         latch_idle_secs,
-        tx_queue_frames: _,
         read_buf_bytes,
         reconnect_initial_ms,
         reconnect_max_ms,
@@ -424,7 +422,6 @@ mod tests {
         let ep = UdpClientEndpoint::default();
         let spec = UdpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.latch_idle_secs, DEFAULT_LATCH_IDLE_SECS);
-        assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
         assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
@@ -443,7 +440,6 @@ mod tests {
         };
         let spec = UdpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.latch_idle_secs, 5);
-        assert_eq!(spec.tx_queue_frames, 8);
         assert_eq!(spec.read_buf_bytes, 1024);
     }
 

@@ -11,7 +11,6 @@ use super::super::EndpointId;
 use super::super::backoff::Backoff;
 use super::super::defaults::{
     DEFAULT_READ_BUF_BYTES, DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS,
-    DEFAULT_TX_QUEUE_FRAMES,
 };
 use super::super::events::RouterFrame;
 use super::super::identity_flags::IdentityFlags;
@@ -38,7 +37,6 @@ pub struct TcpClientSpec {
     pub reconnect_initial_ms: u64,
     pub reconnect_max_ms: u64,
     pub read_buf_bytes: usize,
-    pub tx_queue_frames: usize,
     pub identity: IdentityFlags,
 }
 
@@ -46,7 +44,9 @@ impl TcpClientSpec {
     /// Build a runtime `TcpClientSpec` from the parsed-but-not-defaulted
     /// `TcpClientEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
     /// defaults for any unset knob. The spawner supplies `endpoint_id` and
-    /// `name` because the parser doesn't allocate IDs.
+    /// `name` because the parser doesn't allocate IDs. The TxQueue's depth
+    /// (`tx_queue_frames`) is consumed by the spawner before the spec is
+    /// built — it sizes the queue and never appears here.
     pub fn from_endpoint(ep: TcpClientEndpoint, endpoint_id: EndpointId, name: String) -> Self {
         Self {
             host: ep.host,
@@ -58,7 +58,6 @@ impl TcpClientSpec {
                 .unwrap_or(DEFAULT_RECONNECT_INITIAL_MS),
             reconnect_max_ms: ep.reconnect_max_ms.unwrap_or(DEFAULT_RECONNECT_MAX_MS),
             read_buf_bytes: ep.common.read_buf_bytes.unwrap_or(DEFAULT_READ_BUF_BYTES),
-            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
             identity: ep.identity,
         }
     }
@@ -94,7 +93,6 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
         reconnect_initial_ms,
         reconnect_max_ms,
         read_buf_bytes,
-        tx_queue_frames: _,
         identity: _,
     } = spec;
     let TcpClientWiring {
@@ -251,7 +249,6 @@ mod tests {
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
         assert_eq!(spec.read_buf_bytes, DEFAULT_READ_BUF_BYTES);
-        assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
     }
 
     #[test]
@@ -270,7 +267,6 @@ mod tests {
         assert_eq!(spec.reconnect_initial_ms, 50);
         assert_eq!(spec.reconnect_max_ms, 2000);
         assert_eq!(spec.read_buf_bytes, 1024);
-        assert_eq!(spec.tx_queue_frames, 8);
     }
 
     #[tokio::test]
