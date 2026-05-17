@@ -224,10 +224,12 @@ GLOBAL OPTS:
   -c, --config FILE       TOML config (endpoints + globals)
       --log-level LEVEL   trace|debug|info|warn|error (default info)
       --log-format FMT    text (default) | json
+      --no-config-log     suppress INFO dump of merged config at startup
       --stats             enable periodic per-endpoint stats (JSON-Lines on stdout)
       --stats-interval N  stats output interval in seconds (default 5)
       --dedup-ms N        duplicate suppression window (0 = off)
       --shutdown-grace N  overall wall-clock shutdown budget, seconds (default 5)
+  -V, --version           print version, git commit hash, and build date
 ```
 
 Output channels:
@@ -367,11 +369,13 @@ A grab-bag of features that don't fit a single theme but are all required for a 
 
 - [ ] TOML parser for the same surface as CLI plus filters and groups
 - [ ] CLI + file merge rules implemented: TOML endpoints first then CLI endpoints (no per-key merging by name — name collision is a fatal error), CLI globals override TOML globals
+- [ ] **Log the fully-merged final config on startup at INFO.** Once parsing + merging is done and before any task is spawned, emit a single structured event containing the resolved global options and the per-endpoint table with every `?key=val` defaulted in. Suppressed by `--no-config-log`. Lets operators answer "what does RMR actually think I asked for?" without a separate `--print-config` mode — same channel as every other log line (stderr, follows `--log-format`). No secrets exist in the v1 config surface, so no field is redacted; if signing keys or auth tokens are ever added, this bullet is the revisit point.
 - [ ] **High-signal end-to-end integration tests**, driven through `lib::run` (or the binary itself) rather than per-transport module entry points. Phase 5 makes the binary actually route, which is what makes these tests possible — they assert invariants that only emerge from the *interaction* between routing, lifecycle, and per-endpoint state:
   - **Multi-transport fan-out** — three or more endpoints over mixed transports (e.g. `udpc:` + `tcps:` + `serial:` PTY) on one router; assert the routing matrix under learn + loop-prevention (frame from A reaches B and C but not back to A; targeted frame reaches only the endpoint whose learn-set contains the target; broadcast reaches everyone but the source).
   - **Reconnect-under-load** — sustained ingress on a `udps:` while a `tcpc:` peer flaps every few seconds; assert `dropped_tx` accounting matches expected (router-side overflow + writer-side drain-on-disconnect both count), no FD / task leaks across the flap cycles, no replay of pre-disconnect frames after the link comes back.
   - **Shutdown soak** — cancel the router mid-stream with N endpoints in mixed states (connected, reconnecting, UDP peers about to idle-reap); assert every registered endpoint emits its final synthetic stats line with the right terminal `state` (`Down`/`Idle`), all tasks join within the 5s wall-clock budget, no panics.
 - [ ] **Cross-platform release executables.** GitHub Actions matrix produces binaries for `linux-x86_64` (musl static), `linux-aarch64` (musl static), `windows-x86_64` (MSVC), `macos-aarch64`, and `macos-x86_64`. Extends the ubuntu+windows CI matrix already in place from Phase 0; the same matrix runs `cargo test` on each target so platform regressions surface before release.
+- [ ] **Enrich `--version` output with git commit hash + build date.** Clap's derive already provides `--version` from Phase 0 (it returns the crate version). This bullet adds the *release-hygiene* layer: `build.rs` captures `git rev-parse --short HEAD` (falling back to `unknown` for non-git source trees, e.g. crates.io tarballs) and the build timestamp into compile-time env vars; the version string baked into the clap `#[command(version = ...)]` attribute reads them. The operational cost of `rmr --version` not telling you which build you're running is high.
 - [ ] **Multi-arch Docker images.** Buildx-based image build emits `linux/amd64` and `linux/arm64` images, published on tag. Image is a minimal distroless / scratch layer wrapping the musl-static binary. `ENTRYPOINT ["rmr"]` so `docker run rmr <ENDPOINT ...>` behaves identically to the native binary; serial passthrough (`--device=/dev/ttyUSB0`) and host networking are documented in the README.
 
 ### Phase 7 — polish & documentation
@@ -387,6 +391,8 @@ A grab-bag of features that don't fit a single theme but are all required for a 
   6. **Radio bandwidth shaping** — parallel SiK-radio (`serial:`) + local LAN (`tcps:`) outbound legs to the same GCS pair; `block_msgid_out=...` on the radio leg strips high-rate messages (e.g. `ATTITUDE_QUATERNION`, `RAW_IMU`, `SCALED_IMU2`) so the slow link only carries essential traffic.
   7. **Safety filter on FC serial** — `serial:` endpoint to the FC with `block_msgid_in=RC_CHANNELS_OVERRIDE,...` (or specific `COMMAND_LONG` / `COMMAND_INT` msgids) so a misbehaving GCS or script can't push those commands through to the FC.
   8. **Docker Compose deployment** — one `docker-compose.yml` bringing up RMR with a bind-mounted TOML config, the necessary serial device passthrough, and the relevant UDP/TCP port mappings; shows the multi-arch image in a realistic deployment.
+  9. **systemd unit deployment** — `examples/systemd/rmr.service` paired with a TOML config under the same directory, for running RMR as a bare-metal service. Documents the unit's `Type=exec`, `ExecStart` (pointing at the binary from Phase 6's release artifacts), `Restart=on-failure` (deliberate: a config-fatal start should not infinitely respawn), dedicated `User`/`Group` (`rmr:rmr`), device-access notes (e.g. `SupplementaryGroups=dialout` on Debian/Ubuntu, `uucp` on Arch, for `serial:` endpoints), and a noted-but-not-prescribed pointer to systemd hardening directives (`ProtectSystem`, `NoNewPrivileges`).
+- [ ] **Shell completions** for `bash`, `zsh`, and `fish`, generated at build time via `clap_complete::generate_to` (build script writes them to `OUT_DIR`). Implementation constraint: `clap_complete::generate_to` needs the `clap::Command` value, so the clap derive struct must live in a module that can be `include!`d by both `build.rs` and `src/` — same pattern `crc_extra.rs` already uses, with the same self-contained constraint (no `use crate::*`). Shipped alongside the binary in the release tarballs and bundled into the Docker image at standard locations; install paths documented in the README and in the systemd example.
 - [ ] Remove the temporary `[lints.rust] dead_code = "allow"` from `Cargo.toml` and delete any code that is genuinely unused
 
 ### Stretch (not v1)
