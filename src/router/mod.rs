@@ -302,7 +302,7 @@ mod tests {
         let stats = if top_level {
             Arc::new(EndpointStats::new(EndpointState::Reconnecting))
         } else {
-            Arc::new(EndpointStats::default())
+            Arc::new(EndpointStats::new(EndpointState::Connected))
         };
         let tx_queue = TxQueue::new(8, stats.clone());
         EndpointFixture {

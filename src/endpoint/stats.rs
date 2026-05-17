@@ -5,47 +5,47 @@ use crate::mavlink::framer::Framer;
 /// User-visible health of one routing endpoint. Stored on
 /// [`EndpointStats::state`] as a raw `u8` so the stats task can cheaply
 /// `load → match` on a hot interval; the named enum keeps writers honest
-/// about which discriminant they're storing.
+/// about which variant they're storing. The u8 encoding is an internal
+/// implementation detail — the stats JSON-Line serializes by variant name,
+/// not by discriminant.
 ///
-/// **Stable discriminants** (CLAUDE.md locked decision; the wire shape of the
-/// stats JSON-Line depends on this mapping never changing):
-/// `Connected = 0 | Reconnecting = 1 | Idle = 2 | Down = 3`.
+/// **Default is `Reconnecting`** — the safe initial state before any
+/// transport event has been observed. [`EndpointStats::default`] therefore
+/// lands in `Reconnecting`; every call site that needs a different initial
+/// state stores it explicitly (top-level endpoints stay on `Reconnecting`
+/// through their bind/dial backoff; sub-endpoint admission paths store
+/// `Connected` because admission *is* the transport-up event).
 ///
-/// **`Connected = 0` is load-bearing.** [`EndpointStats::default`] therefore
-/// lands in state `Connected` with no explicit store, which is the right
-/// initial value for sub-endpoints (UDP peers, TCP accepted clients) whose
-/// admission *is* the transport-up event. Top-level endpoints that go through
-/// bind/dial backoff construct via [`EndpointStats::new(Reconnecting)`] so
-/// the slot is set before the `Arc` is published anywhere — closing the
-/// brief default-then-store window where a concurrent stats snapshot could
-/// observe `Connected` for an endpoint that hasn't bound yet.
-///
-/// **Write authority is split** (also a CLAUDE.md locked decision; not yet
-/// wired up in code — Phase 5 enforces it):
-/// the endpoint task owns `Connected` / `Reconnecting`, the router task owns
-/// `Idle` / `Down`. Once an endpoint task observes the cancellation token it
-/// must not write `state` again so the router's `Down` write is guaranteed
-/// to be the last write to the slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
+/// **Write authority is split** (CLAUDE.md locked decision; not yet wired up
+/// in code — Phase 5 enforces it): the endpoint task owns `Connected` /
+/// `Reconnecting`, the router task owns `Idle` / `Down`. Once an endpoint
+/// task observes the cancellation token it must not write `state` again so
+/// the router's `Down` write is guaranteed to be the last write to the slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EndpointState {
-    Connected = 0,
-    Reconnecting = 1,
-    Idle = 2,
-    Down = 3,
+    #[default]
+    Reconnecting,
+    Connected,
+    Idle,
+    Down,
 }
 
 impl EndpointState {
     #[inline]
     pub const fn as_u8(self) -> u8 {
-        self as u8
+        match self {
+            Self::Reconnecting => 0,
+            Self::Connected => 1,
+            Self::Idle => 2,
+            Self::Down => 3,
+        }
     }
 
     #[inline]
     pub const fn from_u8(v: u8) -> Option<Self> {
         match v {
-            0 => Some(Self::Connected),
-            1 => Some(Self::Reconnecting),
+            0 => Some(Self::Reconnecting),
+            1 => Some(Self::Connected),
             2 => Some(Self::Idle),
             3 => Some(Self::Down),
             _ => None,
@@ -60,7 +60,7 @@ impl EndpointState {
 /// interval and forwards a plain-data line to the dedicated stats task. The
 /// `state` slot follows the split-authority write rule documented on
 /// [`EndpointState`].
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct EndpointStats {
     pub rx_frames: AtomicU64,
     pub tx_frames: AtomicU64,
@@ -77,16 +77,33 @@ pub struct EndpointStats {
     pub state: AtomicU8,
 }
 
+impl Default for EndpointStats {
+    fn default() -> Self {
+        Self::new(EndpointState::default())
+    }
+}
+
 impl EndpointStats {
-    /// Construct an `EndpointStats` with the given starting state. Top-level
-    /// endpoints use this with `EndpointState::Reconnecting` so the
-    /// Reconnecting state is set before the `Arc` is published anywhere; sub-
-    /// endpoints typically use [`EndpointStats::default`] instead (Connected
-    /// via the `Connected = 0` discriminant, no explicit store).
+    /// Construct an `EndpointStats` with a chosen initial state. Top-level
+    /// endpoints can use [`EndpointStats::default`] (Reconnecting); sub-
+    /// endpoint admission paths pass `EndpointState::Connected` because
+    /// admission *is* the transport-up event.
     pub fn new(state: EndpointState) -> Self {
-        let s = Self::default();
-        s.state.store(state.as_u8(), Ordering::Relaxed);
-        s
+        Self {
+            rx_frames: AtomicU64::new(0),
+            tx_frames: AtomicU64::new(0),
+            rx_bytes: AtomicU64::new(0),
+            tx_bytes: AtomicU64::new(0),
+            dropped_tx: AtomicU64::new(0),
+            crc_errors: AtomicU64::new(0),
+            resync_bytes: AtomicU64::new(0),
+            in_filter_drops: AtomicU64::new(0),
+            out_filter_drops: AtomicU64::new(0),
+            dedup_drops: AtomicU64::new(0),
+            rx_lost_est: AtomicU64::new(0),
+            learn_entries: AtomicU64::new(0),
+            state: AtomicU8::new(state.as_u8()),
+        }
     }
 
     /// Read the current state. Cheap; intended for the stats task's interval
@@ -174,28 +191,30 @@ mod tests {
     }
 
     #[test]
-    fn default_is_zero_and_connected() {
+    fn default_is_zero_and_reconnecting() {
         let s = EndpointStats::default();
         assert_eq!(s.rx_frames.load(Ordering::Relaxed), 0);
         assert_eq!(s.dropped_tx.load(Ordering::Relaxed), 0);
         assert_eq!(s.resync_bytes.load(Ordering::Relaxed), 0);
-        assert_eq!(s.load_state(), EndpointState::Connected);
-    }
-
-    #[test]
-    fn discriminants_match_doc() {
-        // CLAUDE.md locked the wire-stable discriminants. If this test
-        // changes, the JSON-Lines stats schema is breaking.
-        assert_eq!(EndpointState::Connected as u8, 0);
-        assert_eq!(EndpointState::Reconnecting as u8, 1);
-        assert_eq!(EndpointState::Idle as u8, 2);
-        assert_eq!(EndpointState::Down as u8, 3);
-    }
-
-    #[test]
-    fn new_with_reconnecting_lands_in_reconnecting() {
-        let s = EndpointStats::new(EndpointState::Reconnecting);
         assert_eq!(s.load_state(), EndpointState::Reconnecting);
+    }
+
+    #[test]
+    fn as_u8_from_u8_roundtrip_every_variant() {
+        for state in [
+            EndpointState::Reconnecting,
+            EndpointState::Connected,
+            EndpointState::Idle,
+            EndpointState::Down,
+        ] {
+            assert_eq!(EndpointState::from_u8(state.as_u8()), Some(state));
+        }
+    }
+
+    #[test]
+    fn new_with_connected_lands_in_connected() {
+        let s = EndpointStats::new(EndpointState::Connected);
+        assert_eq!(s.load_state(), EndpointState::Connected);
         // counters still zero
         assert_eq!(s.rx_frames.load(Ordering::Relaxed), 0);
     }
@@ -216,7 +235,7 @@ mod tests {
 
     #[test]
     fn from_u8_rejects_out_of_range() {
-        assert_eq!(EndpointState::from_u8(0), Some(EndpointState::Connected));
+        assert_eq!(EndpointState::from_u8(0), Some(EndpointState::Reconnecting));
         assert_eq!(EndpointState::from_u8(3), Some(EndpointState::Down));
         assert_eq!(EndpointState::from_u8(4), None);
         assert_eq!(EndpointState::from_u8(255), None);

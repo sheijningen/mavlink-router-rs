@@ -241,7 +241,9 @@ async fn accept_one_client(
     }
 
     let child_id = allocator.alloc();
-    let stats = Arc::new(EndpointStats::default());
+    // Accepting the connection IS the transport-up event, so the child lands
+    // in Connected before the Arc is published to the router.
+    let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
     let tx_queue = TxQueue::new(tx_queue_frames, stats.clone());
     let name = peer_endpoint_name(parent_name, peer_addr);
     let child_span = info_span!("tcps_child", name = %name);

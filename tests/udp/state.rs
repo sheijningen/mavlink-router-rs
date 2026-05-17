@@ -4,8 +4,9 @@
 //! UDP has no transport-up/down event after the initial bind succeeds, so
 //! the endpoint task writes `Connected` exactly once and never flips back
 //! to `Reconnecting` on its own. Sub-endpoint state (UDP peers) is
-//! initialised via `EndpointStats::default()` (Connected) at admission and
-//! only the router writes `Idle` / `Down` afterwards — see CLAUDE.md.
+//! initialised to `Connected` at admission (admission is the transport-up
+//! event) and only the router writes `Idle` / `Down` afterwards — see
+//! CLAUDE.md.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

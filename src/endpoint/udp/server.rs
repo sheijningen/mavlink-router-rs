@@ -259,7 +259,10 @@ async fn handle_packet(
 ) {
     if !peers.contains_key(&src) {
         let child_id = ctx.allocator.alloc();
-        let stats = Arc::new(EndpointStats::default());
+        // The first packet from this source IS the transport-up event for the
+        // learned peer, so the Arc lands in Connected before it reaches the
+        // router.
+        let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
         let tx_queue = TxQueue::new(ctx.tx_queue_frames, stats.clone());
         let writer_cancel = ctx.cancel.child_token();
         let name = peer_endpoint_name(ctx.parent_name, src);
