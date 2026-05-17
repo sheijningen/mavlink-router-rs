@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
@@ -117,19 +117,16 @@ impl UdpServerSpec {
 
 /// Shared wiring every endpoint needs: the global EndpointId allocator,
 /// the reader→router frame channel, the sub-endpoint lifecycle channel,
-/// and the cancellation token. `bound_addr_tx`, if set, fires once on the
-/// first successful bind with the actual `local_addr()` — lets a caller
-/// that requested `127.0.0.1:0` (test harnesses, future systemd-socket
-/// adoption) discover the OS-assigned port. `stats` is the parent
-/// listener's own `Arc<EndpointStats>` (spawner-constructed via
+/// and the cancellation token. `stats` is the parent listener's own
+/// `Arc<EndpointStats>` (spawner-constructed via
 /// `EndpointStats::new(Reconnecting)`); the listener writes `Connected`
-/// once bind succeeds.
+/// once bind succeeds — that transition is the observable signal callers
+/// use to detect bind completion when starting from `127.0.0.1:0`.
 pub struct UdpServerWiring {
     pub allocator: Arc<EndpointIdAllocator>,
     pub frame_tx: mpsc::Sender<RouterFrame>,
     pub event_tx: mpsc::Sender<EndpointEvent>,
     pub cancel: CancellationToken,
-    pub bound_addr_tx: Option<oneshot::Sender<SocketAddr>>,
     pub stats: Arc<EndpointStats>,
 }
 
@@ -163,7 +160,6 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) {
         frame_tx,
         event_tx,
         cancel,
-        bound_addr_tx,
         stats,
     } = wiring;
 
@@ -179,9 +175,6 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) {
     };
     stats.store_state(EndpointState::Connected);
     let bound_addr = socket.local_addr().unwrap_or(listen_addr);
-    if let Some(tx) = bound_addr_tx {
-        let _ = tx.send(bound_addr);
-    }
     info!(%bound_addr, parent_id = %parent_id, "udps listening");
 
     let mut peers: HashMap<SocketAddr, PeerEntry> = HashMap::new();

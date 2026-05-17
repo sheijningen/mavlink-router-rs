@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -21,46 +21,53 @@ use rmr::endpoint::{
     tx_queue::TxQueue,
 };
 
+use crate::common::wait_for_state;
+
 /// Bundle of channels and the join handle for a spawned `tcps:` listener task.
 pub struct TcpsHarness {
-    /// Address the listener actually bound to — use as the `TcpStream::connect`
-    /// target. For tests using `spawn_tcps` this is filled in once the OS has
-    /// assigned a port; bind-retry tests that drive the spawn manually rely
-    /// on `bound_addr_rx` instead.
+    /// Address the listener was asked to bind to — also the `TcpStream::connect`
+    /// target callers use, since `spawn_tcps*` resolves `127.0.0.1:0` to a
+    /// concrete port via [`pick_free_tcp_addr`] before constructing the spec.
     pub listen_addr: SocketAddr,
     /// Per-frame stream from the listener (ingress as seen by the router).
     pub frame_rx: mpsc::Receiver<RouterFrame>,
     /// Lifecycle stream announcing accepted clients and disconnects.
     pub event_rx: mpsc::Receiver<EndpointEvent>,
-    /// Resolves on the first successful bind. Already consumed by `spawn_tcps`;
-    /// `spawn_tcps_with_spec` leaves it for the caller (bind-retry tests).
-    pub bound_addr_rx: Option<oneshot::Receiver<SocketAddr>>,
     /// Shared stats handle for the parent listener — tests can assert state
-    /// transitions (Reconnecting → Connected on first bind).
+    /// transitions (Reconnecting → Connected on first bind). `spawn_tcps`
+    /// already awaits that transition; bind-retry tests poll it explicitly.
     pub stats: Arc<EndpointStats>,
     /// Join handle of the spawned task; await after cancelling.
     pub task: JoinHandle<()>,
 }
 
-/// Spawn a `tcps:` listener with default config bound to `127.0.0.1:0`; the
-/// task picks an OS-assigned port and reports it back via `bound_addr_tx`,
-/// closing the bind-then-drop TOCTOU window the older helper had. Awaits the
-/// first successful bind so the returned harness's `listen_addr` is the real
-/// bound address.
+/// Bind a `std::net::TcpListener` on `127.0.0.1:0`, capture the assigned
+/// port, and drop the listener. The returned `SocketAddr` is what the test
+/// passes to `tcps:`/`tcpc:`. SO_REUSEADDR is on for `tcps:` (locked
+/// decision), so the brief TIME_WAIT after the drop doesn't bite; the
+/// listener's `bind_with_backoff` curve handles the (microscopic) race
+/// where another process grabs the port in the gap.
+pub fn pick_free_tcp_addr() -> SocketAddr {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("probe bind");
+    probe.local_addr().expect("probe local_addr")
+}
+
+/// Spawn a `tcps:` listener bound to a probe-picked free port and await the
+/// `Reconnecting → Connected` transition so the returned harness is ready to
+/// accept connections.
 pub async fn spawn_tcps(
     allocator: &Arc<EndpointIdAllocator>,
     cancel: CancellationToken,
     name: &str,
 ) -> TcpsHarness {
     let endpoint = TcpServerEndpoint {
-        bind_addr: "127.0.0.1:0".parse().expect("parse listen_addr"),
+        bind_addr: pick_free_tcp_addr(),
         ..TcpServerEndpoint::default()
     };
     let parent_id = allocator.alloc();
     let spec = TcpServerSpec::from_endpoint(endpoint, parent_id, name.to_string());
-    let mut h = spawn_tcps_with_spec(allocator, cancel, spec);
-    let rx = h.bound_addr_rx.take().expect("bound_addr_rx present");
-    h.listen_addr = rx.await.expect("tcps bound_addr_tx dropped");
+    let h = spawn_tcps_with_spec(allocator, cancel, spec);
+    wait_for_state(&h.stats, EndpointState::Connected, "tcps bind").await;
     h
 }
 
@@ -68,9 +75,9 @@ pub async fn spawn_tcps(
 /// caller pre-allocates `parent_id` (which they place inside `spec`) and is
 /// responsible for mutating any knobs that aren't reachable through the
 /// parsed `TcpServerEndpoint` (e.g. the reconnect curve, which `tcps:` does
-/// not expose as a query override). Returns immediately with `bound_addr_rx`
-/// pending so bind-retry tests can drive the bind path before awaiting the
-/// eventual bind.
+/// not expose as a query override). Returns immediately without awaiting
+/// bind so bind-retry tests can drive the bind path before observing
+/// `Reconnecting → Connected` on the harness's `stats`.
 pub fn spawn_tcps_with_spec(
     allocator: &Arc<EndpointIdAllocator>,
     cancel: CancellationToken,
@@ -81,7 +88,6 @@ pub fn spawn_tcps_with_spec(
     let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(32);
-    let (bound_tx, bound_rx) = oneshot::channel::<SocketAddr>();
     let task = {
         let stats = stats.clone();
         tokio::spawn(async move {
@@ -92,7 +98,6 @@ pub fn spawn_tcps_with_spec(
                     frame_tx,
                     event_tx,
                     cancel,
-                    bound_addr_tx: Some(bound_tx),
                     stats,
                 },
             )
@@ -103,7 +108,6 @@ pub fn spawn_tcps_with_spec(
         listen_addr,
         frame_rx,
         event_rx,
-        bound_addr_rx: Some(bound_rx),
         stats,
         task,
     }

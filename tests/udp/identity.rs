@@ -11,11 +11,12 @@ use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::filters::{Filters, MsgIdRange, U8Range};
 use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::spec::UdpServerEndpoint;
+use rmr::endpoint::stats::EndpointState;
 use rmr::endpoint::udp::server::UdpServerSpec;
 
 use crate::common;
-use crate::common::udp::spawn_udps_with_spec;
-use crate::common::{next_peer_added, shutdown_all};
+use crate::common::udp::{pick_free_udp_addr, spawn_udps_with_spec};
+use crate::common::{next_peer_added, shutdown_all, wait_for_state};
 
 #[tokio::test]
 async fn udps_peer_inherits_parent_identity() {
@@ -38,20 +39,14 @@ async fn udps_peer_inherits_parent_identity() {
     };
 
     let endpoint = UdpServerEndpoint {
-        bind_addr: "127.0.0.1:0".parse().expect("parse listen_addr"),
+        bind_addr: pick_free_udp_addr(),
         ..UdpServerEndpoint::default()
     };
     let parent_id = allocator.alloc();
     let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps-id".to_string());
     spec.identity = parent_identity.clone();
     let mut harness = spawn_udps_with_spec(&allocator, cancel.clone(), spec);
-    let bound = harness
-        .bound_addr_rx
-        .take()
-        .expect("bound_addr_rx")
-        .await
-        .expect("udps bound_addr_tx dropped");
-    harness.listen_addr = bound;
+    wait_for_state(&harness.stats, EndpointState::Connected, "udps bind").await;
 
     // Fire one heartbeat from a synthetic peer so the listener admits it
     // and emits `PeerAdded`.

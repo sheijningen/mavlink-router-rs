@@ -12,11 +12,12 @@ use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::filters::{Filters, MsgIdRange, U8Range};
 use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::spec::TcpServerEndpoint;
+use rmr::endpoint::stats::EndpointState;
 use rmr::endpoint::tcp::server::TcpServerSpec;
 
 use crate::common;
-use crate::common::tcp::{connect_with_retry, spawn_tcps_with_spec};
-use crate::common::{next_peer_added, shutdown_all};
+use crate::common::tcp::{connect_with_retry, pick_free_tcp_addr, spawn_tcps_with_spec};
+use crate::common::{next_peer_added, shutdown_all, wait_for_state};
 
 #[tokio::test]
 async fn tcps_child_inherits_parent_identity() {
@@ -39,20 +40,14 @@ async fn tcps_child_inherits_parent_identity() {
     };
 
     let endpoint = TcpServerEndpoint {
-        bind_addr: "127.0.0.1:0".parse().expect("parse listen_addr"),
+        bind_addr: pick_free_tcp_addr(),
         ..TcpServerEndpoint::default()
     };
     let parent_id = allocator.alloc();
     let mut spec = TcpServerSpec::from_endpoint(endpoint, parent_id, "tcps-id".to_string());
     spec.identity = parent_identity.clone();
     let mut harness = spawn_tcps_with_spec(&allocator, cancel.clone(), spec);
-    let bound = harness
-        .bound_addr_rx
-        .take()
-        .expect("bound_addr_rx")
-        .await
-        .expect("tcps bound_addr_tx dropped");
-    harness.listen_addr = bound;
+    wait_for_state(&harness.stats, EndpointState::Connected, "tcps bind").await;
 
     // Connect a synthetic peer and write one heartbeat so the listener
     // accepts the client and emits `PeerAdded`.

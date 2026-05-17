@@ -297,7 +297,6 @@ async fn spawn_endpoint(
                 frame_tx: frame_tx.clone(),
                 event_tx: event_tx.clone(),
                 cancel: cancel.clone(),
-                bound_addr_tx: None,
                 stats,
             };
             tasks.spawn(async move {
@@ -314,7 +313,6 @@ async fn spawn_endpoint(
                 frame_tx: frame_tx.clone(),
                 event_tx: event_tx.clone(),
                 cancel: cancel.clone(),
-                bound_addr_tx: None,
                 stats,
             };
             tasks.spawn(async move {

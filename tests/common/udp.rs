@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -22,31 +22,39 @@ use rmr::endpoint::{
     udp::server::{self as udp_server, UdpServerSpec, UdpServerWiring},
 };
 
+use crate::common::wait_for_state;
+
 /// Bundle of channels and the join handle for a spawned `udps:` listener task.
 /// Tests destructure or borrow these fields to play the router-stub role.
 pub struct UdpsHarness {
-    /// Address the listener actually bound to — use as the `send_to` target.
-    /// Filled in by `spawn_udps*` once the OS has assigned a port; bind-retry
-    /// tests that drive the spawn manually rely on `bound_addr_rx` instead.
+    /// Address the listener was asked to bind to — also the `send_to` target
+    /// callers use, since `spawn_udps*` resolves `127.0.0.1:0` to a concrete
+    /// port via [`pick_free_udp_addr`] before constructing the spec.
     pub listen_addr: SocketAddr,
     /// Per-frame stream from the listener (ingress as seen by the router).
     pub frame_rx: mpsc::Receiver<RouterFrame>,
     /// Lifecycle stream announcing learned peers and idle reaps.
     pub event_rx: mpsc::Receiver<EndpointEvent>,
-    /// Resolves on the first successful bind. Already consumed by `spawn_udps*`;
-    /// `spawn_udps_with_spec` leaves it for the caller (bind-retry tests).
-    pub bound_addr_rx: Option<oneshot::Receiver<SocketAddr>>,
     /// Shared stats handle for the parent listener — tests can assert state
-    /// transitions (Reconnecting → Connected on first bind).
+    /// transitions (Reconnecting → Connected on first bind). `spawn_udps*`
+    /// already awaits that transition; bind-retry tests poll it explicitly.
     pub stats: Arc<EndpointStats>,
     /// Join handle of the spawned task; await after cancelling.
     pub task: JoinHandle<()>,
 }
 
-/// Spawn a `udps:` listener with default config bound to `127.0.0.1:0`; the
-/// task picks an OS-assigned port and reports it back via `bound_addr_tx`,
-/// closing the bind-then-drop TOCTOU window the older helper had. Awaits the
-/// first successful bind so the returned harness's `listen_addr` is real.
+/// Bind a `std::net::UdpSocket` on `127.0.0.1:0`, capture the assigned port,
+/// and drop the socket. The returned `SocketAddr` is what the test passes to
+/// `udps:`/`udpc:`. The listener's `bind_with_backoff` curve absorbs the
+/// (microscopic) race where another process grabs the port in the gap.
+pub fn pick_free_udp_addr() -> SocketAddr {
+    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("probe bind");
+    probe.local_addr().expect("probe local_addr")
+}
+
+/// Spawn a `udps:` listener bound to a probe-picked free port and await the
+/// `Reconnecting → Connected` transition so the returned harness is ready
+/// to receive packets.
 pub async fn spawn_udps(
     allocator: &Arc<EndpointIdAllocator>,
     cancel: CancellationToken,
@@ -64,12 +72,11 @@ pub async fn spawn_udps_with_endpoint(
     name: &str,
     mut endpoint: UdpServerEndpoint,
 ) -> UdpsHarness {
-    endpoint.bind_addr = "127.0.0.1:0".parse().expect("parse listen_addr");
+    endpoint.bind_addr = pick_free_udp_addr();
     let parent_id = allocator.alloc();
     let spec = UdpServerSpec::from_endpoint(endpoint, parent_id, name.to_string());
-    let mut h = spawn_udps_with_spec(allocator, cancel, spec);
-    let rx = h.bound_addr_rx.take().expect("bound_addr_rx present");
-    h.listen_addr = rx.await.expect("udps bound_addr_tx dropped");
+    let h = spawn_udps_with_spec(allocator, cancel, spec);
+    wait_for_state(&h.stats, EndpointState::Connected, "udps bind").await;
     h
 }
 
@@ -77,9 +84,9 @@ pub async fn spawn_udps_with_endpoint(
 /// caller pre-allocates `parent_id` (which they place inside `spec`) and is
 /// responsible for mutating any knobs that aren't reachable through the
 /// parsed `UdpServerEndpoint` (e.g. the reconnect curve, which `udps:` does
-/// not expose as a query override). Returns immediately with `bound_addr_rx`
-/// pending so bind-retry tests can drive the bind path before awaiting the
-/// eventual bind.
+/// not expose as a query override). Returns immediately without awaiting
+/// bind so bind-retry tests can drive the bind path before observing
+/// `Reconnecting → Connected` on the harness's `stats`.
 pub fn spawn_udps_with_spec(
     allocator: &Arc<EndpointIdAllocator>,
     cancel: CancellationToken,
@@ -90,7 +97,6 @@ pub fn spawn_udps_with_spec(
     let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(32);
     let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(32);
-    let (bound_tx, bound_rx) = oneshot::channel::<SocketAddr>();
     let task = {
         let stats = stats.clone();
         tokio::spawn(async move {
@@ -101,7 +107,6 @@ pub fn spawn_udps_with_spec(
                     frame_tx,
                     event_tx,
                     cancel,
-                    bound_addr_tx: Some(bound_tx),
                     stats,
                 },
             )
@@ -112,7 +117,6 @@ pub fn spawn_udps_with_spec(
         listen_addr,
         frame_rx,
         event_rx,
-        bound_addr_rx: Some(bound_rx),
         stats,
         task,
     }

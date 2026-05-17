@@ -74,8 +74,7 @@ impl SerialSpec {
 /// Shared wiring a `serial:` task needs. Mirrors `TcpClientWiring` /
 /// `UdpClientWiring` — the TxQueue and stats are constructed by the spawner so
 /// the router can hold its own clones before this task starts running. There
-/// is no `event_tx` (serial has no children) and no `bound_addr_tx` (no socket
-/// to bind).
+/// is no `event_tx` (serial has no children).
 pub struct SerialWiring {
     pub frame_tx: mpsc::Sender<RouterFrame>,
     pub tx_queue: TxQueue,

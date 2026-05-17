@@ -19,6 +19,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::events::EndpointEvent;
+use rmr::endpoint::stats::EndpointState;
 use rmr::endpoint::{EndpointIdAllocator, spec::UdpServerEndpoint, udp::server::UdpServerSpec};
 
 use crate::common;
@@ -34,9 +35,7 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
     // bind to the same port will fail with EADDRINUSE while this socket is
     // alive (SO_REUSEADDR alone does not allow overlapping UDP binds).
     let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind probe");
-    let port = probe.local_addr().expect("probe local_addr").port();
-    let listen_addr: std::net::SocketAddr =
-        format!("127.0.0.1:{port}").parse().expect("parse addr");
+    let listen_addr = probe.local_addr().expect("probe local_addr");
 
     // Short backoff so we don't have to wait long for udps to attach. The
     // reconnect curve isn't exposed as a `*Endpoint` query knob (CLAUDE.md
@@ -52,6 +51,7 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
     spec.reconnect_max_ms = 250;
     let mut h = spawn_udps_with_spec(&allocator, cancel.clone(), spec);
 
+    // While the probe holds the port, the listener stays in Reconnecting.
     // Poll for early task termination without an unconditional sleep — if
     // udps panicked on the first bind error, the task ends and the assertion
     // fires immediately; otherwise the loop exits once the deadline passes
@@ -62,20 +62,28 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
             !h.task.is_finished(),
             "udps task ended early — bind failure should have been retried, not propagated"
         );
+        assert_eq!(
+            h.stats.load_state(),
+            EndpointState::Reconnecting,
+            "udps should still be retrying while the probe holds the port"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    // Free the port. udps's next backoff iteration (≤ ~250 ms) should bind.
+    // Free the port. udps's next backoff iteration (≤ ~250 ms) should bind,
+    // flipping the listener's state to Connected.
     drop(probe);
 
-    // Wait for the bound-addr oneshot — strictly tighter than the
-    // send-and-poll loop below.
-    let bound_addr_rx = h.bound_addr_rx.take().expect("bound_addr_rx present");
-    let bound_listen_addr = timeout(Duration::from_secs(3), bound_addr_rx)
-        .await
-        .expect("bound_addr_rx timeout")
-        .expect("bound_addr_tx dropped");
-    assert_eq!(bound_listen_addr, listen_addr);
+    timeout(Duration::from_secs(3), async {
+        loop {
+            if h.stats.load_state() == EndpointState::Connected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("udps did not reach Connected after probe freed the port");
 
     // Drive a frame from a synthetic peer until the listener actually picks
     // up the port. Datagrams sent before the bind completes are silently
