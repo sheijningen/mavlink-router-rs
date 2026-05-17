@@ -106,14 +106,31 @@ pub async fn wait_for_state(stats: &Arc<EndpointStats>, target: EndpointState, l
     );
 }
 
-/// Trigger cancellation and await every harness task with a 3s timeout each.
-/// Mirrors the per-task drain budget the production tasks honour.
+/// Trigger cancellation and await every harness task with a 3s timeout
+/// each (the per-task drain budget production tasks honour, plus headroom),
+/// then panic with every failure observed — a stuck task or a join panic
+/// must surface as a test failure, not pass silently. The task's inner
+/// `Result` value is opaque to this helper (generic over `T`) and is
+/// discarded; callers whose runners can fail late should assert on it
+/// themselves.
 pub async fn shutdown_all<I, T>(cancel: &CancellationToken, tasks: I)
 where
     I: IntoIterator<Item = JoinHandle<T>>,
 {
     cancel.cancel();
-    for task in tasks {
-        let _ = timeout(Duration::from_secs(3), task).await;
+    let mut failures = Vec::new();
+    for (idx, task) in tasks.into_iter().enumerate() {
+        match timeout(Duration::from_secs(3), task).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(join_err)) => failures.push(format!("task #{idx}: join error: {join_err}")),
+            Err(_) => failures.push(format!(
+                "task #{idx}: did not drain within 3s shutdown budget"
+            )),
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "shutdown_all: {}",
+        failures.join("; ")
+    );
 }
