@@ -94,52 +94,26 @@ pub async fn run(spec: TcpServerSpec, wiring: TcpServerWiring) {
 }
 
 async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) {
-    let TcpServerSpec {
-        listen_addr,
-        parent_id,
-        parent_name,
-        read_buf_bytes,
-        tx_queue_frames,
-        reconnect_initial_ms,
-        reconnect_max_ms,
-        identity,
-    } = spec;
-    let TcpServerWiring {
-        allocator,
-        frame_tx,
-        event_tx,
-        cancel,
-        stats,
-    } = wiring;
-
-    let mut backoff = Backoff::new(reconnect_initial_ms, reconnect_max_ms);
+    let mut backoff = Backoff::new(spec.reconnect_initial_ms, spec.reconnect_max_ms);
 
     loop {
-        let listener = match bind_with_backoff(&cancel, &mut backoff, "tcps", listen_addr, || {
-            bind_tcp_dual_stack(listen_addr)
-        })
+        let listener = match bind_with_backoff(
+            &wiring.cancel,
+            &mut backoff,
+            "tcps",
+            spec.listen_addr,
+            || bind_tcp_dual_stack(spec.listen_addr),
+        )
         .await
         {
             BindOutcome::Bound(l) => l,
             BindOutcome::Cancelled => return,
         };
-        stats.store_state(EndpointState::Connected);
-        let bound_addr = listener.local_addr().unwrap_or(listen_addr);
-        info!(%bound_addr, parent_id = %parent_id, "tcps listening");
+        wiring.stats.store_state(EndpointState::Connected);
+        let bound_addr = listener.local_addr().unwrap_or(spec.listen_addr);
+        info!(%bound_addr, parent_id = %spec.parent_id, "tcps listening");
 
-        run_accept_loop(
-            listener,
-            parent_id,
-            &parent_name,
-            read_buf_bytes,
-            tx_queue_frames,
-            &identity,
-            &allocator,
-            &frame_tx,
-            &event_tx,
-            &cancel,
-        )
-        .await;
+        run_accept_loop(listener, &spec, &wiring).await;
 
         // Today accept_loop only returns on cancellation, so the top-of-loop
         // cancel check terminates `run_inner` on the next iteration. Falling
@@ -149,43 +123,17 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_accept_loop(
-    listener: TcpListener,
-    parent_id: EndpointId,
-    parent_name: &str,
-    read_buf_bytes: usize,
-    tx_queue_frames: usize,
-    identity: &IdentityFlags,
-    allocator: &Arc<EndpointIdAllocator>,
-    frame_tx: &mpsc::Sender<RouterFrame>,
-    event_tx: &mpsc::Sender<EndpointEvent>,
-    cancel: &CancellationToken,
-) {
+async fn run_accept_loop(listener: TcpListener, spec: &TcpServerSpec, wiring: &TcpServerWiring) {
     let mut children: JoinSet<()> = JoinSet::new();
 
     loop {
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => break,
+            _ = wiring.cancel.cancelled() => break,
             res = listener.accept() => {
                 match res {
                     Ok((stream, peer_addr)) => {
-                        accept_one_client(
-                            stream,
-                            peer_addr,
-                            parent_id,
-                            parent_name,
-                            read_buf_bytes,
-                            tx_queue_frames,
-                            identity,
-                            allocator,
-                            frame_tx,
-                            event_tx,
-                            cancel,
-                            &mut children,
-                        )
-                        .await;
+                        accept_one_client(stream, peer_addr, spec, wiring, &mut children).await;
                     }
                     Err(e) => {
                         // Per CLAUDE.md: removal of a child without killing the
@@ -205,46 +153,39 @@ async fn run_accept_loop(
     while children.join_next().await.is_some() {}
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn accept_one_client(
     stream: TcpStream,
     peer_addr: SocketAddr,
-    parent_id: EndpointId,
-    parent_name: &str,
-    read_buf_bytes: usize,
-    tx_queue_frames: usize,
-    identity: &IdentityFlags,
-    allocator: &Arc<EndpointIdAllocator>,
-    frame_tx: &mpsc::Sender<RouterFrame>,
-    event_tx: &mpsc::Sender<EndpointEvent>,
-    cancel: &CancellationToken,
+    spec: &TcpServerSpec,
+    wiring: &TcpServerWiring,
     children: &mut JoinSet<()>,
 ) {
     if let Err(e) = configure_tcp_stream(&stream) {
         warn!(error = %e, %peer_addr, "tcps configure_tcp_stream failed on accept");
     }
 
-    let child_id = allocator.alloc();
+    let child_id = wiring.allocator.alloc();
     // Accepting the connection IS the transport-up event, so the child lands
     // in Connected before the Arc is published to the router.
     let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
-    let tx_queue = TxQueue::new(tx_queue_frames, stats.clone());
-    let name = peer_endpoint_name(parent_name, peer_addr);
+    let tx_queue = TxQueue::new(spec.tx_queue_frames, stats.clone());
+    let name = peer_endpoint_name(&spec.parent_name, peer_addr);
     let child_span = info_span!("tcps_child", name = %name);
 
     // Announce PeerAdded before spawning the child so the router never sees
     // a RouterFrame for an unknown EndpointId. The child inherits the parent
     // listener's IdentityFlags by clone per CLAUDE.md "Sub-endpoints inherit
     // their parent's IdentityFlags by clone at spawn time".
-    if event_tx
+    if wiring
+        .event_tx
         .send(EndpointEvent::PeerAdded {
-            parent_id,
+            parent_id: spec.parent_id,
             child_id,
             peer_addr,
             name,
             tx_queue: tx_queue.clone(),
             stats: stats.clone(),
-            identity: identity.clone(),
+            identity: spec.identity.clone(),
         })
         .await
         .is_err()
@@ -252,22 +193,22 @@ async fn accept_one_client(
         debug!("tcps event channel closed; dropping accepted client");
         return;
     }
-    trace!(parent_id = %parent_id, %peer_addr, %child_id, "tcps client accepted");
+    trace!(parent_id = %spec.parent_id, %peer_addr, %child_id, "tcps client accepted");
 
     children.spawn(
         run_client_session(
             stream,
             peer_addr,
-            parent_id,
+            spec.parent_id,
             child_id,
             stats,
-            frame_tx.clone(),
+            wiring.frame_tx.clone(),
             tx_queue,
-            event_tx.clone(),
-            cancel.clone(),
-            read_buf_bytes,
-            identity.filters.clone(),
-            identity.seq_tracker_capacity,
+            wiring.event_tx.clone(),
+            wiring.cancel.clone(),
+            spec.read_buf_bytes,
+            spec.identity.filters.clone(),
+            spec.identity.seq_tracker_capacity,
         )
         .instrument(child_span),
     );
