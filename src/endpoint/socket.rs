@@ -12,8 +12,9 @@ const TCP_LISTEN_BACKLOG: i32 = 1024;
 
 /// Bind a UDP socket with the same options RMR uses for every UDP endpoint:
 /// `SO_REUSEADDR` on, `IPV6_V6ONLY` off when binding `[::]` (dual-stack on
-/// both Windows and Linux for parity), non-blocking. Returns a
-/// `tokio::net::UdpSocket` ready for async I/O.
+/// both Windows and Linux for parity — irrelevant on a specific v6
+/// address, so the flip is gated on `is_unspecified`), non-blocking.
+/// Returns a `tokio::net::UdpSocket` ready for async I/O.
 pub fn bind_udp_dual_stack(addr: SocketAddr) -> io::Result<UdpSocket> {
     let domain = match addr {
         SocketAddr::V4(_) => Domain::IPV4,
@@ -21,7 +22,7 @@ pub fn bind_udp_dual_stack(addr: SocketAddr) -> io::Result<UdpSocket> {
     };
     let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
     sock.set_reuse_address(true)?;
-    if matches!(addr, SocketAddr::V6(_)) {
+    if matches!(addr, SocketAddr::V6(v6) if v6.ip().is_unspecified()) {
         sock.set_only_v6(false)?;
     }
     sock.set_nonblocking(true)?;
@@ -31,9 +32,10 @@ pub fn bind_udp_dual_stack(addr: SocketAddr) -> io::Result<UdpSocket> {
 
 /// Bind a TCP listener with the same dual-stack and reuse semantics as
 /// [`bind_udp_dual_stack`]: `SO_REUSEADDR` on (so a fresh RMR can rebind
-/// without TIME_WAIT delay), `IPV6_V6ONLY` off when binding `[::]`,
-/// non-blocking, ready for async accept. `SO_REUSEPORT` is intentionally not
-/// set — see CLAUDE.md ("Port reuse on `tcps:` and `udps:` binds").
+/// without TIME_WAIT delay), `IPV6_V6ONLY` off only when binding `[::]`
+/// (no effect on specific v6 addresses), non-blocking, ready for async
+/// accept. `SO_REUSEPORT` is intentionally not set — see CLAUDE.md ("Port
+/// reuse on `tcps:` and `udps:` binds").
 pub fn bind_tcp_dual_stack(addr: SocketAddr) -> io::Result<TcpListener> {
     let domain = match addr {
         SocketAddr::V4(_) => Domain::IPV4,
@@ -41,7 +43,7 @@ pub fn bind_tcp_dual_stack(addr: SocketAddr) -> io::Result<TcpListener> {
     };
     let sock = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
     sock.set_reuse_address(true)?;
-    if matches!(addr, SocketAddr::V6(_)) {
+    if matches!(addr, SocketAddr::V6(v6) if v6.ip().is_unspecified()) {
         sock.set_only_v6(false)?;
     }
     sock.set_nonblocking(true)?;
@@ -91,6 +93,31 @@ mod tests {
         let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0);
         let listener = bind_tcp_dual_stack(addr).expect("bind [::]:0");
         let local = listener.local_addr().expect("local_addr");
+        assert!(local.is_ipv6());
+        assert_ne!(local.port(), 0);
+    }
+
+    /// Coverage for specific v6 binds. Documents-by-example that the
+    /// `IPV6_V6ONLY=0` flip is gated on `is_unspecified` — `setsockopt`
+    /// of `IPV6_V6ONLY` is a no-op on an unflipped v6 socket on all three
+    /// supported OSes, so this won't strictly catch a regression that
+    /// re-broadens the gate, but it pins the end-to-end behaviour.
+    #[tokio::test]
+    async fn bind_tcp_ipv6_loopback_any_port() {
+        let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0);
+        let listener = bind_tcp_dual_stack(addr).expect("bind [::1]:0");
+        let local = listener.local_addr().expect("local_addr");
+        assert!(local.is_ipv6());
+        assert_ne!(local.port(), 0);
+    }
+
+    /// UDP companion to the TCP `[::1]:0` test above. Same caveat about
+    /// not being a strict regression guard.
+    #[tokio::test]
+    async fn bind_udp_ipv6_loopback_any_port() {
+        let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0);
+        let sock = bind_udp_dual_stack(addr).expect("bind [::1]:0");
+        let local = sock.local_addr().expect("local_addr");
         assert!(local.is_ipv6());
         assert_ne!(local.port(), 0);
     }
