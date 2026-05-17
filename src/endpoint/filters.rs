@@ -41,9 +41,9 @@ impl U8Range {
 /// The 12 per-endpoint filter lists: `allow_*` / `block_*` on the msgid,
 /// `src_sys`, and `src_comp` axes for both ingress (`*_in`) and egress
 /// (`*_out`). Empty list = no restriction; blocklist wins over allowlist on
-/// overlap. Phase 5 will hang the per-frame decision methods
-/// (`passes_in_filter` / `passes_out_filter`) off this struct; today this is
-/// the data half.
+/// overlap. The per-frame decision methods [`Filters::passes_in_filter`] and
+/// [`Filters::passes_out_filter`] consume this data; the parser side lives
+/// in [`Filters::apply`].
 ///
 /// Lives on [`super::identity_flags::IdentityFlags::filters`] alongside the
 /// rest of the per-endpoint identity (sniffer / group / capacities). Sub-
@@ -139,6 +139,53 @@ impl Filters {
             _ => Ok(false),
         }
     }
+
+    /// Decide whether a frame with `(msgid, src_sys, src_comp)` passes the
+    /// ingress filter for this endpoint. A frame passes when every axis
+    /// passes: an empty `allow_*_in` imposes no restriction; a non-empty
+    /// `allow_*_in` requires the value to be in some allow range; a
+    /// non-empty `block_*_in` rejects the value if it's in some block range.
+    /// **Block wins on overlap** — a value that's simultaneously in an allow
+    /// range and a block range is rejected.
+    #[must_use]
+    pub fn passes_in_filter(&self, msgid: u32, src_sys: u8, src_comp: u8) -> bool {
+        pass_msgid_axis(msgid, &self.allow_msgid_in, &self.block_msgid_in)
+            && pass_u8_axis(src_sys, &self.allow_src_sys_in, &self.block_src_sys_in)
+            && pass_u8_axis(src_comp, &self.allow_src_comp_in, &self.block_src_comp_in)
+    }
+
+    /// Decide whether a frame with `(msgid, src_sys, src_comp)` passes the
+    /// egress filter for this endpoint. Same semantics as
+    /// [`Filters::passes_in_filter`] applied to the `*_out` lists.
+    #[must_use]
+    pub fn passes_out_filter(&self, msgid: u32, src_sys: u8, src_comp: u8) -> bool {
+        pass_msgid_axis(msgid, &self.allow_msgid_out, &self.block_msgid_out)
+            && pass_u8_axis(src_sys, &self.allow_src_sys_out, &self.block_src_sys_out)
+            && pass_u8_axis(src_comp, &self.allow_src_comp_out, &self.block_src_comp_out)
+    }
+}
+
+/// Per-axis decision for the msgid axis (u32 values, [`MsgIdRange`] entries).
+/// Empty `allow` = no allow-restriction; non-empty `allow` requires `value` in
+/// some allow range; `block` rejects on match regardless.
+#[inline]
+fn pass_msgid_axis(value: u32, allow: &[MsgIdRange], block: &[MsgIdRange]) -> bool {
+    if !allow.is_empty() && !allow.iter().any(|r| r.contains(value)) {
+        return false;
+    }
+    !block.iter().any(|r| r.contains(value))
+}
+
+/// Per-axis decision for the `src_sys` / `src_comp` axes (u8 values,
+/// [`U8Range`] entries). Mirror of [`pass_msgid_axis`] for the smaller value
+/// type; kept separate to avoid a trait shadowing the existing inherent
+/// `contains` methods on the range types.
+#[inline]
+fn pass_u8_axis(value: u8, allow: &[U8Range], block: &[U8Range]) -> bool {
+    if !allow.is_empty() && !allow.iter().any(|r| r.contains(value)) {
+        return false;
+    }
+    !block.iter().any(|r| r.contains(value))
 }
 
 fn parse_msgid_ranges(v: &str, key: &'static str) -> Result<Vec<MsgIdRange>, SpecError> {
@@ -289,5 +336,180 @@ mod tests {
                 "Filters::apply({k}) returned false; missing from match arm"
             );
         }
+    }
+
+    // ----- per-frame eval (passes_in_filter / passes_out_filter) -----
+
+    #[test]
+    fn default_filters_accept_everything() {
+        let f = Filters::default();
+        assert!(f.passes_in_filter(0, 0, 0));
+        assert!(f.passes_in_filter(u32::MAX, u8::MAX, u8::MAX));
+        assert!(f.passes_out_filter(33, 1, 1));
+    }
+
+    #[test]
+    fn allow_in_restricts_to_listed_msgids() {
+        let f = Filters {
+            allow_msgid_in: vec![MsgIdRange::single(0), MsgIdRange { lo: 30, hi: 40 }],
+            ..Filters::default()
+        };
+        assert!(f.passes_in_filter(0, 1, 1));
+        assert!(f.passes_in_filter(30, 1, 1));
+        assert!(f.passes_in_filter(35, 1, 1));
+        assert!(f.passes_in_filter(40, 1, 1));
+        assert!(!f.passes_in_filter(29, 1, 1));
+        assert!(!f.passes_in_filter(41, 1, 1));
+        assert!(!f.passes_in_filter(100, 1, 1));
+    }
+
+    #[test]
+    fn block_in_rejects_listed_msgids() {
+        let f = Filters {
+            block_msgid_in: vec![MsgIdRange::single(33), MsgIdRange { lo: 100, hi: 150 }],
+            ..Filters::default()
+        };
+        assert!(f.passes_in_filter(0, 1, 1));
+        assert!(!f.passes_in_filter(33, 1, 1));
+        assert!(!f.passes_in_filter(100, 1, 1));
+        assert!(!f.passes_in_filter(125, 1, 1));
+        assert!(!f.passes_in_filter(150, 1, 1));
+        assert!(f.passes_in_filter(151, 1, 1));
+    }
+
+    #[test]
+    fn block_wins_over_allow_on_overlap() {
+        // CLAUDE.md: "If both are set, Block* wins on overlap."
+        let f = Filters {
+            allow_msgid_in: vec![MsgIdRange { lo: 0, hi: 100 }],
+            block_msgid_in: vec![MsgIdRange::single(33)],
+            ..Filters::default()
+        };
+        assert!(f.passes_in_filter(0, 1, 1));
+        assert!(f.passes_in_filter(32, 1, 1));
+        assert!(!f.passes_in_filter(33, 1, 1));
+        assert!(f.passes_in_filter(34, 1, 1));
+        // outside allow → reject regardless of block
+        assert!(!f.passes_in_filter(101, 1, 1));
+    }
+
+    #[test]
+    fn src_sys_in_axis_independent_of_msgid_axis() {
+        let f = Filters {
+            allow_src_sys_in: vec![U8Range::single(1)],
+            ..Filters::default()
+        };
+        assert!(f.passes_in_filter(0, 1, 0));
+        assert!(!f.passes_in_filter(0, 2, 0));
+        // Block on the same axis works.
+        let f = Filters {
+            block_src_sys_in: vec![U8Range::single(255)],
+            ..Filters::default()
+        };
+        assert!(f.passes_in_filter(0, 1, 0));
+        assert!(!f.passes_in_filter(0, 255, 0));
+    }
+
+    #[test]
+    fn src_comp_in_axis_independent_of_other_axes() {
+        let f = Filters {
+            allow_src_comp_in: vec![U8Range { lo: 1, hi: 10 }],
+            ..Filters::default()
+        };
+        assert!(f.passes_in_filter(0, 0, 1));
+        assert!(f.passes_in_filter(0, 0, 10));
+        assert!(!f.passes_in_filter(0, 0, 11));
+        assert!(!f.passes_in_filter(0, 0, 0));
+    }
+
+    #[test]
+    fn in_filter_requires_every_axis_to_pass() {
+        let f = Filters {
+            allow_msgid_in: vec![MsgIdRange::single(0)],
+            allow_src_sys_in: vec![U8Range::single(1)],
+            allow_src_comp_in: vec![U8Range::single(2)],
+            ..Filters::default()
+        };
+        assert!(f.passes_in_filter(0, 1, 2));
+        // any single axis miss → fail
+        assert!(!f.passes_in_filter(1, 1, 2));
+        assert!(!f.passes_in_filter(0, 2, 2));
+        assert!(!f.passes_in_filter(0, 1, 3));
+    }
+
+    #[test]
+    fn in_and_out_axes_are_independent() {
+        let f = Filters {
+            block_msgid_in: vec![MsgIdRange::single(33)],
+            ..Filters::default()
+        };
+        // _out is untouched by an _in blocklist, and vice versa.
+        assert!(!f.passes_in_filter(33, 1, 1));
+        assert!(f.passes_out_filter(33, 1, 1));
+
+        let f = Filters {
+            allow_msgid_out: vec![MsgIdRange::single(0)],
+            ..Filters::default()
+        };
+        assert!(f.passes_in_filter(99, 1, 1));
+        assert!(!f.passes_out_filter(99, 1, 1));
+    }
+
+    #[test]
+    fn out_filter_mirrors_in_filter_logic_on_out_lists() {
+        let f = Filters {
+            allow_msgid_out: vec![MsgIdRange { lo: 30, hi: 40 }],
+            block_msgid_out: vec![MsgIdRange::single(35)],
+            allow_src_sys_out: vec![U8Range::single(1)],
+            block_src_comp_out: vec![U8Range::single(99)],
+            ..Filters::default()
+        };
+        assert!(f.passes_out_filter(30, 1, 1));
+        assert!(f.passes_out_filter(40, 1, 1));
+        assert!(!f.passes_out_filter(35, 1, 1)); // block wins
+        assert!(!f.passes_out_filter(29, 1, 1)); // outside allow
+        assert!(!f.passes_out_filter(30, 2, 1)); // src_sys not allowed
+        assert!(!f.passes_out_filter(30, 1, 99)); // src_comp blocked
+    }
+
+    #[test]
+    fn multi_range_allow_accepts_any_matching_range() {
+        let f = Filters {
+            allow_msgid_in: vec![
+                MsgIdRange::single(0),
+                MsgIdRange { lo: 100, hi: 200 },
+                MsgIdRange::single(500),
+            ],
+            ..Filters::default()
+        };
+        assert!(f.passes_in_filter(0, 0, 0));
+        assert!(f.passes_in_filter(100, 0, 0));
+        assert!(f.passes_in_filter(150, 0, 0));
+        assert!(f.passes_in_filter(200, 0, 0));
+        assert!(f.passes_in_filter(500, 0, 0));
+        assert!(!f.passes_in_filter(1, 0, 0));
+        assert!(!f.passes_in_filter(201, 0, 0));
+        assert!(!f.passes_in_filter(499, 0, 0));
+        assert!(!f.passes_in_filter(501, 0, 0));
+    }
+
+    #[test]
+    fn boundary_values_u8_full_range_allow_or_block() {
+        // U8Range covering the whole space behaves correctly at the ends.
+        let f = Filters {
+            allow_src_sys_in: vec![U8Range { lo: 0, hi: 255 }],
+            ..Filters::default()
+        };
+        assert!(f.passes_in_filter(0, 0, 0));
+        assert!(f.passes_in_filter(0, 255, 0));
+
+        let f = Filters {
+            block_src_comp_in: vec![U8Range { lo: 0, hi: 255 }],
+            ..Filters::default()
+        };
+        // Every value rejected when blocklist covers the whole space.
+        assert!(!f.passes_in_filter(0, 0, 0));
+        assert!(!f.passes_in_filter(0, 0, 128));
+        assert!(!f.passes_in_filter(0, 0, 255));
     }
 }
