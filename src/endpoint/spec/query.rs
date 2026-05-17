@@ -315,8 +315,7 @@ mod tests {
     use crate::endpoint::filters::{Filters, MsgIdRange, U8Range};
     use crate::endpoint::identity_flags::IdentityFlags;
     use crate::endpoint::spec::{
-        EndpointKind, EndpointSpec, SerialEndpoint, SpecError, TcpClientEndpoint,
-        UdpClientEndpoint, UdpServerEndpoint,
+        EndpointKind, EndpointSpec, SerialEndpoint, SpecError, TcpClientEndpoint, UdpServerEndpoint,
     };
 
     fn parse_ok(input: &str) -> EndpointSpec {
@@ -338,13 +337,6 @@ mod tests {
         match &spec.kind {
             EndpointKind::UdpServer(e) => e,
             other => panic!("expected udps, got {other:?}"),
-        }
-    }
-
-    fn as_udpc(spec: &EndpointSpec) -> &UdpClientEndpoint {
-        match &spec.kind {
-            EndpointKind::UdpClient(e) => e,
-            other => panic!("expected udpc, got {other:?}"),
         }
     }
 

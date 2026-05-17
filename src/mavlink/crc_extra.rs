@@ -11,14 +11,6 @@ pub(crate) fn crc16_update(crc: &mut u16, b: u8) {
     *crc = (*crc >> 8) ^ (tmp16 << 8) ^ (tmp16 << 3) ^ (tmp16 >> 4);
 }
 
-pub(crate) fn crc16_mcrf4xx(bytes: &[u8]) -> u16 {
-    let mut crc = CRC_INIT;
-    for &b in bytes {
-        crc16_update(&mut crc, b);
-    }
-    crc
-}
-
 /// Field description passed to `crc_extra_for_message`. Borrowed strings keep
 /// the caller (build.rs) in charge of XML lifetime; the algorithm only reads.
 #[derive(Debug, Clone)]
@@ -84,6 +76,14 @@ pub(crate) fn crc_extra_for_message(msg_name: &str, fields: &[CrcExtraField<'_>]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn crc16_mcrf4xx(bytes: &[u8]) -> u16 {
+        let mut crc = CRC_INIT;
+        for &b in bytes {
+            crc16_update(&mut crc, b);
+        }
+        crc
+    }
 
     fn f(name: &'static str, type_name: &'static str) -> CrcExtraField<'static> {
         CrcExtraField {
