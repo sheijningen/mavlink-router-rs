@@ -172,6 +172,27 @@ mod tests {
     }
 
     #[test]
+    fn touch_return_value_correct_after_capacity_eviction() {
+        // After capacity-induced eviction, `touch` must still return `false`
+        // for a refreshed survivor (entry existed) and `true` for a re-inserted
+        // previously-evicted identity (fresh slot). Guards against a regression
+        // where the find-then-evict-then-insert ordering returned `true`
+        // unconditionally post-eviction.
+        let mut t = LearnTable::new(3);
+        t.touch(1, 1, now_plus(Duration::from_secs(0)));
+        t.touch(2, 1, now_plus(Duration::from_secs(10)));
+        t.touch(3, 1, now_plus(Duration::from_secs(20)));
+        // Refresh oldest, then trigger an eviction of (2, 1).
+        t.touch(1, 1, now_plus(Duration::from_secs(30)));
+        t.touch(4, 1, now_plus(Duration::from_secs(40)));
+        assert_eq!(t.len(), 3);
+        // (1, 1) survived — touch must return false.
+        assert!(!t.touch(1, 1, now_plus(Duration::from_secs(50))));
+        // (2, 1) was evicted — re-inserting is a fresh slot, touch returns true.
+        assert!(t.touch(2, 1, now_plus(Duration::from_secs(60))));
+    }
+
+    #[test]
     fn refreshed_entry_survives_capacity_pressure() {
         // Touching the oldest entry must move it ahead of the others so
         // the next eviction takes someone else. This is the LRU contract.
