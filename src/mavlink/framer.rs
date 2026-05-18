@@ -644,6 +644,94 @@ mod tests {
         assert_eq!(f.buffer_mut().len(), 4);
         assert_eq!(f.resync_bytes(), 0);
     }
+
+    #[test]
+    fn signed_v2_frame_length_includes_signature_trailer() {
+        // A clean signed v2 frame followed by a clean v1 frame must parse
+        // back-to-back with zero resync between them. If frame_len omitted the
+        // 13-byte signature trailer, those 13 bytes would show up as resync.
+        let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
+        let sig: [u8; V2_SIGNATURE_LEN] = [0xAA; V2_SIGNATURE_LEN];
+        let signed = build_v2(
+            0,
+            &heartbeat_payload(),
+            crc_extra,
+            V2_IFLAG_SIGNED,
+            Some(&sig),
+        );
+        let followup = build_v1(0, &heartbeat_payload(), crc_extra);
+
+        let mut stream = signed.clone();
+        stream.extend_from_slice(&followup);
+        let mut f = Framer::new();
+        f.buffer_mut().put_slice(&stream);
+
+        let (_, b1) = f.try_next_frame().expect("signed frame parses");
+        assert_eq!(b1.len(), signed.len());
+        let (_, b2) = f.try_next_frame().expect("followup parses immediately");
+        assert_eq!(b2.len(), followup.len());
+        assert_eq!(f.resync_bytes(), 0);
+        assert_eq!(f.crc_errors(), 0);
+    }
+
+    #[test]
+    fn signed_v2_bad_crc_increments_counter() {
+        // Signed frames must go through the same CRC validation path as
+        // unsigned frames. Flipping a CRC byte (positioned before the
+        // signature trailer) must register as a CRC error.
+        let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
+        let sig: [u8; V2_SIGNATURE_LEN] = [0x00; V2_SIGNATURE_LEN];
+        let mut frame = build_v2(
+            0,
+            &heartbeat_payload(),
+            crc_extra,
+            V2_IFLAG_SIGNED,
+            Some(&sig),
+        );
+        let crc_lo_pos = frame.len() - V2_SIGNATURE_LEN - CRC_LEN;
+        frame[crc_lo_pos] ^= 0x01;
+
+        let mut f = Framer::new();
+        f.buffer_mut().put_slice(&frame);
+        assert!(f.try_next_frame().is_none());
+        assert_eq!(f.crc_errors(), 1);
+    }
+
+    #[test]
+    fn extract_targets_offset_bounds_isolate_the_boundary() {
+        // Pins four edges of the offset-vs-payload_len check directly, without
+        // going through the framer state machine.
+        static ENTRY: MsgEntry = MsgEntry {
+            crc_extra: 0,
+            target_sys_offset: Some(2),
+            target_comp_offset: Some(3),
+        };
+        let header = |payload_len: u8| ParsedHeader {
+            version: Version::V2,
+            sysid: 0,
+            compid: 0,
+            msgid: 0,
+            seq: 0,
+            payload_len,
+            target_system: None,
+            target_component: None,
+        };
+        let mut frame = vec![0u8; V2_HEADER_LEN + 4 + CRC_LEN];
+        frame[V2_HEADER_LEN + 2] = 17;
+        frame[V2_HEADER_LEN + 3] = 19;
+
+        let (s, c) = extract_targets(&frame, &header(4), Some(&ENTRY));
+        assert_eq!((s, c), (Some(17), Some(19)));
+
+        let (s, c) = extract_targets(&frame, &header(3), Some(&ENTRY));
+        assert_eq!((s, c), (Some(17), None));
+
+        let (s, c) = extract_targets(&frame, &header(2), Some(&ENTRY));
+        assert_eq!((s, c), (None, None));
+
+        let (s, c) = extract_targets(&frame, &header(4), None);
+        assert_eq!((s, c), (None, None));
+    }
 }
 
 #[cfg(test)]
