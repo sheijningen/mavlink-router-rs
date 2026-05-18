@@ -6,14 +6,14 @@
 //! Arc<EndpointStats>)` — fed by the router over a [`StatsEvent`] channel,
 //! and drops registry entries on `Finalize`. The interval-driven JSON-Lines
 //! output, drop-oldest `mpsc<StatsLine>`, `BrokenPipe` handling, and
-//! `stats_dropped` WARN are Phase 7 deliverables (CLAUDE.md "Stats task
+//! `stats_dropped` WARN are Phase 6 deliverables (CLAUDE.md "Stats task
 //! scaffold" bullet under Phase 5a is explicit: "emits no output yet").
 //!
 //! The scaffold's only behavioural surface in 5a is: accept `Register` /
 //! `Finalize` without blocking the router, exit cleanly on cancel, and
 //! drain any in-flight events the router produced inside its own drain
 //! window so the registry view of "which endpoints existed at shutdown" is
-//! complete when Phase 7 starts emitting final synthetic lines.
+//! complete when Phase 6 starts emitting final synthetic lines.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,9 +40,9 @@ pub enum StatsEvent {
     },
 }
 
-/// One row of the stats task's registry mirror. Phase 7 reads `name` and
+/// One row of the stats task's registry mirror. Phase 6 reads `name` and
 /// `stats` when emitting JSON-Lines; today the scaffold just inserts and
-/// removes rows so the registry view is complete when Phase 7 lands.
+/// removes rows so the registry view is complete when Phase 6 lands.
 #[derive(Debug)]
 #[allow(dead_code)]
 struct RegisteredEndpoint {
@@ -50,14 +50,14 @@ struct RegisteredEndpoint {
     stats: Arc<EndpointStats>,
 }
 
-/// Run the stats task until the cancellation token fires. Until Phase 7
+/// Run the stats task until the cancellation token fires. Until Phase 6
 /// wires the interval timer + JSON-Lines output, this loop just maintains
 /// the registry mirror so the router's fire-and-forget `StatsEvent` sends
 /// do not block its hot path.
 ///
 /// On cancel the task drains any events the router already pushed into the
 /// channel (`PeerRemoved → Finalize` and shutdown-sweep `Finalize`s) before
-/// returning — Phase 7 needs that drained view to emit each endpoint's
+/// returning — Phase 6 needs that drained view to emit each endpoint's
 /// authoritative final stats line.
 pub async fn run(mut stats_event_rx: mpsc::Receiver<StatsEvent>, cancel: CancellationToken) {
     let mut registry: HashMap<EndpointId, RegisteredEndpoint> = HashMap::new();
