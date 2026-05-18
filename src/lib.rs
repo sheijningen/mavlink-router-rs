@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::endpoint::EndpointId;
 use crate::endpoint::EndpointIdAllocator;
@@ -114,6 +114,19 @@ pub async fn run_with_cancel(cli: cli::Cli, token: CancellationToken) -> Result<
     info!("rmr stopped");
 
     Ok(())
+}
+
+/// Short scheme label for log messages — matches the CLI prefix operators
+/// actually type, so an `endpoint registered` INFO line can be grepped against
+/// the same config file the operator hands the binary.
+fn endpoint_kind_label(kind: &EndpointKind) -> &'static str {
+    match kind {
+        EndpointKind::Serial(_) => "serial",
+        EndpointKind::UdpServer(_) => "udps",
+        EndpointKind::UdpClient(_) => "udpc",
+        EndpointKind::TcpServer(_) => "tcps",
+        EndpointKind::TcpClient(_) => "tcpc",
+    }
 }
 
 /// Per-spec [`IdentityFlags`] borrow — every `EndpointKind` carries one on
@@ -264,6 +277,12 @@ async fn spawn_endpoint(
     let EndpointSpec { kind, name } = spec;
     let endpoint_id = allocator.alloc();
     let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
+    info!(
+        endpoint_id = %endpoint_id,
+        scheme = endpoint_kind_label(&kind),
+        %name,
+        "spawning endpoint"
+    );
 
     match kind {
         EndpointKind::Serial(ep) => {
@@ -405,7 +424,7 @@ async fn prepare_leaf(
         .await
         .is_err()
     {
-        warn!(
+        debug!(
             endpoint_id = %id, %name,
             "router event channel closed during endpoint registration; skipping spawn"
         );
@@ -434,7 +453,7 @@ async fn prepare_parent_listener(
         .await
         .is_err()
     {
-        warn!(
+        debug!(
             endpoint_id = %id, %name,
             "router event channel closed during parent-listener registration; skipping spawn"
         );

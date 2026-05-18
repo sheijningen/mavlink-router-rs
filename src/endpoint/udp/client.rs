@@ -8,7 +8,7 @@ use tokio::net::{UdpSocket, lookup_host};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info_span, trace, warn};
+use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::super::EndpointId;
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
@@ -318,7 +318,7 @@ async fn handle_inbound(
                 addr: src,
                 last_inbound: Instant::now(),
             });
-            trace!(%src, "udpc latched onto reply source");
+            info!(%src, "udpc latched onto reply source");
         }
         InboundDecision::AcceptUpdate => {
             if let Some(latch) = dest.latch.as_mut() {
@@ -394,7 +394,7 @@ async fn check_latch_idle(dest: &mut Destination, idle: Duration) {
     if Instant::now().duration_since(latch.last_inbound) < idle {
         return;
     }
-    debug!(%latch.addr, "udpc latch idle; reverting to configured");
+    info!(%latch.addr, "udpc latch idle; reverting to configured");
     let fresh = resolve_host(&dest.host, dest.port).await;
     if !fresh.is_empty() {
         dest.resolved_ips = fresh;

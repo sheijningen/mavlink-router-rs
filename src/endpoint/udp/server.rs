@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info, info_span, trace, warn};
+use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
@@ -262,7 +262,7 @@ async fn handle_packet(
             debug!("udps event channel closed; dropping admitted peer");
             return;
         }
-        trace!(parent_id = %ctx.spec.parent_id, %src, "udps peer added");
+        info!(parent_id = %ctx.spec.parent_id, %src, "udps peer added");
 
         if peers.len() >= ctx.spec.peer_capacity {
             evict_lru_peer(peers, ctx.spec.parent_id, &ctx.wiring.event_tx).await;
@@ -336,7 +336,7 @@ async fn evict_lru_peer(
             reason: PeerRemovalReason::LruEvicted,
         })
         .await;
-    trace!(parent_id = %parent_id, %victim, "udps peer LRU-evicted");
+    info!(parent_id = %parent_id, %victim, "udps peer LRU-evicted");
 }
 
 async fn reap_idle_peers(
@@ -361,7 +361,7 @@ async fn reap_idle_peers(
                     reason: PeerRemovalReason::Idle,
                 })
                 .await;
-            trace!(parent_id = %parent_id, %addr, "udps peer idle-reaped");
+            info!(parent_id = %parent_id, %addr, "udps peer idle-reaped");
         }
     }
 }

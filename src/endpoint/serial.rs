@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, info_span, trace, warn};
+use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::EndpointId;
 use super::events::RouterFrame;
@@ -117,7 +117,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
         // is already pushing fresh ones.
         let drained = tx_queue.drain_and_discard();
         if drained > 0 {
-            trace!(drained, "serial drained stale frames before resuming");
+            debug!(drained, "serial drained stale frames before resuming");
         }
         stats.store_state(EndpointState::Connected);
 
@@ -137,7 +137,11 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
                 return;
             }
             SessionOutcome::Disconnected => {
-                tx_queue.drain_and_discard();
+                info!("serial disconnected; will retry open");
+                let drained = tx_queue.drain_and_discard();
+                if drained > 0 {
+                    debug!(drained, "serial discarded in-flight frames on disconnect");
+                }
                 stats.store_state(EndpointState::Reconnecting);
                 // Sleep one reopen interval before reattempting so we don't
                 // spin if the device disappeared and `open_until_cancel`
@@ -173,7 +177,7 @@ async fn open_until_cancel(
         }
         match try_open(path, baud, flow_control) {
             Ok(s) => {
-                trace!(%path, baud, "serial opened");
+                info!(%path, baud, "serial opened");
                 return OpenOutcome::Opened(s);
             }
             Err(e) => {

@@ -201,7 +201,7 @@ async fn handle_event(
                 stats: stats.clone(),
                 routable: routable_state,
             };
-            trace!(%id, %name, routable = entry.routable.is_some(), "router: endpoint added");
+            debug!(%id, %name, routable = entry.routable.is_some(), "router: endpoint added");
             routing.insert(id, entry);
             let _ = stats_event_tx
                 .send(StatsEvent::Register { id, name, stats })
@@ -229,7 +229,7 @@ async fn handle_event(
                     learn: LearnTable::new(LEARN_CAPACITY),
                 }),
             };
-            trace!(%child_id, %parent_id, %name, "router: peer added");
+            debug!(%child_id, %parent_id, %name, "router: peer added");
             routing.insert(child_id, entry);
             let _ = stats_event_tx
                 .send(StatsEvent::Register {
@@ -258,7 +258,7 @@ async fn handle_event(
                     groups.leave(group);
                 }
                 entry.stats.store_state(final_state);
-                trace!(%child_id, %parent_id, ?reason, ?final_state, "router: peer removed");
+                debug!(%child_id, %parent_id, ?reason, ?final_state, "router: peer removed");
             }
             let _ = stats_event_tx
                 .send(StatsEvent::Finalize { id: child_id })
@@ -373,6 +373,12 @@ fn handle_frame(
                     .stats
                     .out_filter_drops
                     .fetch_add(1, Ordering::Relaxed);
+                trace!(
+                    %src_id,
+                    dest_id = %dest_id,
+                    msgid = header.msgid,
+                    "router: out-filter blocked frame"
+                );
             }
             Decision::LoopBlocked | Decision::TargetMismatch => {}
         }

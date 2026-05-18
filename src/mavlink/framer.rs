@@ -1,4 +1,5 @@
 use bytes::{Buf, Bytes, BytesMut};
+use tracing::trace;
 
 use super::crc::Crc16;
 use super::frame::{
@@ -50,8 +51,8 @@ impl Framer {
 
     /// Attempt to extract one complete frame. Returns None when the buffer is
     /// too short to contain a complete frame at the current scan position.
-    /// Drops frames with bad CRC (counted, byte advanced) and rescans across
-    /// garbage prefixes (counted) silently.
+    /// Drops frames with bad CRC and rescans across garbage prefixes; both
+    /// are counted (`crc_errors`, `resync_bytes`) and logged at DEBUG / TRACE.
     pub fn try_next_frame(&mut self) -> Option<(ParsedHeader, Bytes)> {
         loop {
             let stx = self.align_to_stx()?;
@@ -61,8 +62,11 @@ impl Framer {
             let frame_len = match self.decide_frame_len(stx) {
                 FrameLen::Ready(n) => n,
                 FrameLen::UnknownIncompatFlag => {
-                    // Length is unknowable, so we can't safely forward. Drop
-                    // the STX byte and rescan from the next one.
+                    let iflags = self.buf[2];
+                    trace!(
+                        iflags = format_args!("{iflags:#04x}"),
+                        "v2 frame with unknown incompat flag; discarding STX and resyncing"
+                    );
                     self.discard_byte();
                     continue;
                 }
@@ -90,13 +94,18 @@ impl Framer {
         match found {
             Some((pos, stx)) => {
                 if pos > 0 {
+                    trace!(skipped = pos, "framer resync past garbage prefix");
                     self.add_resync(pos as u64);
                     self.buf.advance(pos);
                 }
                 Some(stx)
             }
             None => {
-                self.add_resync(self.buf.len() as u64);
+                let cleared = self.buf.len();
+                if cleared > 0 {
+                    trace!(cleared, "framer cleared STX-free buffer as resync");
+                }
+                self.add_resync(cleared as u64);
                 self.buf.clear();
                 None
             }
@@ -143,6 +152,11 @@ impl Framer {
             None => true,
         };
         if !crc_ok {
+            trace!(
+                msgid = header.msgid,
+                version = ?header.version,
+                "framer CRC mismatch on known msgid; dropping frame"
+            );
             self.crc_errors = self.crc_errors.saturating_add(1);
             self.discard_byte();
             return None;

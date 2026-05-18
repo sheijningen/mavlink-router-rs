@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::net::{TcpStream, lookup_host};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, info_span, trace, warn};
+use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::super::EndpointId;
 use super::super::backoff::Backoff;
@@ -126,7 +126,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
         backoff.reset();
         let drained = tx_queue.drain_and_discard();
         if drained > 0 {
-            trace!(drained, "tcpc drained stale frames before resuming");
+            debug!(drained, "tcpc drained stale frames before resuming");
         }
         stats.store_state(EndpointState::Connected);
 
@@ -142,10 +142,17 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
         .await
         {
             SessionOutcome::Terminated => {
-                tx_queue.drain_and_discard();
+                let drained = tx_queue.drain_and_discard();
+                if drained > 0 {
+                    debug!(
+                        drained,
+                        "tcpc discarded in-flight frames on session terminate"
+                    );
+                }
                 return;
             }
             SessionOutcome::Disconnected => {
+                info!("tcpc disconnected; reconnecting");
                 stats.store_state(EndpointState::Reconnecting);
                 continue;
             }
@@ -178,7 +185,7 @@ async fn dial_with_dns(host: &str, port: u16, cancel: &CancellationToken) -> Dia
     for target in resolved {
         match connect_one(target, cancel).await {
             DialOutcome::Connected(s) => {
-                trace!(%target, "tcpc connected");
+                info!(%target, "tcpc connected");
                 return DialOutcome::Connected(s);
             }
             DialOutcome::Cancelled => return DialOutcome::Cancelled,

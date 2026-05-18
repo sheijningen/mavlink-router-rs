@@ -5,7 +5,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info, info_span, trace, warn};
+use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::super::EndpointId;
 use super::super::EndpointIdAllocator;
@@ -189,7 +189,7 @@ async fn accept_one_client(
         debug!("tcps event channel closed; dropping accepted client");
         return;
     }
-    trace!(parent_id = %spec.parent_id, %peer_addr, %child_id, "tcps client accepted");
+    info!(parent_id = %spec.parent_id, %peer_addr, %child_id, "tcps client accepted");
 
     children.spawn(
         run_client_session(
@@ -226,7 +226,10 @@ async fn run_client_session(
     )
     .await;
     // Drain anything still queued for this client; the socket is going away.
-    tx_queue.drain_and_discard();
+    let drained = tx_queue.drain_and_discard();
+    if drained > 0 {
+        debug!(%peer_addr, drained, "tcps discarded in-flight frames on session end");
+    }
 
     let reason = match outcome {
         SessionOutcome::Terminated => PeerRemovalReason::ListenerShutdown,
@@ -240,7 +243,7 @@ async fn run_client_session(
             reason,
         })
         .await;
-    trace!(parent_id = %parent_id, %peer_addr, %child_id, ?reason, "tcps client session ended");
+    warn!(parent_id = %parent_id, %peer_addr, %child_id, ?reason, "tcps client session ended");
 }
 
 #[cfg(test)]
