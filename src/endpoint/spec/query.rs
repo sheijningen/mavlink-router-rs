@@ -635,6 +635,15 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_filter_key_fails_no_accumulation() {
+        // Repeated filter keys hit the same key-agnostic dedup; no accumulation.
+        assert!(matches!(
+            parse_err("udps:0.0.0.0:1?block_msgid_in=33&block_msgid_in=34"),
+            SpecError::DuplicateQueryKey(k) if k == "block_msgid_in"
+        ));
+    }
+
+    #[test]
     fn malformed_query_no_eq_fails() {
         assert!(matches!(
             parse_err("udps:0.0.0.0:1?just_a_key"),
