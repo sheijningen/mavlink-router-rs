@@ -297,6 +297,21 @@ mod tests {
     }
 
     #[test]
+    fn out_filter_src_comp_axis_independent_of_msgid() {
+        let id = identity_with_filters(Filters {
+            block_src_comp_out: vec![U8Range::single(9)],
+            ..Filters::default()
+        });
+        let h_blocked = header_with_msgid(0, 1, 9);
+        let h_passes = header_with_msgid(0, 1, 10);
+        assert_eq!(
+            decide(&h_blocked, &empty_learn(), &id),
+            Decision::OutFilterBlocked
+        );
+        assert_eq!(decide(&h_passes, &empty_learn(), &id), Decision::Admit);
+    }
+
+    #[test]
     fn out_filter_runs_before_target_match() {
         // A frame that fails target-match AND fails out-filter must surface
         // OutFilterBlocked (step 3 runs before step 4 in the documented
