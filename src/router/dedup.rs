@@ -217,4 +217,23 @@ mod tests {
         assert!(!w.check_and_insert(&make_frame(b"b"), at(0)));
         assert_eq!(w.len(), 1);
     }
+
+    #[test]
+    fn hit_is_content_based_not_pointer_based() {
+        // The redundant-uplink use case the window exists to serve delivers
+        // the same frame on two different transports — each producing its
+        // own backing allocation. Dedup must collide on identical content
+        // regardless of which buffer the bytes were copied from.
+        let mut w = DedupWindow::new(Duration::from_millis(100), 16);
+        let content: &[u8] = &[0xFD, 9, 0, 0, 0, 1, 1, 0, 0, 0, 1, 2, 3, 4];
+        let a = Bytes::copy_from_slice(content);
+        let b = Bytes::copy_from_slice(content);
+        assert_ne!(
+            a.as_ptr(),
+            b.as_ptr(),
+            "test setup requires independent allocations"
+        );
+        assert!(!w.check_and_insert(&a, at(0)));
+        assert!(w.check_and_insert(&b, at(0)));
+    }
 }
