@@ -153,4 +153,31 @@ mod tests {
             .expect("waiter task panicked");
         assert_eq!(popped.as_ref(), b"x");
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn aborted_waiter_does_not_break_subsequent_wakeup() {
+        // Drop a registered Notify waiter, then verify a fresh waiter still
+        // wakes on the next push. Guards against a regression where the
+        // aborted Notified future would mishandle its permit slot.
+        let (q, _) = make(2);
+        let aborted = {
+            let q = q.clone();
+            tokio::spawn(async move { q.pop_or_wait().await })
+        };
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        aborted.abort();
+        let _ = aborted.await;
+
+        let new_waiter = {
+            let q = q.clone();
+            tokio::spawn(async move { q.pop_or_wait().await })
+        };
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        q.push(Bytes::from_static(b"x"));
+        let popped = tokio::time::timeout(Duration::from_secs(1), new_waiter)
+            .await
+            .expect("new waiter timed out — abort may have left Notify in a bad state")
+            .expect("new waiter task panicked");
+        assert_eq!(popped.as_ref(), b"x");
+    }
 }
