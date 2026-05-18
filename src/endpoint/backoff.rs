@@ -142,6 +142,39 @@ mod tests {
     }
 
     #[test]
+    fn next_delay_jitter_band_holds_after_advance_and_at_cap() {
+        // The initial-step jitter test re-resets between calls; this one
+        // exercises the doubling and cap-saturation arithmetic by sampling
+        // the band on a doubled base and on the saturated cap.
+        let mut b = Backoff::new(1000, 4000);
+        let _ = b.next_delay(); // current advances to 2000ms
+        assert_eq!(b.current, Duration::from_millis(2000));
+        for _ in 0..32 {
+            let held = b.current;
+            let d = b.next_delay();
+            assert!(
+                d >= Duration::from_millis(1600) && d <= Duration::from_millis(2400),
+                "delay {d:?} outside ±20% of 2000ms"
+            );
+            b.current = held;
+        }
+        // Walk forward until saturation, then sample at the cap.
+        while b.current < Duration::from_millis(4000) {
+            let _ = b.next_delay();
+        }
+        assert_eq!(b.current, Duration::from_millis(4000));
+        for _ in 0..32 {
+            let held = b.current;
+            let d = b.next_delay();
+            assert!(
+                d >= Duration::from_millis(3200) && d <= Duration::from_millis(4800),
+                "delay {d:?} outside ±20% of 4000ms cap"
+            );
+            b.current = held;
+        }
+    }
+
+    #[test]
     fn next_delay_doubles_and_caps() {
         let mut b = Backoff::new(100, 800);
         let _ = b.next_delay(); // base 100 → current advances to 200
