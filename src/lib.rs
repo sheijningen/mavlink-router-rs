@@ -33,7 +33,7 @@ use crate::endpoint::tx_queue::TxQueue;
 use crate::endpoint::udp::client::{UdpClientSpec, UdpClientWiring};
 use crate::endpoint::udp::server::{DEFAULT_PEER_CAPACITY, UdpServerSpec, UdpServerWiring};
 use crate::router::RouterWiring;
-use crate::stats::StatsEvent;
+use crate::stats::{DEFAULT_STATS_QUEUE_LINES, StatsEvent, StatsRunConfig};
 
 /// CLAUDE.md "Defaults" table: shared reader→router mpsc capacity. Senders
 /// `await` on full — backpressure flows to readers rather than silently
@@ -97,7 +97,16 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
             dedup_window_capacity: DEFAULT_DEDUP_WINDOW_CAPACITY,
         },
     );
-    spawn_stats(&mut tasks, stats_event_rx, token.clone());
+    spawn_stats(
+        &mut tasks,
+        stats_event_rx,
+        token.clone(),
+        StatsRunConfig {
+            enabled: stats,
+            interval: std::time::Duration::from_secs(stats_interval_secs),
+            queue_capacity: DEFAULT_STATS_QUEUE_LINES,
+        },
+    );
     spawn_endpoints(&mut tasks, &event_tx, &frame_tx, &token, specs).await?;
 
     // Drop the parent senders so the router's recv() loops observe
@@ -253,9 +262,10 @@ fn spawn_stats(
     tasks: &mut JoinSet<()>,
     stats_event_rx: mpsc::Receiver<StatsEvent>,
     cancel: CancellationToken,
+    cfg: StatsRunConfig,
 ) {
     tasks.spawn(async move {
-        stats::run(stats_event_rx, cancel).await;
+        stats::run(stats_event_rx, cancel, cfg, tokio::io::stdout()).await;
     });
 }
 

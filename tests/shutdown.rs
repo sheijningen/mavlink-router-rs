@@ -33,7 +33,7 @@ use rmr::endpoint::tx_queue::TxQueue;
 use rmr::endpoint::udp::client::{self as udp_client, UdpClientSpec, UdpClientWiring};
 use rmr::endpoint::{EndpointId, EndpointIdAllocator};
 use rmr::router::{self, RouterWiring};
-use rmr::stats::{self as stats_task, StatsEvent};
+use rmr::stats::{self as stats_task, StatsEvent, StatsRunConfig};
 
 use crate::common::{shutdown_all, wait_for_state};
 
@@ -67,7 +67,13 @@ fn spawn_router() -> RouterHarness {
     };
     let stats_task = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { stats_task::run(stats_event_rx, cancel).await })
+        let cfg = StatsRunConfig {
+            enabled: false,
+            interval: std::time::Duration::from_secs(60),
+            queue_capacity: 8,
+        };
+        let writer = tokio::io::sink();
+        tokio::spawn(async move { stats_task::run(stats_event_rx, cancel, cfg, writer).await })
     };
 
     RouterHarness {
