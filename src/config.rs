@@ -900,6 +900,100 @@ name = "foo"
     }
 
     #[test]
+    fn toml_multiple_endpoints_preserve_order_and_kind() {
+        // Mixed-scheme TOML with several correctly-formed `[[endpoints]]`
+        // entries: every entry must round-trip into the matching
+        // `EndpointKind`, and the resulting `Vec<EndpointSpec>` must preserve
+        // declaration order (the spawner relies on it for stable
+        // `EndpointId` allocation and stats ordering).
+        let s = r#"
+[[endpoints]]
+type = "serial"
+path = "/dev/ttyUSB0"
+baud = 921600
+name = "fc"
+
+[[endpoints]]
+type = "udps"
+bind = "0.0.0.0:14550"
+name = "bus"
+
+[[endpoints]]
+type = "udpc"
+host = "192.168.1.5"
+port = 14550
+name = "tap"
+
+[[endpoints]]
+type = "tcps"
+bind = "0.0.0.0:5760"
+name = "uplink"
+
+[[endpoints]]
+type = "tcpc"
+host = "gcs.local"
+port = 5760
+name = "vehicle"
+"#;
+        let cfg = Config::from_toml_str(s).expect("must parse");
+        assert_eq!(cfg.endpoints.len(), 5);
+        let observed: Vec<(&str, &str)> = cfg
+            .endpoints
+            .iter()
+            .map(|e| {
+                let kind = match &e.kind {
+                    crate::endpoint::spec::EndpointKind::Serial(_) => "serial",
+                    crate::endpoint::spec::EndpointKind::UdpServer(_) => "udps",
+                    crate::endpoint::spec::EndpointKind::UdpClient(_) => "udpc",
+                    crate::endpoint::spec::EndpointKind::TcpServer(_) => "tcps",
+                    crate::endpoint::spec::EndpointKind::TcpClient(_) => "tcpc",
+                };
+                (e.name.as_str(), kind)
+            })
+            .collect();
+        assert_eq!(
+            observed,
+            vec![
+                ("fc", "serial"),
+                ("bus", "udps"),
+                ("tap", "udpc"),
+                ("uplink", "tcps"),
+                ("vehicle", "tcpc"),
+            ],
+        );
+    }
+
+    #[test]
+    fn toml_duplicate_key_within_endpoint_rejected() {
+        // TOML disallows the same key appearing twice in the same table;
+        // serde's deserializer surfaces this as a parse error before our
+        // schema validation runs. Pin the behaviour so a future move to a
+        // lenient TOML reader (or a swap to `toml-edit`) can't silently
+        // accept "last write wins" semantics and let an operator's
+        // copy-paste typo route to an unintended bind address.
+        let s = r#"
+[[endpoints]]
+type = "udps"
+bind = "0.0.0.0:14550"
+bind = "0.0.0.0:14551"
+"#;
+        match Config::from_toml_str(s) {
+            Err(Error::ConfigParse(e)) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("duplicate key"),
+                    "error must mention the duplicate-key cause; got: {msg}"
+                );
+                assert!(
+                    msg.contains("bind"),
+                    "error must name the offending key; got: {msg}"
+                );
+            }
+            other => panic!("expected ConfigParse from duplicate key, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn toml_auto_names_when_omitted() {
         let s = r#"
 [[endpoints]]
