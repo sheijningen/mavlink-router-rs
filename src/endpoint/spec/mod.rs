@@ -48,7 +48,23 @@ impl EndpointSpec {
         }
 
         let pairs = parse_query_pairs(query_str.unwrap_or(""))?;
-        let kind = parse_kind(scheme, body, &pairs)?;
+        Self::build(scheme, body, explicit_name, &pairs)
+    }
+
+    /// Construct an [`EndpointSpec`] from an already-tokenised input. Used by
+    /// both [`EndpointSpec::parse`] (CLI strings) and the TOML config parser:
+    /// the TOML side synthesises `body` from typed fields (`bind_addr`,
+    /// `host`/`port`, `path`/`baud`) and `pairs` from typed identity / common
+    /// / filter fields, then funnels through this single entry point so the
+    /// "one parser for both CLI and TOML" locked decision is enforced by
+    /// type-system reuse rather than by convention.
+    pub fn build(
+        scheme: &str,
+        body: &str,
+        explicit_name: Option<&str>,
+        pairs: &[(String, String)],
+    ) -> Result<Self, SpecError> {
+        let kind = parse_kind(scheme, body, pairs)?;
         let name = match explicit_name {
             Some(n) => {
                 validate_name(n)?;

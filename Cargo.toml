@@ -37,3 +37,4 @@ quick-xml = "0.36"
 
 [dev-dependencies]
 proptest = "1"
+tempfile = "3"

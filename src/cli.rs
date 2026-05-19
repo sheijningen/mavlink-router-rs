@@ -48,14 +48,26 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Build the canonical [`Config`] from this CLI invocation. Parses every
-    /// `endpoints` string into a typed [`EndpointSpec`] and runs
-    /// [`Config::validate`] so cross-endpoint invariants (duplicate names)
-    /// are caught before the spawner sees anything.
+    /// Build the canonical [`Config`] from this CLI invocation. Two paths:
     ///
-    /// TOML config loading is wired in the next Phase 6 commit; today
-    /// `--config <FILE>` is accepted by clap but silently ignored here.
+    /// * `--config <FILE>` set, no CLI endpoints — load entirely from TOML
+    ///   via [`Config::from_toml_path`]. CLI globals (`--log-level`, etc.)
+    ///   are ignored in this mode; the TOML controls everything.
+    /// * No `--config`, CLI endpoints set — parse each endpoint string into
+    ///   a typed [`EndpointSpec`] and assemble a [`Config`] from CLI globals.
+    ///
+    /// Mixing the two ([`crate::error::Error::CliTomlMixUnsupported`]) is
+    /// deferred to the CLI+TOML merge step of Phase 6. Clap's `required_unless_present`
+    /// rules out the empty-and-no-config case at argv parse time.
     pub fn try_into_config(self) -> Result<Config, Error> {
+        match (self.config.as_ref(), self.endpoints.is_empty()) {
+            (Some(path), true) => Config::from_toml_path(path),
+            (Some(_), false) => Err(Error::CliTomlMixUnsupported),
+            (None, _) => self.into_config_from_args(),
+        }
+    }
+
+    fn into_config_from_args(self) -> Result<Config, Error> {
         let endpoints = parse_specs(&self.endpoints)?;
         let cfg = Config {
             log_level: self.log_level,
@@ -216,5 +228,15 @@ mod tests {
     fn parse_specs_propagates_spec_error() {
         let raw = vec!["bogus-not-an-endpoint".to_string()];
         assert!(matches!(parse_specs(&raw), Err(Error::Spec(_))));
+    }
+
+    #[test]
+    fn try_into_config_rejects_mixing_config_file_and_cli_endpoints() {
+        let cli =
+            Cli::try_parse_from(["rmr", "--config", "rmr.toml", "udps:0.0.0.0:14550"]).unwrap();
+        match cli.try_into_config() {
+            Err(Error::CliTomlMixUnsupported) => {}
+            other => panic!("expected CliTomlMixUnsupported, got {other:?}"),
+        }
     }
 }
