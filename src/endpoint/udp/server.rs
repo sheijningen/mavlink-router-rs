@@ -415,6 +415,7 @@ async fn run_peer_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::endpoint::spec::CommonQuery;
     use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
@@ -430,7 +431,6 @@ mod tests {
 
     #[test]
     fn spec_overrides_common_fields_but_not_reconnect_curve() {
-        use crate::endpoint::spec::CommonQuery;
         let ep = UdpServerEndpoint {
             idle_secs: Some(10),
             common: CommonQuery {

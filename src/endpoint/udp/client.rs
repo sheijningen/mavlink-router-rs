@@ -407,6 +407,9 @@ async fn check_latch_idle(dest: &mut Destination, idle: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::endpoint::filters::{Filters, MsgIdRange};
+    use crate::mavlink::crc::Crc16;
+    use crate::mavlink::frame::STX_V1;
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4};
 
     fn make_dest(ips: &[IpAddr], port: u16) -> Destination {
@@ -739,10 +742,6 @@ mod tests {
     /// counters still advance — `rx_frames` reflects link rate.
     #[tokio::test]
     async fn in_filter_drops_blocked_msgid() {
-        use crate::endpoint::filters::{Filters, MsgIdRange};
-        use crate::mavlink::crc::Crc16;
-        use crate::mavlink::frame::STX_V1;
-
         // Build a v1 HEARTBEAT (msgid 0) by hand so the test does not depend
         // on tests/common/.
         let payload = [0u8; 9];

@@ -249,6 +249,7 @@ async fn run_client_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::endpoint::spec::CommonQuery;
 
     #[test]
     fn spec_defaults_when_endpoint_unset() {
@@ -261,7 +262,6 @@ mod tests {
 
     #[test]
     fn spec_overrides_common_fields() {
-        use crate::endpoint::spec::CommonQuery;
         let ep = TcpServerEndpoint {
             common: CommonQuery {
                 tx_queue_frames: Some(8),

@@ -411,6 +411,7 @@ mod tests {
     use super::*;
     use crate::endpoint::EndpointIdAllocator;
     use crate::endpoint::events::{PeerRemovalReason, Routable};
+    use crate::endpoint::filters::{Filters, MsgIdRange};
     use crate::mavlink::frame::{ParsedHeader, Version};
     use bytes::Bytes;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -883,7 +884,6 @@ mod tests {
 
     #[tokio::test]
     async fn out_filter_blocks_destination_and_increments_drop_counter() {
-        use crate::endpoint::filters::{Filters, MsgIdRange};
         let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
         let cancel = wiring.cancel.clone();
         let task = tokio::spawn(run(wiring));
@@ -1048,7 +1048,6 @@ mod tests {
         // A frame matching the sniffer's own block_msgid_out still reaches
         // it — sniffer override skips out-filter entirely. out_filter_drops
         // must stay 0.
-        use crate::endpoint::filters::{Filters, MsgIdRange};
         let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
         let cancel = wiring.cancel.clone();
         let task = tokio::spawn(run(wiring));
@@ -1212,7 +1211,6 @@ mod tests {
         // CLAUDE.md: "Members share *only* the learn-set; filters and stats
         // remain per-endpoint." Two group members with different filters
         // must each apply their own out-filter independently.
-        use crate::endpoint::filters::{Filters, MsgIdRange};
         let (frame_tx, event_tx, _stats_rx, wiring) = make_wiring();
         let cancel = wiring.cancel.clone();
         let task = tokio::spawn(run(wiring));
