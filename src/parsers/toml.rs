@@ -530,9 +530,7 @@ totally_made_up = 1
         #[case] wrong_field: &str,
         #[case] toml_value: &str,
     ) {
-        let s = format!(
-            "[[endpoints]]\ntype = \"{type_name}\"\n{wrong_field} = {toml_value}\n"
-        );
+        let s = format!("[[endpoints]]\ntype = \"{type_name}\"\n{wrong_field} = {toml_value}\n");
         match TomlConfig::parse_str(&s) {
             Err(Error::ConfigSchema { index, reason }) => {
                 assert_eq!(index, 0);
@@ -570,9 +568,7 @@ totally_made_up = 1
         #[case] other_fields: &str,
         #[case] missing_field: &str,
     ) {
-        let s = format!(
-            "[[endpoints]]\ntype = \"{type_name}\"\n{other_fields}\n"
-        );
+        let s = format!("[[endpoints]]\ntype = \"{type_name}\"\n{other_fields}\n");
         match TomlConfig::parse_str(&s) {
             Err(Error::ConfigSchema { index, reason }) => {
                 assert_eq!(index, 0);

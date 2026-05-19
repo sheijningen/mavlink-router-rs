@@ -248,8 +248,7 @@ pub fn sanitize_for_name(s: &str) -> String {
 mod tests {
     use super::{Scheme, sanitize_for_name, validate_name};
     use crate::endpoint::spec::{
-        EndpointKind, EndpointSpec, SerialEndpoint, SpecError, TcpClientEndpoint,
-        UdpServerEndpoint,
+        EndpointKind, EndpointSpec, SerialEndpoint, SpecError, TcpClientEndpoint, UdpServerEndpoint,
     };
     use rstest::rstest;
 
@@ -370,7 +369,11 @@ mod tests {
     #[case::udpc_ipv4("udpc:192.168.1.5:14550", "192.168.1.5", 14550)]
     #[case::tcpc_hostname("tcpc:companion.local:5760", "companion.local", 5760)]
     #[case::udpc_hostname("udpc:gcs.example:14550", "gcs.example", 14550)]
-    fn dial_host_port_parses(#[case] input: &str, #[case] expected_host: &str, #[case] expected_port: u16) {
+    fn dial_host_port_parses(
+        #[case] input: &str,
+        #[case] expected_host: &str,
+        #[case] expected_port: u16,
+    ) {
         let s = parse_ok(input);
         let (host, port) = match &s.kind {
             EndpointKind::UdpClient(e) => (e.host.as_str(), e.port),
