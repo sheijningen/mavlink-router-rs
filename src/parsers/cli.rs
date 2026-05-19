@@ -1,0 +1,260 @@
+//! CLI deserialisation.
+//!
+//! Parses argv via clap into a [`Cli`], then [`Cli::into_cli_config`] turns
+//! the raw argv values into a typed [`CliConfig`]. Globals on `CliConfig`
+//! are `Option<T>` so the merge step in [`crate::config`] can distinguish
+//! "operator omitted `--log-level`" from "operator passed `--log-level info`":
+//! the former falls through to the TOML value (if any) and then to the
+//! default, the latter overrides both.
+//!
+//! Endpoint argv strings are parsed by [`EndpointSpec::parse`] — the same
+//! body / query / applier machinery the TOML side reaches via
+//! [`EndpointSpec::build`]. Neither input layer references the other.
+
+use std::path::PathBuf;
+
+use clap::Parser;
+
+use crate::config::{LogFormat, LogLevel};
+use crate::endpoint::spec::EndpointSpec;
+use crate::error::Error;
+
+/// Parsed argv. Every global is `Option<T>` because clap has no
+/// `default_value_t` set on them — operator-omitted flags arrive as `None`
+/// and the merge step in [`crate::config::Config::merge`] picks the
+/// fall-through value (TOML, then default).
+#[derive(Parser, Debug)]
+#[command(name = "rmr", version, about = "Rust MAVLink Router")]
+pub struct Cli {
+    /// TOML config file with endpoints and globals
+    #[arg(short, long, value_name = "FILE")]
+    pub config: Option<PathBuf>,
+
+    /// Log verbosity (default: info)
+    #[arg(long, value_enum, value_name = "LEVEL")]
+    pub log_level: Option<LogLevel>,
+
+    /// Log format (default: text)
+    #[arg(long, value_enum, value_name = "FMT")]
+    pub log_format: Option<LogFormat>,
+
+    /// Emit periodic per-endpoint stats (JSON-Lines on stdout)
+    #[arg(long)]
+    pub stats: bool,
+
+    /// Stats output interval in seconds (default: 5)
+    #[arg(long, value_name = "N")]
+    pub stats_interval_secs: Option<u64>,
+
+    /// Duplicate suppression window in milliseconds (default: 0, off)
+    #[arg(long, value_name = "N")]
+    pub dedup_ms: Option<u64>,
+
+    /// One or more endpoint specifications (scheme:body[#name][?key=val&...])
+    #[arg(value_name = "ENDPOINT", required_unless_present = "config")]
+    pub endpoints: Vec<String>,
+}
+
+/// CLI-side input to the [`crate::config::Config::merge`] step. Mirrors the
+/// shape of [`crate::parsers::toml::TomlConfig`] so both sources funnel into the
+/// same merge surface. `Option<T>` globals mean "operator did not pass this
+/// flag"; the merge step replaces `None` with the TOML value (if any) and
+/// finally with the documented default.
+///
+/// `Default` produces a `CliConfig` with every global `None` and no endpoints
+/// — useful for test fixtures and the "operator only passed `--config <FILE>`"
+/// branch (clap's `required_unless_present = "config"` rule lets the endpoint
+/// Vec be empty when `--config` is set).
+#[derive(Debug, Clone, Default)]
+pub struct CliConfig {
+    pub log_level: Option<LogLevel>,
+    pub log_format: Option<LogFormat>,
+    pub stats: Option<bool>,
+    pub stats_interval_secs: Option<u64>,
+    pub dedup_ms: Option<u64>,
+    pub endpoints: Vec<EndpointSpec>,
+}
+
+impl Cli {
+    /// Convert argv into a typed [`CliConfig`]. The `--config <FILE>` path is
+    /// **not** read here — the caller (typically [`crate::main`]) is
+    /// responsible for loading the TOML file and passing the resulting
+    /// [`crate::parsers::toml::TomlConfig`] to
+    /// [`crate::config::Config::merge`] alongside this `CliConfig`. Keeping
+    /// the file-load out of this method preserves the
+    /// CLI-doesn't-reference-TOML invariant.
+    pub fn into_cli_config(self) -> Result<CliConfig, Error> {
+        let endpoints = parse_specs(&self.endpoints)?;
+        // `--stats` is a clap flag (no value), so absence is `false`, not
+        // `None`. To preserve "unset means defer to TOML / default", treat
+        // operator-set-to-true as Some(true) and absent as None.
+        let stats = if self.stats { Some(true) } else { None };
+        Ok(CliConfig {
+            log_level: self.log_level,
+            log_format: self.log_format,
+            stats,
+            stats_interval_secs: self.stats_interval_secs,
+            dedup_ms: self.dedup_ms,
+            endpoints,
+        })
+    }
+}
+
+/// Turn a slice of CLI-style endpoint strings into typed [`EndpointSpec`]s
+/// via [`EndpointSpec::parse`] — the same parser the TOML side eventually
+/// reaches via [`EndpointSpec::build`]. Duplicate-name detection is left to
+/// [`crate::config::Config::validate`] after the merge runs.
+pub fn parse_specs(raw: &[String]) -> Result<Vec<EndpointSpec>, Error> {
+    let mut specs = Vec::with_capacity(raw.len());
+    for s in raw {
+        specs.push(EndpointSpec::parse(s)?);
+    }
+    Ok(specs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_minimal() {
+        let cli = Cli::try_parse_from(["rmr", "udps:0.0.0.0:14550"]).unwrap();
+        assert_eq!(cli.endpoints, vec!["udps:0.0.0.0:14550".to_string()]);
+        assert!(cli.log_level.is_none());
+        assert!(cli.log_format.is_none());
+        assert!(!cli.stats);
+        assert!(cli.stats_interval_secs.is_none());
+        assert!(cli.dedup_ms.is_none());
+        assert!(cli.config.is_none());
+    }
+
+    #[test]
+    fn parse_log_options() {
+        let cli = Cli::try_parse_from([
+            "rmr",
+            "--log-level",
+            "debug",
+            "--log-format",
+            "json",
+            "udps:0.0.0.0:1",
+        ])
+        .unwrap();
+        assert_eq!(cli.log_level, Some(LogLevel::Debug));
+        assert_eq!(cli.log_format, Some(LogFormat::Json));
+    }
+
+    #[test]
+    fn parse_stats_flags() {
+        let cli = Cli::try_parse_from([
+            "rmr",
+            "--stats",
+            "--stats-interval-secs",
+            "10",
+            "--dedup-ms",
+            "250",
+            "udps:0.0.0.0:1",
+        ])
+        .unwrap();
+        assert!(cli.stats);
+        assert_eq!(cli.stats_interval_secs, Some(10));
+        assert_eq!(cli.dedup_ms, Some(250));
+    }
+
+    #[test]
+    fn parse_multiple_endpoints() {
+        let cli = Cli::try_parse_from([
+            "rmr",
+            "udps:0.0.0.0:1",
+            "tcpc:host:2",
+            "serial:/dev/ttyUSB0:115200",
+        ])
+        .unwrap();
+        assert_eq!(cli.endpoints.len(), 3);
+    }
+
+    #[test]
+    fn no_endpoints_no_config_fails() {
+        assert!(Cli::try_parse_from(["rmr"]).is_err());
+    }
+
+    #[test]
+    fn config_only_ok() {
+        let cli = Cli::try_parse_from(["rmr", "--config", "rmr.toml"]).unwrap();
+        assert!(cli.endpoints.is_empty());
+        assert_eq!(
+            cli.config
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
+            Some("rmr.toml".to_string())
+        );
+    }
+
+    #[test]
+    fn config_file_and_cli_endpoints_both_ok() {
+        // `--config <FILE>` + CLI endpoints is a supported combination:
+        // the TOML file provides a base config, CLI overrides patch it via
+        // `Config::merge`. Pin that argv parsing accepts the combination.
+        let cli =
+            Cli::try_parse_from(["rmr", "--config", "rmr.toml", "udps:0.0.0.0:14550"]).unwrap();
+        assert_eq!(cli.endpoints.len(), 1);
+        assert!(cli.config.is_some());
+    }
+
+    #[test]
+    fn into_cli_config_builds_typed_config() {
+        let cli = Cli::try_parse_from([
+            "rmr",
+            "--stats",
+            "--dedup-ms",
+            "300",
+            "udps:0.0.0.0:14550#bus",
+            "tcpc:gcs.local:5760#vehicle",
+        ])
+        .unwrap();
+        let cfg = cli.into_cli_config().expect("conversion must succeed");
+        assert_eq!(cfg.stats, Some(true));
+        assert_eq!(cfg.dedup_ms, Some(300));
+        assert_eq!(cfg.endpoints.len(), 2);
+        assert_eq!(cfg.endpoints[0].name, "bus");
+        assert_eq!(cfg.endpoints[1].name, "vehicle");
+    }
+
+    #[test]
+    fn into_cli_config_leaves_unset_globals_as_none() {
+        // Operator passed neither --log-level nor --log-format: both should
+        // arrive at the merge step as `None` so the TOML value / default
+        // wins. `--stats` is absent too, so it stays `None` (not
+        // `Some(false)`), preserving "operator didn't choose" semantics.
+        let cli = Cli::try_parse_from(["rmr", "udps:0.0.0.0:1#a"]).unwrap();
+        let cfg = cli.into_cli_config().expect("conversion must succeed");
+        assert!(cfg.log_level.is_none());
+        assert!(cfg.log_format.is_none());
+        assert!(cfg.stats.is_none());
+        assert!(cfg.stats_interval_secs.is_none());
+        assert!(cfg.dedup_ms.is_none());
+    }
+
+    #[test]
+    fn into_cli_config_propagates_spec_error() {
+        let cli = Cli::try_parse_from(["rmr", "bogus-not-an-endpoint"]).unwrap();
+        assert!(matches!(cli.into_cli_config(), Err(Error::Spec(_))));
+    }
+
+    #[test]
+    fn parse_specs_ok() {
+        let raw = vec![
+            "udps:0.0.0.0:14550#bus".to_string(),
+            "tcpc:gcs.local:5760#vehicle".to_string(),
+        ];
+        let specs = parse_specs(&raw).unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].name, "bus");
+        assert_eq!(specs[1].name, "vehicle");
+    }
+
+    #[test]
+    fn parse_specs_propagates_spec_error() {
+        let raw = vec!["bogus-not-an-endpoint".to_string()];
+        assert!(matches!(parse_specs(&raw), Err(Error::Spec(_))));
+    }
+}

@@ -1,9 +1,9 @@
-pub mod cli;
 pub mod config;
 pub mod endpoint;
 pub mod error;
 pub mod log;
 pub mod mavlink;
+pub mod parsers;
 pub mod router;
 pub mod shutdown;
 pub mod stats;
@@ -69,11 +69,11 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
 pub async fn run_with_cancel(cfg: Config, token: CancellationToken) -> Result<(), Error> {
     // Exhaustive destructure: adding a Config field forces a touch here, so
     // we can't silently grow the surface without wiring the new knob into
-    // the spawner. `stats` / `stats_interval` are deliberately unused today
-    // — the stats JSON-Lines sink is a later Phase 6 bullet.
+    // the spawner. `stats` / `stats_interval_secs` are deliberately unused
+    // today — the stats JSON-Lines sink is a later Phase 6 bullet.
     let Config {
         stats: _stats,
-        stats_interval: _stats_interval,
+        stats_interval_secs: _stats_interval_secs,
         dedup_ms,
         endpoints: specs,
         log_level: _,

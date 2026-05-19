@@ -1,34 +1,39 @@
-//! Canonical input to [`crate::run`]: globals + the fully-typed endpoint
-//! table that the spawner consumes.
+//! Canonical input to [`crate::run`]: the fully-resolved [`Config`] struct
+//! the spawner consumes, plus the merge step that combines a TOML-derived
+//! [`crate::parsers::toml::TomlConfig`] with a CLI-derived
+//! [`crate::parsers::cli::CliConfig`].
 //!
-//! TOML is the primary configuration shape; CLI argv is a thin adapter into
-//! it. Concretely, both [`Config::from_toml_str`] and [`crate::cli::parse_specs`]
-//! produce a `Vec<`[`EndpointEntry`]`>`, and the same [`EndpointEntry::into_spec`]
-//! → [`crate::endpoint::spec::EndpointSpec::build`] pipeline converts each
-//! entry into the runtime spec the spawner consumes. The CLI parser
-//! ([`EndpointEntry::from_cli_string`]) tokenises a `scheme:body[#name][?key=val]`
-//! string into the same typed-entry shape serde produces from a `[[endpoints]]`
-//! table.
+//! Layering:
 //!
-//! CLAUDE.md "Project layout" → `config.rs`: TOML schema (serde) plus the
-//! eventual CLI+file merge rules. The merge rules ("TOML endpoints first then
-//! CLI appended; CLI globals override TOML globals") are deferred to a later
-//! Phase 6 commit; today, `--config <FILE>` and CLI endpoints are
-//! mutually-exclusive — mixing them is fatal at config-resolve time.
+//! 1. [`crate::parsers::cli`] parses argv into a [`crate::parsers::cli::CliConfig`]
+//!    with `Option<T>` globals (so "operator omitted" is distinguishable
+//!    from "operator set to default").
+//! 2. [`crate::parsers::toml`] parses a TOML file into a
+//!    [`crate::parsers::toml::TomlConfig`] with the same shape.
+//! 3. [`Config::merge`] (this module) folds the two together: CLI > TOML >
+//!    defaults for globals, and for endpoints the TOML set has any
+//!    name-colliding entry **wholesale replaced** by the CLI entry. The
+//!    collided names are returned alongside the [`Config`] in a
+//!    [`MergeOutcome`] so the caller can WARN about them (after installing
+//!    the tracing subscriber, in `main`).
+//! 4. [`Config::validate`] then catches duplicate names **within** a single
+//!    source — cross-source dups are resolved by the merge, not reported as
+//!    errors.
+//!
+//! Neither parser submodule references the other; both only reach into this
+//! module for the shared `LogLevel` / `LogFormat` value types and the
+//! defaults.
 
 use std::collections::HashSet;
-use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::endpoint::identity_flags::parse_bool;
-use crate::endpoint::spec::{
-    EndpointSpec, Scheme, SpecError, parse_host_port, parse_listen_addr, parse_query_pairs,
-    parse_serial_body, parse_u64, parse_usize, split_body_name_query, suggest_query_key,
-};
+use crate::endpoint::spec::EndpointSpec;
 use crate::error::Error;
+use crate::parsers::cli::CliConfig;
+use crate::parsers::toml::TomlConfig;
 
-/// CLAUDE.md "Defaults" → `stats_interval_secs` (period of stats JSON-Lines
+/// CLAUDE.md "Defaults" → `stats_interval_secs_secs` (period of stats JSON-Lines
 /// output).
 pub const DEFAULT_STATS_INTERVAL_SECS: u64 = 5;
 
@@ -59,15 +64,15 @@ pub enum LogFormat {
 }
 
 /// Canonical, fully-resolved runtime configuration consumed by [`crate::run`]
-/// and [`crate::run_with_cancel`]. Anything that builds an `rmr` invocation
-/// — `Cli`, the TOML parser, integration tests — produces a `Config`
-/// and hands it to `run`.
+/// and [`crate::run_with_cancel`]. Produced exclusively by [`Config::merge`]
+/// (or [`Config::default`] for trivial test fixtures); never deserialised
+/// directly.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub log_level: LogLevel,
     pub log_format: LogFormat,
     pub stats: bool,
-    pub stats_interval: u64,
+    pub stats_interval_secs: u64,
     pub dedup_ms: u64,
     pub endpoints: Vec<EndpointSpec>,
 }
@@ -78,477 +83,133 @@ impl Default for Config {
             log_level: LogLevel::default(),
             log_format: LogFormat::default(),
             stats: false,
-            stats_interval: DEFAULT_STATS_INTERVAL_SECS,
+            stats_interval_secs: DEFAULT_STATS_INTERVAL_SECS,
             dedup_ms: DEFAULT_DEDUP_MS,
             endpoints: Vec::new(),
         }
     }
 }
 
+/// Result of [`Config::merge`]: the resolved [`Config`] plus the list of
+/// endpoint `#name`s where a CLI entry replaced a same-named TOML entry,
+/// reported in the order they were encountered while walking the TOML set.
+/// `main` emits one WARN per name *after* installing the tracing subscriber
+/// (which reads the merged log level), so the merge step can't log them
+/// itself.
+#[derive(Debug)]
+pub struct MergeOutcome {
+    pub config: Config,
+    pub overridden_names: Vec<String>,
+}
+
 impl Config {
-    /// Parse a TOML config file from disk and validate cross-endpoint
-    /// invariants. See [`Config::from_toml_str`] for the schema.
-    pub fn from_toml_path(path: &Path) -> Result<Self, Error> {
-        let raw = std::fs::read_to_string(path).map_err(|e| Error::ConfigIo {
-            path: path.display().to_string(),
-            source: e,
-        })?;
-        Self::from_toml_str(&raw)
+    /// Combine a TOML-derived config with a CLI-derived config into the final
+    /// runtime [`Config`]. Precedence (highest to lowest): CLI globals →
+    /// TOML globals → defaults. Endpoints are concatenated with TOML first
+    /// (in declaration order) then CLI (in argv order); **any TOML endpoint
+    /// whose `#name` collides with a CLI endpoint is wholesale replaced by
+    /// the CLI version** — the entire TOML entry (filters, identity,
+    /// scheme-specific knobs) is discarded. The colliding names are returned
+    /// via [`MergeOutcome::overridden_names`] for the caller to WARN about.
+    ///
+    /// Duplicate names **within** a single source (two CLI endpoints with
+    /// the same name, or two TOML endpoints with the same name) remain a
+    /// fatal [`Error::DuplicateName`] — those collisions are not the merge's
+    /// to resolve.
+    pub fn merge(toml: Option<TomlConfig>, cli: CliConfig) -> Result<MergeOutcome, Error> {
+        let toml = toml.unwrap_or_default();
+
+        // Within-source duplicate detection runs *before* the cross-source
+        // override pass — otherwise a CLI override could silently mask a
+        // duplicate in TOML (or vice versa): both colliding TOML entries
+        // would drop into `overridden_names` and the operator's typo would
+        // be invisible. The locked decision is "within-source dups remain
+        // fatal" regardless of what the other source does.
+        check_unique_names(&toml.endpoints)?;
+        check_unique_names(&cli.endpoints)?;
+
+        let (endpoints, overridden_names) = merge_endpoints(toml.endpoints, cli.endpoints);
+
+        let config = Config {
+            log_level: cli.log_level.or(toml.log_level).unwrap_or_default(),
+            log_format: cli.log_format.or(toml.log_format).unwrap_or_default(),
+            stats: cli.stats.or(toml.stats).unwrap_or(false),
+            stats_interval_secs: cli
+                .stats_interval_secs
+                .or(toml.stats_interval_secs)
+                .unwrap_or(DEFAULT_STATS_INTERVAL_SECS),
+            dedup_ms: cli.dedup_ms.or(toml.dedup_ms).unwrap_or(DEFAULT_DEDUP_MS),
+            endpoints,
+        };
+        config.validate()?;
+        Ok(MergeOutcome {
+            config,
+            overridden_names,
+        })
     }
 
-    /// Parse a TOML config string into a [`Config`]. The schema is documented
-    /// in [`ConfigFile`] / [`EndpointEntry`] — every TOML key is a strict
-    /// match against those serde structs (`deny_unknown_fields`); the
-    /// per-endpoint typed fields are validated against the chosen `type`
-    /// (e.g. a `serial`-typed entry must carry `path`/`baud` and must not
-    /// carry `bind`/`host`/`port`). Filter knobs are accepted in the
-    /// string form only (`block_msgid_in = "33,100-150"`), per CLAUDE.md.
-    pub fn from_toml_str(s: &str) -> Result<Self, Error> {
-        let file: ConfigFile = toml::from_str(s).map_err(Error::ConfigParse)?;
-        let cfg = file.into_config()?;
-        cfg.validate()?;
-        Ok(cfg)
-    }
-
-    /// Cross-endpoint validation: duplicate `#name` (explicit or auto-derived)
-    /// across the combined endpoint table is fatal per CLAUDE.md "CLI + TOML
-    /// merge" rules. The per-endpoint surface (filter ranges, address
-    /// grammar, query keys) is already enforced by [`EndpointSpec::parse`];
-    /// this method only catches what spans more than one entry.
+    /// Cross-endpoint validation: any duplicate `#name` in the merged set is
+    /// fatal. `Config::merge` already runs within-source duplicate detection
+    /// (and cross-source collisions are resolved by the override pass), so a
+    /// duplicate observed here implies a caller built `Config` directly
+    /// (e.g. a test fixture) with inconsistent input — `merge`-produced
+    /// configs never reach this branch via the within-source path.
     pub fn validate(&self) -> Result<(), Error> {
-        let mut seen = HashSet::<&str>::new();
-        for ep in &self.endpoints {
-            if !seen.insert(ep.name.as_str()) {
-                return Err(Error::DuplicateName(ep.name.clone()));
-            }
-        }
-        Ok(())
+        check_unique_names(&self.endpoints)
     }
 }
 
-/// On-disk TOML schema, deserialised by serde. Mirrors [`Config`]'s globals
-/// plus an array of [`EndpointEntry`]. `deny_unknown_fields` so a typo'd top-
-/// level key fails loudly rather than silently being ignored.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ConfigFile {
-    #[serde(default)]
-    log_level: Option<LogLevel>,
-    #[serde(default)]
-    log_format: Option<LogFormat>,
-    #[serde(default)]
-    stats: Option<bool>,
-    #[serde(default)]
-    stats_interval: Option<u64>,
-    #[serde(default)]
-    dedup_ms: Option<u64>,
-    #[serde(default)]
-    endpoints: Vec<EndpointEntry>,
+/// Concatenate TOML endpoints (declaration order) and CLI endpoints (argv
+/// order), dropping any TOML entry whose `#name` collides with a CLI entry.
+/// Returns the merged vector alongside the dropped names so the caller can
+/// WARN about each replacement.
+fn merge_endpoints(
+    toml_endpoints: Vec<EndpointSpec>,
+    cli_endpoints: Vec<EndpointSpec>,
+) -> (Vec<EndpointSpec>, Vec<String>) {
+    let cli_names: HashSet<&str> = cli_endpoints.iter().map(|e| e.name.as_str()).collect();
+    let mut overridden_names: Vec<String> = Vec::new();
+    let mut endpoints: Vec<EndpointSpec> =
+        Vec::with_capacity(toml_endpoints.len() + cli_endpoints.len());
+    for ep in toml_endpoints {
+        if cli_names.contains(ep.name.as_str()) {
+            overridden_names.push(ep.name.clone());
+            continue;
+        }
+        endpoints.push(ep);
+    }
+    endpoints.extend(cli_endpoints);
+    (endpoints, overridden_names)
 }
 
-impl ConfigFile {
-    fn into_config(self) -> Result<Config, Error> {
-        let mut endpoints = Vec::with_capacity(self.endpoints.len());
-        for (idx, entry) in self.endpoints.into_iter().enumerate() {
-            endpoints.push(entry.into_spec(idx)?);
-        }
-        let mut cfg = Config::default();
-        if let Some(v) = self.log_level {
-            cfg.log_level = v;
-        }
-        if let Some(v) = self.log_format {
-            cfg.log_format = v;
-        }
-        if let Some(v) = self.stats {
-            cfg.stats = v;
-        }
-        if let Some(v) = self.stats_interval {
-            cfg.stats_interval = v;
-        }
-        if let Some(v) = self.dedup_ms {
-            cfg.dedup_ms = v;
-        }
-        cfg.endpoints = endpoints;
-        Ok(cfg)
-    }
-}
-
-/// One `[[endpoints]]` table entry. Flat shape (rather than an internally-
-/// tagged enum variant) because serde's `deny_unknown_fields` does not
-/// compose with `#[serde(tag = ...)]`, and we want a single typo'd field name
-/// to fail loudly. Scheme-conditional validation (e.g. `serial` requires
-/// `path`/`baud`, must not carry `bind`/`host`/`port`) runs post-parse in
-/// [`EndpointEntry::into_spec`].
-///
-/// Visible to `cli.rs` (and only there) because CLI argv goes through
-/// [`EndpointEntry::from_cli_string`] before reaching `into_spec` — TOML is
-/// the primary configuration shape; CLI is a typed adapter into it.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EndpointEntry {
-    #[serde(rename = "type")]
-    scheme: String,
-    name: Option<String>,
-    // common
-    tx_queue_frames: Option<usize>,
-    // scheme-specific (only the subset for the chosen scheme is allowed)
-    path: Option<String>,
-    baud: Option<u32>,
-    flow_control: Option<String>,
-    bind: Option<String>,
-    host: Option<String>,
-    port: Option<u16>,
-    idle_secs: Option<u64>,
-    latch_idle_secs: Option<u64>,
-    // identity
-    sniffer: Option<bool>,
-    group: Option<String>,
-    // filters (string form per CLAUDE.md — array forms are rejected at parse time)
-    allow_msgid_in: Option<String>,
-    block_msgid_in: Option<String>,
-    allow_msgid_out: Option<String>,
-    block_msgid_out: Option<String>,
-    allow_src_sys_in: Option<String>,
-    block_src_sys_in: Option<String>,
-    allow_src_sys_out: Option<String>,
-    block_src_sys_out: Option<String>,
-    allow_src_comp_in: Option<String>,
-    block_src_comp_in: Option<String>,
-    allow_src_comp_out: Option<String>,
-    block_src_comp_out: Option<String>,
-}
-
-/// Translate the TOML `type = "..."` literal into a typed [`Scheme`]. Wraps
-/// the shared [`Scheme::try_from_str`] with the `Error::ConfigSchema` shape
-/// the TOML path is contracted to produce (the same operator-visible error
-/// shape the test `toml_unknown_endpoint_type_rejected` pins).
-fn scheme_from_toml_type(raw: &str, index: usize) -> Result<Scheme, Error> {
-    Scheme::try_from_str(raw).ok_or_else(|| Error::ConfigSchema {
-        index,
-        reason: format!("unknown endpoint type '{raw}' (valid: serial, udps, udpc, tcps, tcpc)"),
-    })
-}
-
-impl EndpointEntry {
-    pub(crate) fn into_spec(self, index: usize) -> Result<EndpointSpec, Error> {
-        let scheme = scheme_from_toml_type(&self.scheme, index)?;
-
-        // Reject wrong-scheme fields *before* synthesizing the body so that
-        // an entry carrying both `path` and `bind` surfaces "field 'bind' is
-        // not valid for type 'serial'" — the operator's real mistake — rather
-        // than the body-synthesizer's downstream missing-`baud` complaint.
-        self.reject_disallowed_fields(index, scheme)?;
-        let body = self.synthesize_body(index, scheme)?;
-        let pairs = self.collect_pairs();
-        let name_opt = self.name.as_deref();
-        EndpointSpec::build(scheme, &body, name_opt, &pairs).map_err(Error::from)
-    }
-
-    fn synthesize_body(&self, index: usize, scheme: Scheme) -> Result<String, Error> {
-        match scheme {
-            Scheme::Serial => {
-                let path = self
-                    .path
-                    .as_ref()
-                    .ok_or_else(|| missing(index, scheme, "path"))?;
-                let baud = self.baud.ok_or_else(|| missing(index, scheme, "baud"))?;
-                Ok(format!("{path}:{baud}"))
-            }
-            Scheme::UdpServer | Scheme::TcpServer => {
-                let bind = self
-                    .bind
-                    .as_ref()
-                    .ok_or_else(|| missing(index, scheme, "bind"))?;
-                Ok(bind.clone())
-            }
-            Scheme::UdpClient | Scheme::TcpClient => {
-                let host = self
-                    .host
-                    .as_ref()
-                    .ok_or_else(|| missing(index, scheme, "host"))?;
-                let port = self.port.ok_or_else(|| missing(index, scheme, "port"))?;
-                // IPv6 literal hosts must be bracketed in the body grammar so
-                // the rsplit(':') boundary lands at the port colon, not the
-                // last `::` inside the address. Bracketing here is harmless
-                // for IPv4 hostnames (the body parser strips brackets only
-                // when present).
-                if host.contains(':') {
-                    Ok(format!("[{host}]:{port}"))
-                } else {
-                    Ok(format!("{host}:{port}"))
-                }
-            }
+/// Fail with [`Error::DuplicateName`] on the first repeated `#name` in
+/// `endpoints`. Shared by `Config::validate` (final-config check) and
+/// `Config::merge` (per-source check before cross-source override pass).
+fn check_unique_names(endpoints: &[EndpointSpec]) -> Result<(), Error> {
+    let mut seen = HashSet::<&str>::new();
+    for ep in endpoints {
+        if !seen.insert(ep.name.as_str()) {
+            return Err(Error::DuplicateName(ep.name.clone()));
         }
     }
-
-    /// Reject scheme-specific fields that don't apply to the chosen `type`.
-    /// `deny_unknown_fields` on the struct already catches truly-unknown
-    /// keys; this method catches "known key, wrong scheme" — e.g. a serial
-    /// entry that also carries `bind = "..."`.
-    fn reject_disallowed_fields(&self, index: usize, scheme: Scheme) -> Result<(), Error> {
-        let allowed: &[&str] = match scheme {
-            Scheme::Serial => &["path", "baud", "flow_control"],
-            Scheme::UdpServer => &["bind", "idle_secs"],
-            Scheme::TcpServer => &["bind"],
-            Scheme::UdpClient => &["host", "port", "latch_idle_secs"],
-            Scheme::TcpClient => &["host", "port"],
-        };
-
-        let provided: [(&str, bool); 8] = [
-            ("path", self.path.is_some()),
-            ("baud", self.baud.is_some()),
-            ("flow_control", self.flow_control.is_some()),
-            ("bind", self.bind.is_some()),
-            ("host", self.host.is_some()),
-            ("port", self.port.is_some()),
-            ("idle_secs", self.idle_secs.is_some()),
-            ("latch_idle_secs", self.latch_idle_secs.is_some()),
-        ];
-
-        for (field, present) in provided {
-            if present && !allowed.contains(&field) {
-                return Err(Error::ConfigSchema {
-                    index,
-                    reason: format!("field '{field}' is not valid for type '{scheme}'"),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn collect_pairs(&self) -> Vec<(String, String)> {
-        let mut pairs = Vec::new();
-        if let Some(v) = self.tx_queue_frames {
-            pairs.push(("tx_queue_frames".to_string(), v.to_string()));
-        }
-        if let Some(v) = self.flow_control.as_ref() {
-            pairs.push(("flow_control".to_string(), v.clone()));
-        }
-        if let Some(v) = self.idle_secs {
-            pairs.push(("idle_secs".to_string(), v.to_string()));
-        }
-        if let Some(v) = self.latch_idle_secs {
-            pairs.push(("latch_idle_secs".to_string(), v.to_string()));
-        }
-        if let Some(v) = self.sniffer {
-            pairs.push(("sniffer".to_string(), v.to_string()));
-        }
-        if let Some(v) = self.group.as_ref() {
-            pairs.push(("group".to_string(), v.clone()));
-        }
-        push_str_pair(&mut pairs, "allow_msgid_in", self.allow_msgid_in.as_deref());
-        push_str_pair(&mut pairs, "block_msgid_in", self.block_msgid_in.as_deref());
-        push_str_pair(
-            &mut pairs,
-            "allow_msgid_out",
-            self.allow_msgid_out.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "block_msgid_out",
-            self.block_msgid_out.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "allow_src_sys_in",
-            self.allow_src_sys_in.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "block_src_sys_in",
-            self.block_src_sys_in.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "allow_src_sys_out",
-            self.allow_src_sys_out.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "block_src_sys_out",
-            self.block_src_sys_out.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "allow_src_comp_in",
-            self.allow_src_comp_in.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "block_src_comp_in",
-            self.block_src_comp_in.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "allow_src_comp_out",
-            self.allow_src_comp_out.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "block_src_comp_out",
-            self.block_src_comp_out.as_deref(),
-        );
-        pairs
-    }
-
-    /// Parse a CLI-style spec string (`scheme:body[#name][?key=val&...]`) into
-    /// an [`EndpointEntry`]. CLAUDE.md's "one parser for both CLI and TOML"
-    /// locked decision: this is how `cli::parse_specs` reaches `into_spec` —
-    /// CLI argv goes through the same typed-entry funnel TOML uses, so a
-    /// single conversion path (`into_spec` → [`EndpointSpec::build`]) covers
-    /// both inputs. Filter and identity values stay in string form; bounds
-    /// and per-key parsing are deferred to [`EndpointEntry::into_spec`] where
-    /// the shared applier machinery enforces them.
-    pub(crate) fn from_cli_string(input: &str) -> Result<Self, SpecError> {
-        let (scheme, rest) = input
-            .split_once(':')
-            .ok_or_else(|| SpecError::MissingScheme(input.to_string()))?;
-        if scheme.is_empty() {
-            return Err(SpecError::MissingScheme(input.to_string()));
-        }
-        let (body, explicit_name, query_str) = split_body_name_query(rest);
-        if body.contains('?') {
-            return Err(SpecError::MalformedQuery(format!(
-                "'?' must follow '#name' (got '{body}')"
-            )));
-        }
-        let pairs = parse_query_pairs(query_str.unwrap_or(""))?;
-        let scheme_enum = Scheme::from_cli_prefix(scheme)?;
-
-        let mut entry = EndpointEntry {
-            scheme: scheme_enum.as_str().to_string(),
-            name: explicit_name.map(str::to_string),
-            ..EndpointEntry::default()
-        };
-        // Name validation is intentionally deferred to `into_spec` →
-        // `EndpointSpec::build` so that the CLI path produces the same
-        // error precedence as `EndpointSpec::parse` for inputs that fail
-        // both a body/query check AND a name check (body/query errors win).
-        entry.apply_cli_body(scheme_enum, body)?;
-        for (k, v) in &pairs {
-            entry.apply_cli_pair(scheme_enum, k, v)?;
-        }
-        Ok(entry)
-    }
-
-    /// Set the scheme-specific address fields (`path`/`baud`, `bind`, or
-    /// `host`/`port`) from a CLI-style body. Reuses the existing body
-    /// parsers in `endpoint::spec::parse` so the CLI and TOML paths share
-    /// the same address grammar.
-    fn apply_cli_body(&mut self, scheme: Scheme, body: &str) -> Result<(), SpecError> {
-        match scheme {
-            Scheme::Serial => {
-                let (path, baud) = parse_serial_body(body)?;
-                self.path = Some(path);
-                self.baud = Some(baud);
-            }
-            Scheme::UdpServer | Scheme::TcpServer => {
-                // Validate as a listen address (IP literal + port) at CLI
-                // tokenize time — same rule the typed-spec path enforces in
-                // `parse_listen_addr`, so a hostname on the listen side
-                // surfaces at the CLI caller (the existing UX) rather than
-                // bubbling up later via `into_spec`. The original body
-                // string is round-tripped through `into_spec` and re-parsed
-                // by the same helper.
-                let _addr = parse_listen_addr(body, scheme)?;
-                self.bind = Some(body.to_string());
-            }
-            Scheme::UdpClient | Scheme::TcpClient => {
-                let (host, port) = parse_host_port(body, scheme)?;
-                self.host = Some(host);
-                self.port = Some(port);
-            }
-        }
-        Ok(())
-    }
-
-    /// Assign one query-string pair into the matching typed field. Unknown
-    /// keys produce [`SpecError::UnknownQueryKey`] with the same did-you-mean
-    /// suggestion the existing applier produces — the CLI's operator-visible
-    /// error contract is preserved. Bounds-checking is intentionally deferred
-    /// to [`EndpointEntry::into_spec`] where the shared `apply_pairs` path
-    /// runs against the same data structure for TOML and CLI.
-    fn apply_cli_pair(
-        &mut self,
-        scheme: Scheme,
-        key: &str,
-        value: &str,
-    ) -> Result<(), SpecError> {
-        let unknown = || SpecError::UnknownQueryKey {
-            scheme,
-            key: key.to_string(),
-            suggestion: suggest_query_key(scheme, key),
-        };
-        match key {
-            "tx_queue_frames" => {
-                self.tx_queue_frames = Some(parse_usize(value, "tx_queue_frames")?);
-            }
-            "sniffer" => {
-                self.sniffer = Some(parse_bool(value, "sniffer")?);
-            }
-            "group" => {
-                self.group = Some(value.to_string());
-            }
-            "flow_control" => {
-                if scheme != Scheme::Serial {
-                    return Err(unknown());
-                }
-                self.flow_control = Some(value.to_string());
-            }
-            "idle_secs" => {
-                if scheme != Scheme::UdpServer {
-                    return Err(unknown());
-                }
-                self.idle_secs = Some(parse_u64(value, "idle_secs")?);
-            }
-            "latch_idle_secs" => {
-                if scheme != Scheme::UdpClient {
-                    return Err(unknown());
-                }
-                self.latch_idle_secs = Some(parse_u64(value, "latch_idle_secs")?);
-            }
-            "allow_msgid_in" => self.allow_msgid_in = Some(value.to_string()),
-            "block_msgid_in" => self.block_msgid_in = Some(value.to_string()),
-            "allow_msgid_out" => self.allow_msgid_out = Some(value.to_string()),
-            "block_msgid_out" => self.block_msgid_out = Some(value.to_string()),
-            "allow_src_sys_in" => self.allow_src_sys_in = Some(value.to_string()),
-            "block_src_sys_in" => self.block_src_sys_in = Some(value.to_string()),
-            "allow_src_sys_out" => self.allow_src_sys_out = Some(value.to_string()),
-            "block_src_sys_out" => self.block_src_sys_out = Some(value.to_string()),
-            "allow_src_comp_in" => self.allow_src_comp_in = Some(value.to_string()),
-            "block_src_comp_in" => self.block_src_comp_in = Some(value.to_string()),
-            "allow_src_comp_out" => self.allow_src_comp_out = Some(value.to_string()),
-            "block_src_comp_out" => self.block_src_comp_out = Some(value.to_string()),
-            _ => return Err(unknown()),
-        }
-        Ok(())
-    }
-}
-
-fn push_str_pair(pairs: &mut Vec<(String, String)>, key: &str, val: Option<&str>) {
-    if let Some(v) = val {
-        pairs.push((key.to_string(), v.to_string()));
-    }
-}
-
-fn missing(index: usize, scheme: Scheme, field: &'static str) -> Error {
-    Error::ConfigSchema {
-        index,
-        reason: format!("type '{scheme}' requires field '{field}'"),
-    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn ep(spec: &str) -> EndpointSpec {
+        EndpointSpec::parse(spec).expect("test fixture must parse")
+    }
+
     #[test]
-    fn defaults_match_cli_defaults() {
+    fn defaults_match_documented_defaults() {
         let c = Config::default();
         assert_eq!(c.log_level, LogLevel::Info);
         assert_eq!(c.log_format, LogFormat::Text);
         assert!(!c.stats);
-        assert_eq!(c.stats_interval, 5);
+        assert_eq!(c.stats_interval_secs, 5);
         assert_eq!(c.dedup_ms, 0);
         assert!(c.endpoints.is_empty());
     }
@@ -556,10 +217,7 @@ mod tests {
     #[test]
     fn validate_passes_on_unique_names() {
         let c = Config {
-            endpoints: vec![
-                EndpointSpec::parse("udps:0.0.0.0:1#a").unwrap(),
-                EndpointSpec::parse("udps:0.0.0.0:2#b").unwrap(),
-            ],
+            endpoints: vec![ep("udps:0.0.0.0:1#a"), ep("udps:0.0.0.0:2#b")],
             ..Config::default()
         };
         c.validate().expect("unique names must pass");
@@ -568,10 +226,7 @@ mod tests {
     #[test]
     fn validate_detects_duplicate_explicit_names() {
         let c = Config {
-            endpoints: vec![
-                EndpointSpec::parse("udps:0.0.0.0:1#foo").unwrap(),
-                EndpointSpec::parse("udps:0.0.0.0:2#foo").unwrap(),
-            ],
+            endpoints: vec![ep("udps:0.0.0.0:1#foo"), ep("udps:0.0.0.0:2#foo")],
             ..Config::default()
         };
         match c.validate() {
@@ -583,679 +238,263 @@ mod tests {
     #[test]
     fn validate_detects_duplicate_auto_names() {
         let c = Config {
-            endpoints: vec![
-                EndpointSpec::parse("udps:0.0.0.0:1").unwrap(),
-                EndpointSpec::parse("udps:0.0.0.0:1").unwrap(),
-            ],
+            endpoints: vec![ep("udps:0.0.0.0:1"), ep("udps:0.0.0.0:1")],
             ..Config::default()
         };
         assert!(matches!(c.validate(), Err(Error::DuplicateName(_))));
     }
 
-    // -- TOML parser --
+    // -- merge: globals --
 
     #[test]
-    fn toml_empty_yields_defaults() {
-        let cfg = Config::from_toml_str("").expect("empty TOML must parse");
-        assert_eq!(cfg.log_level, LogLevel::Info);
-        assert!(cfg.endpoints.is_empty());
-    }
-
-    #[test]
-    fn toml_globals_only() {
-        let s = r#"
-log_level = "debug"
-log_format = "json"
-stats = true
-stats_interval = 10
-dedup_ms = 200
-"#;
-        let cfg = Config::from_toml_str(s).expect("globals-only TOML must parse");
+    fn merge_globals_cli_overrides_toml() {
+        let toml = Some(TomlConfig {
+            log_level: Some(LogLevel::Warn),
+            log_format: Some(LogFormat::Text),
+            stats: Some(false),
+            stats_interval_secs: Some(7),
+            dedup_ms: Some(50),
+            endpoints: vec![],
+        });
+        let cli = CliConfig {
+            log_level: Some(LogLevel::Debug),
+            log_format: Some(LogFormat::Json),
+            stats: Some(true),
+            stats_interval_secs: Some(15),
+            dedup_ms: Some(250),
+            endpoints: vec![ep("udps:0.0.0.0:1#a")],
+        };
+        let outcome = Config::merge(toml, cli).expect("merge must succeed");
+        let cfg = outcome.config;
         assert_eq!(cfg.log_level, LogLevel::Debug);
         assert_eq!(cfg.log_format, LogFormat::Json);
         assert!(cfg.stats);
-        assert_eq!(cfg.stats_interval, 10);
-        assert_eq!(cfg.dedup_ms, 200);
+        assert_eq!(cfg.stats_interval_secs, 15);
+        assert_eq!(cfg.dedup_ms, 250);
+        assert!(outcome.overridden_names.is_empty());
     }
 
     #[test]
-    fn toml_serial_endpoint() {
-        let s = r#"
-[[endpoints]]
-type = "serial"
-path = "/dev/ttyUSB0"
-baud = 921600
-flow_control = "rtscts"
-name = "fc"
-tx_queue_frames = 512
-"#;
-        let cfg = Config::from_toml_str(s).expect("must parse");
+    fn merge_globals_toml_overrides_defaults_when_cli_unset() {
+        let toml = Some(TomlConfig {
+            log_level: Some(LogLevel::Trace),
+            log_format: None,
+            stats: Some(true),
+            stats_interval_secs: None,
+            dedup_ms: Some(99),
+            endpoints: vec![],
+        });
+        let cli = CliConfig {
+            endpoints: vec![ep("udps:0.0.0.0:1#a")],
+            ..CliConfig::default()
+        };
+        let cfg = Config::merge(toml, cli).expect("merge must succeed").config;
+        assert_eq!(cfg.log_level, LogLevel::Trace);
+        assert_eq!(cfg.log_format, LogFormat::Text); // default fell through
+        assert!(cfg.stats);
+        assert_eq!(cfg.stats_interval_secs, DEFAULT_STATS_INTERVAL_SECS); // default fell through
+        assert_eq!(cfg.dedup_ms, 99);
+    }
+
+    #[test]
+    fn merge_globals_defaults_when_neither_source_sets_them() {
+        let cli = CliConfig {
+            endpoints: vec![ep("udps:0.0.0.0:1#a")],
+            ..CliConfig::default()
+        };
+        let cfg = Config::merge(None, cli).expect("merge must succeed").config;
+        assert_eq!(cfg.log_level, LogLevel::Info);
+        assert_eq!(cfg.log_format, LogFormat::Text);
+        assert!(!cfg.stats);
+        assert_eq!(cfg.stats_interval_secs, DEFAULT_STATS_INTERVAL_SECS);
+        assert_eq!(cfg.dedup_ms, DEFAULT_DEDUP_MS);
+    }
+
+    // -- merge: endpoints --
+
+    #[test]
+    fn merge_toml_only_endpoints_pass_through() {
+        let toml = Some(TomlConfig {
+            endpoints: vec![ep("udps:0.0.0.0:1#a"), ep("tcpc:gcs.local:5760#b")],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig::default();
+        let outcome = Config::merge(toml, cli).expect("merge must succeed");
+        assert!(outcome.overridden_names.is_empty());
+        let cfg = outcome.config;
+        assert_eq!(cfg.endpoints.len(), 2);
+        assert_eq!(cfg.endpoints[0].name, "a");
+        assert_eq!(cfg.endpoints[1].name, "b");
+    }
+
+    #[test]
+    fn merge_cli_only_endpoints_pass_through() {
+        let cli = CliConfig {
+            endpoints: vec![ep("udps:0.0.0.0:1#a"), ep("tcpc:gcs.local:5760#b")],
+            ..CliConfig::default()
+        };
+        let outcome = Config::merge(None, cli).expect("merge must succeed");
+        assert!(outcome.overridden_names.is_empty());
+        let cfg = outcome.config;
+        assert_eq!(cfg.endpoints.len(), 2);
+        assert_eq!(cfg.endpoints[0].name, "a");
+        assert_eq!(cfg.endpoints[1].name, "b");
+    }
+
+    #[test]
+    fn merge_cli_endpoint_overrides_toml_same_name() {
+        // TOML defines `bus` as a udps listener with a sniffer flag and a
+        // group; CLI redefines `bus` as a tcpc client. The CLI version wins
+        // wholesale — none of the TOML's identity/scheme knobs survive — and
+        // the colliding name is reported in `overridden_names`.
+        let toml = Some(TomlConfig {
+            endpoints: vec![ep("udps:0.0.0.0:14550#bus?sniffer=true&group=uplink")],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig {
+            endpoints: vec![ep("tcpc:gcs.local:5760#bus")],
+            ..CliConfig::default()
+        };
+        let outcome = Config::merge(toml, cli).expect("merge must succeed");
+        assert_eq!(outcome.overridden_names, vec!["bus"]);
+        let cfg = outcome.config;
         assert_eq!(cfg.endpoints.len(), 1);
-        let spec = &cfg.endpoints[0];
-        assert_eq!(spec.name, "fc");
-        let ep = match &spec.kind {
-            crate::endpoint::spec::EndpointKind::Serial(e) => e,
-            other => panic!("expected serial, got {other:?}"),
+        assert_eq!(cfg.endpoints[0].name, "bus");
+        // The CLI version is a tcpc, not a udps — confirms TOML entry was
+        // wholly replaced, not field-merged.
+        assert!(matches!(
+            cfg.endpoints[0].kind,
+            crate::endpoint::spec::EndpointKind::TcpClient(_),
+        ));
+    }
+
+    #[test]
+    fn merge_cli_endpoint_override_preserves_order() {
+        // TOML: [keep1, override-me, keep2]; CLI: [override-me, extra]
+        // Result: TOML's "keep1" and "keep2" stay in TOML order, then CLI's
+        // "override-me" and "extra" appended in CLI order. The overridden
+        // TOML entry shifts from its TOML position to the CLI position;
+        // operators get exactly what they typed on the CLI, where they
+        // typed it.
+        let toml = Some(TomlConfig {
+            endpoints: vec![
+                ep("udps:0.0.0.0:1#keep1"),
+                ep("udps:0.0.0.0:2#override-me"),
+                ep("udps:0.0.0.0:3#keep2"),
+            ],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig {
+            endpoints: vec![ep("tcpc:host:1#override-me"), ep("tcpc:host:2#extra")],
+            ..CliConfig::default()
         };
-        assert_eq!(ep.path, "/dev/ttyUSB0");
-        assert_eq!(ep.baud, 921_600);
-        assert_eq!(
-            ep.flow_control,
-            crate::endpoint::spec::SerialFlowControl::RtsCts,
-        );
-        assert_eq!(ep.common.tx_queue_frames, Some(512));
+        let outcome = Config::merge(toml, cli).expect("merge must succeed");
+        assert_eq!(outcome.overridden_names, vec!["override-me"]);
+        let names: Vec<&str> = outcome
+            .config
+            .endpoints
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["keep1", "keep2", "override-me", "extra"]);
     }
 
     #[test]
-    fn toml_udps_endpoint_with_filters() {
-        let s = r#"
-[[endpoints]]
-type = "udps"
-bind = "0.0.0.0:14550"
-name = "bus"
-idle_secs = 30
-sniffer = false
-group = "uplink"
-block_msgid_in = "33,100-150"
-allow_src_sys_out = "1,5-10"
-"#;
-        let cfg = Config::from_toml_str(s).expect("must parse");
-        let spec = &cfg.endpoints[0];
-        assert_eq!(spec.name, "bus");
-        let ep = match &spec.kind {
-            crate::endpoint::spec::EndpointKind::UdpServer(e) => e,
-            other => panic!("expected udps, got {other:?}"),
+    fn merge_multiple_overrides_reported_in_order() {
+        let toml = Some(TomlConfig {
+            endpoints: vec![
+                ep("udps:0.0.0.0:1#a"),
+                ep("udps:0.0.0.0:2#b"),
+                ep("udps:0.0.0.0:3#c"),
+            ],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig {
+            endpoints: vec![ep("tcpc:h:1#a"), ep("tcpc:h:2#c")],
+            ..CliConfig::default()
         };
-        assert_eq!(ep.bind_addr.to_string(), "0.0.0.0:14550");
-        assert_eq!(ep.idle_secs, Some(30));
-        assert_eq!(ep.identity.group.as_deref(), Some("uplink"));
-        assert!(!ep.identity.sniffer);
-        assert_eq!(ep.identity.filters.block_msgid_in.len(), 2);
-        assert_eq!(ep.identity.filters.allow_src_sys_out.len(), 2);
+        let outcome = Config::merge(toml, cli).expect("merge must succeed");
+        // Reported in TOML iteration order — that's the order the merge
+        // walks the TOML endpoints to decide drops.
+        assert_eq!(outcome.overridden_names, vec!["a", "c"]);
     }
 
     #[test]
-    fn toml_udpc_ipv6_host_brackets_synthesized_body() {
-        let s = r#"
-[[endpoints]]
-type = "udpc"
-host = "::1"
-port = 14550
-latch_idle_secs = 15
-"#;
-        let cfg = Config::from_toml_str(s).expect("must parse");
-        let ep = match &cfg.endpoints[0].kind {
-            crate::endpoint::spec::EndpointKind::UdpClient(e) => e,
-            other => panic!("expected udpc, got {other:?}"),
+    fn merge_duplicate_name_within_cli_is_fatal() {
+        let cli = CliConfig {
+            endpoints: vec![ep("udps:0.0.0.0:1#foo"), ep("udps:0.0.0.0:2#foo")],
+            ..CliConfig::default()
         };
-        assert_eq!(ep.host, "::1");
-        assert_eq!(ep.port, 14_550);
-        assert_eq!(ep.latch_idle_secs, Some(15));
-    }
-
-    #[test]
-    fn toml_tcpc_hostname() {
-        let s = r#"
-[[endpoints]]
-type = "tcpc"
-host = "gcs.local"
-port = 5760
-name = "vehicle"
-"#;
-        let cfg = Config::from_toml_str(s).expect("must parse");
-        let ep = match &cfg.endpoints[0].kind {
-            crate::endpoint::spec::EndpointKind::TcpClient(e) => e,
-            other => panic!("expected tcpc, got {other:?}"),
-        };
-        assert_eq!(ep.host, "gcs.local");
-        assert_eq!(ep.port, 5760);
-        assert_eq!(cfg.endpoints[0].name, "vehicle");
-    }
-
-    #[test]
-    fn toml_tcps_endpoint() {
-        let s = r#"
-[[endpoints]]
-type = "tcps"
-bind = "[::]:5760"
-"#;
-        let cfg = Config::from_toml_str(s).expect("must parse");
-        let ep = match &cfg.endpoints[0].kind {
-            crate::endpoint::spec::EndpointKind::TcpServer(e) => e,
-            other => panic!("expected tcps, got {other:?}"),
-        };
-        assert_eq!(ep.bind_addr.to_string(), "[::]:5760");
-    }
-
-    #[test]
-    fn toml_unknown_top_level_key_rejected() {
-        let s = r#"
-nonsense = true
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::ConfigParse(_)) => {}
-            other => panic!("expected ConfigParse, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_unknown_endpoint_field_rejected() {
-        let s = r#"
-[[endpoints]]
-type = "udps"
-bind = "0.0.0.0:14550"
-totally_made_up = 1
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::ConfigParse(_)) => {}
-            other => panic!("expected ConfigParse, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_serial_with_bind_rejected() {
-        let s = r#"
-[[endpoints]]
-type = "serial"
-path = "/dev/ttyUSB0"
-baud = 115200
-bind = "0.0.0.0:14550"
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::ConfigSchema { index, reason }) => {
-                assert_eq!(index, 0);
-                assert!(reason.contains("'bind'"), "reason: {reason}");
-                assert!(reason.contains("'serial'"), "reason: {reason}");
-            }
-            other => panic!("expected ConfigSchema, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_udps_with_host_rejected() {
-        let s = r#"
-[[endpoints]]
-type = "udps"
-bind = "0.0.0.0:14550"
-host = "gcs.local"
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::ConfigSchema { reason, .. }) => assert!(reason.contains("'host'")),
-            other => panic!("expected ConfigSchema, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_udpc_missing_port_rejected() {
-        let s = r#"
-[[endpoints]]
-type = "udpc"
-host = "gcs.local"
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::ConfigSchema { reason, .. }) => assert!(reason.contains("'port'")),
-            other => panic!("expected ConfigSchema, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_serial_missing_baud_rejected() {
-        let s = r#"
-[[endpoints]]
-type = "serial"
-path = "/dev/ttyUSB0"
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::ConfigSchema { reason, .. }) => assert!(reason.contains("'baud'")),
-            other => panic!("expected ConfigSchema, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_unknown_endpoint_type_rejected() {
-        let s = r#"
-[[endpoints]]
-type = "carrier_pigeon"
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::ConfigSchema { reason, .. }) => {
-                assert!(reason.contains("unknown endpoint type"), "reason: {reason}");
-            }
-            other => panic!("expected ConfigSchema, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_filter_array_form_rejected() {
-        // CLAUDE.md: "TOML accepts the string form only — array forms are a
-        // parse-time error." Our serde schema types filter fields as
-        // Option<String>, so an inline array fails at the toml-deserialize
-        // layer.
-        let s = r#"
-[[endpoints]]
-type = "tcpc"
-host = "gcs.local"
-port = 5760
-block_msgid_in = [33, 100, 150]
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::ConfigParse(_)) => {}
-            other => panic!("expected ConfigParse, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_propagates_spec_errors_for_invalid_query_value() {
-        // Invalid range (lo > hi) is caught by the existing filter parser,
-        // which we reuse via EndpointSpec::build — so an out-of-shape filter
-        // surfaces as a SpecError, not a ConfigSchema.
-        let s = r#"
-[[endpoints]]
-type = "tcpc"
-host = "gcs.local"
-port = 5760
-block_msgid_in = "10-5"
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::Spec(_)) => {}
-            other => panic!("expected Spec, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_propagates_duplicate_names_via_validate() {
-        let s = r#"
-[[endpoints]]
-type = "udps"
-bind = "0.0.0.0:1"
-name = "foo"
-
-[[endpoints]]
-type = "udps"
-bind = "0.0.0.0:2"
-name = "foo"
-"#;
-        match Config::from_toml_str(s) {
+        match Config::merge(None, cli) {
             Err(Error::DuplicateName(n)) => assert_eq!(n, "foo"),
             other => panic!("expected DuplicateName, got {other:?}"),
         }
     }
 
     #[test]
-    fn toml_multiple_endpoints() {
-        // Mixed-scheme TOML with several correctly-formed `[[endpoints]]`
-        // entries: every entry must round-trip into the matching
-        // `EndpointKind`, and the resulting `Vec<EndpointSpec>` must preserve
-        // declaration order (the spawner relies on it for stable
-        // `EndpointId` allocation and stats ordering).
-        let s = r#"
-[[endpoints]]
-type = "serial"
-path = "/dev/ttyUSB0"
-baud = 921600
-name = "fc"
-
-[[endpoints]]
-type = "udps"
-bind = "0.0.0.0:14550"
-name = "bus"
-
-[[endpoints]]
-type = "udpc"
-host = "192.168.1.5"
-port = 14550
-name = "tap"
-
-[[endpoints]]
-type = "tcps"
-bind = "0.0.0.0:5760"
-name = "uplink"
-
-[[endpoints]]
-type = "tcpc"
-host = "gcs.local"
-port = 5760
-name = "vehicle"
-"#;
-        let cfg = Config::from_toml_str(s).expect("must parse");
-        assert_eq!(cfg.endpoints.len(), 5);
-        let observed: Vec<(&str, &str)> = cfg
-            .endpoints
-            .iter()
-            .map(|e| {
-                let kind = match &e.kind {
-                    crate::endpoint::spec::EndpointKind::Serial(_) => "serial",
-                    crate::endpoint::spec::EndpointKind::UdpServer(_) => "udps",
-                    crate::endpoint::spec::EndpointKind::UdpClient(_) => "udpc",
-                    crate::endpoint::spec::EndpointKind::TcpServer(_) => "tcps",
-                    crate::endpoint::spec::EndpointKind::TcpClient(_) => "tcpc",
-                };
-                (e.name.as_str(), kind)
-            })
-            .collect();
-        assert_eq!(
-            observed,
-            vec![
-                ("fc", "serial"),
-                ("bus", "udps"),
-                ("tap", "udpc"),
-                ("uplink", "tcps"),
-                ("vehicle", "tcpc"),
-            ],
-        );
-    }
-
-    #[test]
-    fn toml_duplicate_key_within_endpoint_rejected() {
-        // TOML disallows the same key appearing twice in the same table;
-        // serde's deserializer surfaces this as a parse error before our
-        // schema validation runs. Pin the behaviour so a future move to a
-        // lenient TOML reader (or a swap to `toml-edit`) can't silently
-        // accept "last write wins" semantics and let an operator's
-        // copy-paste typo route to an unintended bind address.
-        let s = r#"
-[[endpoints]]
-type = "udps"
-bind = "0.0.0.0:14550"
-bind = "0.0.0.0:14551"
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::ConfigParse(e)) => {
-                let msg = e.to_string();
-                assert!(
-                    msg.contains("duplicate key"),
-                    "error must mention the duplicate-key cause; got: {msg}"
-                );
-                assert!(
-                    msg.contains("bind"),
-                    "error must name the offending key; got: {msg}"
-                );
-            }
-            other => panic!("expected ConfigParse from duplicate key, got {other:?}"),
+    fn merge_duplicate_name_within_toml_is_fatal() {
+        let toml = Some(TomlConfig {
+            endpoints: vec![ep("udps:0.0.0.0:1#foo"), ep("udps:0.0.0.0:2#foo")],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig::default();
+        match Config::merge(toml, cli) {
+            Err(Error::DuplicateName(n)) => assert_eq!(n, "foo"),
+            other => panic!("expected DuplicateName, got {other:?}"),
         }
     }
 
     #[test]
-    fn toml_auto_names_when_omitted() {
-        let s = r#"
-[[endpoints]]
-type = "udps"
-bind = "0.0.0.0:14550"
-"#;
-        let cfg = Config::from_toml_str(s).expect("must parse");
-        assert_eq!(cfg.endpoints[0].name, "udps-0_0_0_0-14550");
-    }
-
-    #[test]
-    fn toml_from_path_round_trip() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("rmr.toml");
-        std::fs::write(
-            &path,
-            r#"
-stats = true
-[[endpoints]]
-type = "tcpc"
-host = "gcs.local"
-port = 5760
-"#,
-        )
-        .expect("write toml");
-        let cfg = Config::from_toml_path(&path).expect("must parse");
-        assert!(cfg.stats);
-        assert_eq!(cfg.endpoints.len(), 1);
-    }
-
-    #[test]
-    fn toml_from_path_io_error() {
-        let missing = std::path::PathBuf::from("/nonexistent/path/rmr.toml");
-        match Config::from_toml_path(&missing) {
-            Err(Error::ConfigIo { path, .. }) => assert!(path.contains("nonexistent")),
-            other => panic!("expected ConfigIo, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_invalid_explicit_name_rejected() {
-        // CLAUDE.md "`#name` validation": names outside [A-Za-z0-9_-]{1,64}
-        // are fatal. TOML routes through `EndpointSpec::build` which calls
-        // `validate_name`, so we should see a SpecError from there.
-        let s = r#"
-[[endpoints]]
-type = "udps"
-bind = "0.0.0.0:14550"
-name = "has spaces"
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::Spec(_)) => {}
-            other => panic!("expected Spec (invalid name), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_serial_path_containing_colon() {
-        // Real-world `/dev/serial/by-id/...` symlinks can carry `:` in the
-        // path. The body parser uses `rfind(':')` so the last colon (before
-        // the baud) wins, leaving the path intact.
-        let s = r#"
-[[endpoints]]
-type = "serial"
-path = "/dev/serial/by-id/usb-FTDI:port0"
-baud = 57600
-"#;
-        let cfg = Config::from_toml_str(s).expect("must parse");
-        let ep = match &cfg.endpoints[0].kind {
-            crate::endpoint::spec::EndpointKind::Serial(e) => e,
-            other => panic!("expected serial, got {other:?}"),
+    fn merge_within_toml_duplicate_fires_before_override_pass() {
+        // Regression guard: if TOML has `#foo` twice AND CLI has `#foo`,
+        // the within-TOML duplicate must be reported as a fatal error —
+        // not silently masked by the cross-source override pass. The
+        // operator's typo must surface as DuplicateName, not as a benign
+        // override report.
+        let toml = Some(TomlConfig {
+            endpoints: vec![ep("udps:0.0.0.0:1#foo"), ep("udps:0.0.0.0:2#foo")],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig {
+            endpoints: vec![ep("tcpc:h:1#foo")],
+            ..CliConfig::default()
         };
-        assert_eq!(ep.path, "/dev/serial/by-id/usb-FTDI:port0");
-        assert_eq!(ep.baud, 57_600);
-    }
-
-    #[test]
-    fn toml_unknown_endpoint_field_error_names_the_field() {
-        // The unknown-field error text is part of the contract: operators
-        // grep it to find their typo. Pin that the offending key appears in
-        // the message at least once.
-        let s = r#"
-[[endpoints]]
-type = "udps"
-bind = "0.0.0.0:14550"
-totally_made_up = 1
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::ConfigParse(e)) => {
-                let msg = e.to_string();
-                assert!(
-                    msg.contains("totally_made_up"),
-                    "error message must name the offending field; got: {msg}"
-                );
-            }
-            other => panic!("expected ConfigParse, got {other:?}"),
-        }
-    }
-
-    // -- CLI → EndpointEntry path (from_cli_string) --
-
-    #[test]
-    fn cli_path_equivalent_to_direct_endpoint_spec_parse() {
-        // Both paths must yield the same EndpointSpec across a
-        // representative input set, so the "CLI is a thin adapter into the
-        // TOML internals" architectural property is enforced by test rather
-        // than by code convention. If this ever fails, the two parsers have
-        // drifted and one of them is wrong.
-        let cases = [
-            "serial:/dev/ttyUSB0:921600",
-            "serial:/dev/ttyUSB0,921600#fc?flow_control=rtscts&group=uplink",
-            "serial:/dev/serial/by-id/usb-FTDI:port0:57600",
-            "udps:0.0.0.0:14550",
-            "udps:0.0.0.0:14550#bus?idle_secs=30&sniffer=true",
-            "udps:[::]:14550",
-            "udpc:192.168.1.5:14550",
-            "udpc:gcs.local:14550#tap?latch_idle_secs=15&block_msgid_in=33,100-150",
-            "udpc:[::1]:14550",
-            "tcps:0.0.0.0:5760",
-            "tcps:[2001:db8::1]:5760",
-            "tcpc:companion.local:5760#vehicle?group=uplink&allow_src_sys_out=1",
-            "tcpc:gcs.local:5760?tx_queue_frames=128&block_msgid_in=33,100-150,32",
-            // Edge cases CLI tokenization is finicky about:
-            "udps:0.0.0.0:1?",                             // empty query after `?`
-            "udps:0.0.0.0:1?sniffer=true&",                // trailing `&`
-            "udps:0.0.0.0:1?group=",                       // empty value
-            "udps:0.0.0.0:1?group=a=b",                    // embedded `=` in value
-            &format!("udps:0.0.0.0:1#{}", "a".repeat(64)), // max-length name
-        ];
-        for input in &cases {
-            let direct = EndpointSpec::parse(input)
-                .unwrap_or_else(|e| panic!("EndpointSpec::parse({input}) failed: {e}"));
-            let entry = EndpointEntry::from_cli_string(input)
-                .unwrap_or_else(|e| panic!("from_cli_string({input}) failed: {e}"));
-            let via_entry = entry
-                .into_spec(0)
-                .unwrap_or_else(|e| panic!("into_spec for {input} failed: {e}"));
-            assert_eq!(
-                direct, via_entry,
-                "CLI and entry-path parsers diverged for {input}"
-            );
+        match Config::merge(toml, cli) {
+            Err(Error::DuplicateName(n)) => assert_eq!(n, "foo"),
+            other => panic!("expected DuplicateName, got {other:?}"),
         }
     }
 
     #[test]
-    fn cli_path_error_precedence_matches_direct_parse() {
-        // Inputs that fail BOTH a body/query check and a name check: the
-        // body/query error must win on both paths (regression guard against
-        // the validate_name-too-early bug). Compare error discriminants —
-        // exact message text is allowed to differ.
-        fn discriminant(e: &SpecError) -> &'static str {
-            match e {
-                SpecError::MissingScheme(_) => "MissingScheme",
-                SpecError::UnknownScheme(_) => "UnknownScheme",
-                SpecError::InvalidName(_) => "InvalidName",
-                SpecError::UnknownQueryKey { .. } => "UnknownQueryKey",
-                SpecError::MalformedQuery(_) => "MalformedQuery",
-                SpecError::DuplicateQueryKey(_) => "DuplicateQueryKey",
-                SpecError::MalformedBody { .. } => "MalformedBody",
-                SpecError::InvalidQueryValue { .. } => "InvalidQueryValue",
-            }
-        }
-        let cases = [
-            // bad-name + unknown query key → UnknownQueryKey wins
-            "udps:0.0.0.0:1#bad.name?weirdkey=x",
-            // bad-name + bad query value (idle_secs=0 fails bounds check
-            // inside into_spec, after name validation in build's parse_kind
-            // path — but the bounds happen *before* `validate_name` in
-            // build, so InvalidQueryValue wins)
-            "udps:0.0.0.0:1#bad.name?idle_secs=0",
-            // bad-name alone → InvalidName both ways
-            "udps:0.0.0.0:1#bad.name",
-        ];
-        for input in cases {
-            let direct_err = EndpointSpec::parse(input)
-                .err()
-                .unwrap_or_else(|| panic!("expected err for {input}"));
-            let entry = EndpointEntry::from_cli_string(input);
-            let via_err = match entry {
-                Err(e) => e,
-                Ok(e) => match e.into_spec(0) {
-                    Err(Error::Spec(e)) => e,
-                    Err(other) => panic!("expected Spec, got {other:?} for {input}"),
-                    Ok(_) => panic!("expected err for {input}"),
-                },
-            };
-            assert_eq!(
-                discriminant(&direct_err),
-                discriminant(&via_err),
-                "error-class divergence for {input}: direct={direct_err:?}, via_entry={via_err:?}",
-            );
+    fn merge_within_cli_duplicate_fires_before_override_pass() {
+        // Same shape as above but the duplicate is on the CLI side. The
+        // TOML's `#foo` must NOT be reported as overridden — the operator's
+        // CLI invocation is itself malformed.
+        let toml = Some(TomlConfig {
+            endpoints: vec![ep("udps:0.0.0.0:1#foo")],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig {
+            endpoints: vec![ep("tcpc:h:1#foo"), ep("tcpc:h:2#foo")],
+            ..CliConfig::default()
+        };
+        match Config::merge(toml, cli) {
+            Err(Error::DuplicateName(n)) => assert_eq!(n, "foo"),
+            other => panic!("expected DuplicateName, got {other:?}"),
         }
     }
 
     #[test]
-    fn cli_path_reports_unknown_query_key_with_did_you_mean() {
-        // Three cases, one for each source the suggester walks
-        // (IdentityFlags::KEYS, COMMON_KEYS, scheme-extras), so a future
-        // refactor of `suggest_query_key` can't silently regress one of the
-        // three feeds.
-        let cases = [
-            ("udps:0.0.0.0:1?snifer=true", "snifer", "sniffer"), // IdentityFlags::KEYS
-            (
-                "udps:0.0.0.0:1?tx_queue_frame=10",
-                "tx_queue_frame",
-                "tx_queue_frames",
-            ), // COMMON_KEYS
-            ("udps:0.0.0.0:1?idle_sec=30", "idle_sec", "idle_secs"), // scheme-extra
-        ];
-        for (input, expected_key, expected_suggestion) in cases {
-            match EndpointEntry::from_cli_string(input) {
-                Err(SpecError::UnknownQueryKey {
-                    key, suggestion, ..
-                }) => {
-                    assert_eq!(key, expected_key, "wrong key in error for {input}");
-                    assert_eq!(
-                        suggestion,
-                        Some(expected_suggestion),
-                        "wrong suggestion for {input}"
-                    );
-                }
-                other => panic!("expected UnknownQueryKey for {input}, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn cli_path_rejects_wrong_scheme_query_key() {
-        match EndpointEntry::from_cli_string("udps:0.0.0.0:1?flow_control=rtscts") {
-            Err(SpecError::UnknownQueryKey { key, scheme, .. }) => {
-                assert_eq!(key, "flow_control");
-                assert_eq!(scheme, Scheme::UdpServer);
-            }
-            other => panic!("expected UnknownQueryKey, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cli_path_rejects_listen_hostname_at_tokenize() {
-        match EndpointEntry::from_cli_string("udps:gcs.local:14550") {
-            Err(SpecError::MalformedBody { scheme, reason, .. }) => {
-                assert_eq!(scheme, Scheme::UdpServer);
-                assert!(reason.contains("must be an IP literal"));
-            }
-            other => panic!("expected MalformedBody, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cli_path_propagates_bounds_check_through_into_spec() {
-        // Bounds-checking is intentionally deferred from apply_cli_pair to
-        // into_spec → build → applier. Pin that an out-of-range value still
-        // surfaces correctly (as a Spec error, not a silent acceptance).
-        let entry = EndpointEntry::from_cli_string("udps:0.0.0.0:1?idle_secs=0")
-            .expect("from_cli_string accepts the raw value");
-        match entry.into_spec(0) {
-            Err(Error::Spec(SpecError::InvalidQueryValue { key, .. })) => {
-                assert_eq!(key, "idle_secs");
-            }
-            other => panic!("expected InvalidQueryValue for idle_secs=0, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn toml_disallowed_field_takes_priority_over_missing_field() {
-        // Regression guard for the validation-ordering decision (see
-        // `into_spec`): a serial entry carrying `bind` but lacking `path`
-        // must surface the wrong-field-for-scheme error, not the
-        // downstream missing-path error.
-        let s = r#"
-[[endpoints]]
-type = "serial"
-bind = "0.0.0.0:14550"
-"#;
-        match Config::from_toml_str(s) {
-            Err(Error::ConfigSchema { reason, .. }) => {
-                assert!(reason.contains("'bind'"), "reason: {reason}");
-                assert!(reason.contains("'serial'"), "reason: {reason}");
-            }
-            other => panic!("expected ConfigSchema mentioning 'bind' first, got {other:?}"),
-        }
+    fn merge_no_overrides_when_no_collisions() {
+        let toml = Some(TomlConfig {
+            endpoints: vec![ep("udps:0.0.0.0:1#a")],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig {
+            endpoints: vec![ep("tcpc:h:1#b")],
+            ..CliConfig::default()
+        };
+        let outcome = Config::merge(toml, cli).expect("merge must succeed");
+        assert!(outcome.overridden_names.is_empty());
     }
 }

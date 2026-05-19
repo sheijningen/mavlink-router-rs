@@ -22,10 +22,4 @@ pub enum Error {
 
     #[error("invalid endpoint at [[endpoints]] index {index}: {reason}")]
     ConfigSchema { index: usize, reason: String },
-
-    #[error(
-        "mixing --config <FILE> with CLI endpoint arguments is not yet supported \
-         (the CLI/TOML merge rules are a later Phase 6 step); pass one or the other"
-    )]
-    CliTomlMixUnsupported,
 }

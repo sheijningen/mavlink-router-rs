@@ -20,15 +20,15 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use common::mavlink::{Ping, TestFrame};
-use rmr::cli::parse_specs;
 use rmr::config::{Config, LogFormat, LogLevel};
+use rmr::parsers::cli::parse_specs;
 
 fn config_with_endpoints(endpoints: Vec<String>) -> Config {
     let cfg = Config {
         log_level: LogLevel::Warn,
         log_format: LogFormat::Text,
         stats: false,
-        stats_interval: 5,
+        stats_interval_secs: 5,
         dedup_ms: 0,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
     };
