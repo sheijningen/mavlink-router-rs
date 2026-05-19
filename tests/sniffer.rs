@@ -1,4 +1,4 @@
-//! Sniffer end-to-end through `rmr::run_with_cancel`. Router unit tests cover
+//! Sniffer end-to-end through `rmr::run`. Router unit tests cover
 //! the per-destination decision's sniffer override against synthetic channels;
 //! this binary is the transport-level proof that `?sniffer=true` on a real
 //! `udpc:` endpoint actually admits a frame at the wire that a non-sniffer
@@ -29,7 +29,7 @@ fn config_with_endpoints(endpoints: Vec<String>) -> Config {
         stats: false,
         stats_interval_secs: 5,
         dedup_ms: 0,
-        no_config_log: true,
+        skip_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
     };
     cfg.validate()
@@ -63,7 +63,7 @@ async fn sniffer_admits_targeted_frame_that_non_sniffer_rejects() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run_with_cancel(cfg, cancel).await })
+        tokio::spawn(async move { rmr::run(cfg, cancel).await })
     };
 
     let target_probe = UdpSocket::bind(target_addr)

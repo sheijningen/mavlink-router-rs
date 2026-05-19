@@ -227,7 +227,7 @@ GLOBAL OPTS:
   -c, --config FILE       TOML config (endpoints + globals)
       --log-level LEVEL   trace|debug|info|warn|error (default info)
       --log-format FMT    text (default) | json
-      --no-config-log     suppress INFO dump of merged config at startup
+      --skip-config-log     suppress INFO dump of merged config at startup
       --stats             enable periodic per-endpoint stats (JSON-Lines on stdout)
       --stats-interval-secs N  stats output interval in seconds (default 5)
       --dedup-ms N        duplicate suppression window (0 = off)

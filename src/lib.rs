@@ -45,44 +45,31 @@ const INGRESS_QUEUE_FRAMES: usize = 1024;
 /// clients in v1).
 const DEFAULT_TCPS_PEER_BUDGET: usize = 64;
 
-/// Run the rmr top-level from a fully-resolved [`Config`]. Spawns the router
-/// task, the stats task, and one task per endpoint, then waits for shutdown.
-/// Each top-level endpoint's `EndpointId`, `Arc<EndpointStats>`, `TxQueue`,
-/// and `IdentityFlags` are constructed up front and announced via
+/// Run the rmr top-level from a fully-resolved [`Config`] under a
+/// caller-supplied cancellation token. Spawns the router task, the stats
+/// task, and one task per endpoint, then waits for shutdown. Each top-level
+/// endpoint's `EndpointId`, `Arc<EndpointStats>`, `TxQueue`, and
+/// `IdentityFlags` are constructed up front and announced via
 /// `EndpointEvent::EndpointAdded` *before* the endpoint task is spawned —
 /// the router's biased select then guarantees the registration is processed
-/// before any frame stamped with the new `EndpointId`.
-pub async fn run(cfg: Config) -> Result<(), Error> {
-    log::init_tracing(cfg.log_level, cfg.log_format);
-    let token = CancellationToken::new();
-    let signal_token = token.clone();
-    tokio::spawn(async move {
-        shutdown::watch_for_shutdown_signal(signal_token).await;
-    });
-    run_with_cancel(cfg, token).await
-}
-
-/// Like [`run`], but driven by a caller-supplied cancellation token and
-/// without installing the signal handler. Tracing is also assumed to be
-/// initialised by the caller. Used by integration tests that need to drive
-/// shutdown explicitly; production code path goes through [`run`].
-pub async fn run_with_cancel(cfg: Config, token: CancellationToken) -> Result<(), Error> {
-    if !cfg.no_config_log {
+/// before any frame stamped with the new `EndpointId`. The caller is
+/// responsible for installing the signal handler and initialising tracing.
+pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
+    if !cfg.skip_config_log {
         log_merged_config(&cfg);
     }
 
     // Exhaustive destructure: adding a Config field forces a touch here, so
     // we can't silently grow the surface without wiring the new knob into
-    // the spawner. `stats` / `stats_interval_secs` are deliberately unused
-    // today — the stats JSON-Lines sink is a later Phase 6 bullet.
+    // the spawner.
     let Config {
-        stats: _stats,
-        stats_interval_secs: _stats_interval_secs,
+        stats,
+        stats_interval_secs,
         dedup_ms,
         endpoints: specs,
         log_level: _,
         log_format: _,
-        no_config_log: _,
+        skip_config_log: _,
     } = cfg;
 
     let endpoint_count = specs.len();
@@ -153,7 +140,7 @@ fn log_merged_config(cfg: &Config) {
         stats = cfg.stats,
         stats_interval_secs = cfg.stats_interval_secs,
         dedup_ms = cfg.dedup_ms,
-        no_config_log = cfg.no_config_log,
+        skip_config_log = cfg.skip_config_log,
         endpoint_count = cfg.endpoints.len(),
         endpoints = ?cfg.endpoints,
         "merged config",

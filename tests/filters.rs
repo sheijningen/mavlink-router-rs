@@ -1,4 +1,4 @@
-//! Out-filter end-to-end through `rmr::run_with_cancel`. Router unit tests
+//! Out-filter end-to-end through `rmr::run`. Router unit tests
 //! cover the per-destination decision against synthetic channels; this binary
 //! is the transport-level proof that a `?block_msgid_out=` on a real `udpc:`
 //! actually suppresses the frame at the wire while a non-matching msgid still
@@ -30,7 +30,7 @@ fn config_with_endpoints(endpoints: Vec<String>) -> Config {
         stats: false,
         stats_interval_secs: 5,
         dedup_ms: 0,
-        no_config_log: true,
+        skip_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
     };
     cfg.validate()
@@ -59,7 +59,7 @@ async fn out_filter_blocks_destination_msgid_at_wire() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run_with_cancel(cfg, cancel).await })
+        tokio::spawn(async move { rmr::run(cfg, cancel).await })
     };
 
     // dst_addr is the configured peer for udpc:dst; rebind a probe there so

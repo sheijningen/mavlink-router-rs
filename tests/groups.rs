@@ -1,4 +1,4 @@
-//! Endpoint-group end-to-end through `rmr::run_with_cancel`. Router unit
+//! Endpoint-group end-to-end through `rmr::run`. Router unit
 //! tests cover [`GroupRegistry`](rmr::router::group) and the shared-learn-set
 //! decision in [`rmr::router`] against synthetic channels. This binary is the
 //! transport-level proof that, on real UDP endpoints:
@@ -38,7 +38,7 @@ fn config_with_endpoints(endpoints: Vec<String>) -> Config {
         stats: false,
         stats_interval_secs: 5,
         dedup_ms: 0,
-        no_config_log: true,
+        skip_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
     };
     cfg.validate()
@@ -76,7 +76,7 @@ async fn group_members_share_learn_set_so_sibling_is_loop_blocked() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run_with_cancel(cfg, cancel).await })
+        tokio::spawn(async move { rmr::run(cfg, cancel).await })
     };
 
     let sibling_probe = UdpSocket::bind(sibling_addr)
@@ -167,7 +167,7 @@ async fn group_members_do_not_share_out_filters() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run_with_cancel(cfg, cancel).await })
+        tokio::spawn(async move { rmr::run(cfg, cancel).await })
     };
 
     let strict_probe = UdpSocket::bind(strict_addr)

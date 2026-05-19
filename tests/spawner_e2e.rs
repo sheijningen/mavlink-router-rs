@@ -1,4 +1,4 @@
-//! Drives `rmr::run_with_cancel` with a `udps:` + `udpc:` pair and verifies
+//! Drives `rmr::run` with a `udps:` + `udpc:` pair and verifies
 //! that a frame injected at the listener reaches the client's configured peer
 //! via the spawned router.
 
@@ -22,7 +22,7 @@ fn config_with_endpoints(endpoints: Vec<String>) -> Config {
         stats: false,
         stats_interval_secs: 5,
         dedup_ms: 0,
-        no_config_log: true,
+        skip_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
     };
     cfg.validate()
@@ -49,7 +49,7 @@ async fn spawner_routes_udp_frame_end_to_end() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run_with_cancel(cfg, cancel).await })
+        tokio::spawn(async move { rmr::run(cfg, cancel).await })
     };
 
     // peer_to_bus must bind addr_b so udpc's outbound `send_to` reaches it.

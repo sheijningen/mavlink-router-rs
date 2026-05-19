@@ -1,4 +1,4 @@
-//! Global dedup window end-to-end through `rmr::run_with_cancel`. Router unit
+//! Global dedup window end-to-end through `rmr::run`. Router unit
 //! tests cover the algorithm against synthetic channels; this binary is the
 //! transport-level proof that, with `dedup_ms > 0`, an identical frame
 //! delivered by two distinct ingress endpoints is forwarded to a downstream
@@ -25,7 +25,7 @@ fn config_with_endpoints_and_dedup(endpoints: Vec<String>, dedup_ms: u64) -> Con
         stats: false,
         stats_interval_secs: 5,
         dedup_ms,
-        no_config_log: true,
+        skip_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
     };
     cfg.validate()
@@ -60,7 +60,7 @@ async fn dedup_suppresses_second_copy_from_redundant_uplinks() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run_with_cancel(cfg, cancel).await })
+        tokio::spawn(async move { rmr::run(cfg, cancel).await })
     };
 
     let gcs_probe = UdpSocket::bind(gcs_addr).await.expect("gcs_probe bind");

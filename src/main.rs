@@ -4,7 +4,8 @@ use clap::Parser;
 use rmr::config::Config;
 use rmr::log::init_tracing;
 use rmr::parsers::cli::Cli;
-use rmr::run_with_cancel;
+use rmr::parsers::toml::TomlConfig;
+use rmr::run;
 use rmr::shutdown::watch_for_shutdown_signal;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -14,7 +15,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let toml = match cli.config.clone() {
-        Some(path) => match rmr::parsers::toml::TomlConfig::from_path(&path) {
+        Some(path) => match TomlConfig::from_path(&path) {
             Ok(t) => Some(t),
             Err(e) => {
                 eprintln!("error: {e}");
@@ -60,7 +61,7 @@ async fn main() -> ExitCode {
         watch_for_shutdown_signal(signal_token).await;
     });
 
-    match run_with_cancel(cfg, token).await {
+    match run(cfg, token).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");

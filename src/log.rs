@@ -22,7 +22,7 @@ impl From<LogLevel> for Level {
 }
 
 /// Install the global tracing subscriber. Called once at process startup
-/// (CLAUDE.md "Lifecycle: Startup"). Tests that drive [`crate::run_with_cancel`]
+/// (CLAUDE.md "Lifecycle: Startup"). Tests that drive [`crate::run`]
 /// initialise their own subscriber and bypass this entry point.
 pub fn init_tracing(level: LogLevel, format: LogFormat) {
     let builder = tracing_subscriber::fmt()
