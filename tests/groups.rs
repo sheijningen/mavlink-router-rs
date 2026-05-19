@@ -28,19 +28,22 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use common::mavlink::{Heartbeat, Ping, TestFrame};
-use rmr::cli::{Cli, LogFormat, LogLevel};
+use rmr::cli::parse_specs;
+use rmr::config::{Config, LogFormat, LogLevel};
 
-fn cli_with_endpoints(endpoints: Vec<String>) -> Cli {
-    Cli {
-        config: None,
+fn config_with_endpoints(endpoints: Vec<String>) -> Config {
+    let cfg = Config {
         log_level: LogLevel::Warn,
         log_format: LogFormat::Text,
         stats: false,
         stats_interval: 5,
         dedup_ms: 0,
         shutdown_grace: 5,
-        endpoints,
-    }
+        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
+    };
+    cfg.validate()
+        .expect("test config must pass cross-endpoint validation");
+    cfg
 }
 
 fn pick_free_udp_addr() -> SocketAddr {
@@ -61,7 +64,7 @@ async fn group_members_share_learn_set_so_sibling_is_loop_blocked() {
     let sibling_addr = pick_free_udp_addr();
     let tap_addr = pick_free_udp_addr();
 
-    let cli = cli_with_endpoints(vec![
+    let cfg = config_with_endpoints(vec![
         format!("udps:127.0.0.1:{}#src?group=uplink", src_addr.port()),
         format!(
             "udpc:127.0.0.1:{}#sibling?group=uplink",
@@ -73,7 +76,7 @@ async fn group_members_share_learn_set_so_sibling_is_loop_blocked() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run_with_cancel(cli, cancel).await })
+        tokio::spawn(async move { rmr::run_with_cancel(cfg, cancel).await })
     };
 
     let sibling_probe = UdpSocket::bind(sibling_addr)
@@ -149,7 +152,7 @@ async fn group_members_do_not_share_out_filters() {
     let strict_addr = pick_free_udp_addr();
     let permissive_addr = pick_free_udp_addr();
 
-    let cli = cli_with_endpoints(vec![
+    let cfg = config_with_endpoints(vec![
         format!("udps:127.0.0.1:{}#src", src_addr.port()),
         format!(
             "udpc:127.0.0.1:{}#strict?group=g&block_msgid_out=4",
@@ -164,7 +167,7 @@ async fn group_members_do_not_share_out_filters() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run_with_cancel(cli, cancel).await })
+        tokio::spawn(async move { rmr::run_with_cancel(cfg, cancel).await })
     };
 
     let strict_probe = UdpSocket::bind(strict_addr)

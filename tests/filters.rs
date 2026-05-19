@@ -20,19 +20,22 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use common::mavlink::{Ping, TestFrame};
-use rmr::cli::{Cli, LogFormat, LogLevel};
+use rmr::cli::parse_specs;
+use rmr::config::{Config, LogFormat, LogLevel};
 
-fn cli_with_endpoints(endpoints: Vec<String>) -> Cli {
-    Cli {
-        config: None,
+fn config_with_endpoints(endpoints: Vec<String>) -> Config {
+    let cfg = Config {
         log_level: LogLevel::Warn,
         log_format: LogFormat::Text,
         stats: false,
         stats_interval: 5,
         dedup_ms: 0,
         shutdown_grace: 5,
-        endpoints,
-    }
+        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
+    };
+    cfg.validate()
+        .expect("test config must pass cross-endpoint validation");
+    cfg
 }
 
 fn pick_free_udp_addr() -> SocketAddr {
@@ -48,7 +51,7 @@ async fn out_filter_blocks_destination_msgid_at_wire() {
     let source_addr = pick_free_udp_addr();
     let dst_addr = pick_free_udp_addr();
 
-    let cli = cli_with_endpoints(vec![
+    let cfg = config_with_endpoints(vec![
         format!("udps:127.0.0.1:{}#source", source_addr.port()),
         format!("udpc:127.0.0.1:{}#dst?block_msgid_out=4", dst_addr.port()),
     ]);
@@ -56,7 +59,7 @@ async fn out_filter_blocks_destination_msgid_at_wire() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run_with_cancel(cli, cancel).await })
+        tokio::spawn(async move { rmr::run_with_cancel(cfg, cancel).await })
     };
 
     // dst_addr is the configured peer for udpc:dst; rebind a probe there so

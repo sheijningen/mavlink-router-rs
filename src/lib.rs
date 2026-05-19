@@ -18,6 +18,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::config::Config;
 use crate::endpoint::EndpointId;
 use crate::endpoint::EndpointIdAllocator;
 use crate::endpoint::defaults::{DEFAULT_DEDUP_WINDOW_CAPACITY, DEFAULT_TX_QUEUE_FRAMES};
@@ -44,36 +45,45 @@ const INGRESS_QUEUE_FRAMES: usize = 1024;
 /// clients in v1).
 const DEFAULT_TCPS_PEER_BUDGET: usize = 64;
 
-/// Run the rmr top-level: parse CLI specs, spawn the router + stats tasks
-/// and one task per endpoint, then wait for shutdown. Each top-level
-/// endpoint's `EndpointId`, `Arc<EndpointStats>`, `TxQueue`, and
-/// `IdentityFlags` are constructed up front and announced via
+/// Run the rmr top-level from a fully-resolved [`Config`]. Spawns the router
+/// task, the stats task, and one task per endpoint, then waits for shutdown.
+/// Each top-level endpoint's `EndpointId`, `Arc<EndpointStats>`, `TxQueue`,
+/// and `IdentityFlags` are constructed up front and announced via
 /// `EndpointEvent::EndpointAdded` *before* the endpoint task is spawned —
-/// the router's biased select then guarantees the registration is
-/// processed before any frame stamped with the new `EndpointId`.
-pub async fn run(cli: cli::Cli) -> Result<(), Error> {
-    cli::init_tracing(cli.log_level, cli.log_format);
+/// the router's biased select then guarantees the registration is processed
+/// before any frame stamped with the new `EndpointId`.
+pub async fn run(cfg: Config) -> Result<(), Error> {
+    config::init_tracing(cfg.log_level, cfg.log_format);
     let token = CancellationToken::new();
     let signal_token = token.clone();
     tokio::spawn(async move {
         shutdown::watch_for_shutdown_signal(signal_token).await;
     });
-    run_with_cancel(cli, token).await
+    run_with_cancel(cfg, token).await
 }
 
 /// Like [`run`], but driven by a caller-supplied cancellation token and
 /// without installing the signal handler. Tracing is also assumed to be
 /// initialised by the caller. Used by integration tests that need to drive
 /// shutdown explicitly; production code path goes through [`run`].
-pub async fn run_with_cancel(cli: cli::Cli, token: CancellationToken) -> Result<(), Error> {
-    if cli.config.is_some() {
-        warn!("--config is accepted but not yet wired up (TOML config lands in phase 6)");
-    }
+pub async fn run_with_cancel(cfg: Config, token: CancellationToken) -> Result<(), Error> {
+    // Exhaustive destructure: adding a Config field forces a touch here, so
+    // we can't silently grow the surface without wiring the new knob into
+    // the spawner. `stats` / `stats_interval` are deliberately unused today
+    // — the stats JSON-Lines sink is a later Phase 6 bullet.
+    let Config {
+        stats: _stats,
+        stats_interval: _stats_interval,
+        dedup_ms,
+        shutdown_grace,
+        endpoints: specs,
+        log_level: _,
+        log_format: _,
+    } = cfg;
 
-    let specs = cli::parse_specs(&cli.endpoints)?;
     let endpoint_count = specs.len();
 
-    warn_on_groups_without_dedup(&specs, cli.dedup_ms);
+    warn_on_groups_without_dedup(&specs, dedup_ms);
 
     let n_estimate = estimate_registry_size(&specs);
     let event_q_cap = (n_estimate * 2).max(64);
@@ -92,7 +102,7 @@ pub async fn run_with_cancel(cli: cli::Cli, token: CancellationToken) -> Result<
             event_rx,
             stats_event_tx,
             cancel: token.clone(),
-            dedup_ms: cli.dedup_ms,
+            dedup_ms,
             dedup_window_capacity: DEFAULT_DEDUP_WINDOW_CAPACITY,
         },
     );
@@ -110,7 +120,7 @@ pub async fn run_with_cancel(cli: cli::Cli, token: CancellationToken) -> Result<
     token.cancelled().await;
     info!("shutdown signal received");
 
-    shutdown::shutdown(tasks, Duration::from_secs(cli.shutdown_grace)).await;
+    shutdown::shutdown(tasks, Duration::from_secs(shutdown_grace)).await;
     info!("rmr stopped");
 
     Ok(())

@@ -15,19 +15,22 @@ use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::cli::{Cli, LogFormat, LogLevel};
+use rmr::cli::parse_specs;
+use rmr::config::{Config, LogFormat, LogLevel};
 
-fn cli_with_endpoints_and_dedup(endpoints: Vec<String>, dedup_ms: u64) -> Cli {
-    Cli {
-        config: None,
+fn config_with_endpoints_and_dedup(endpoints: Vec<String>, dedup_ms: u64) -> Config {
+    let cfg = Config {
         log_level: LogLevel::Warn,
         log_format: LogFormat::Text,
         stats: false,
         stats_interval: 5,
         dedup_ms,
         shutdown_grace: 5,
-        endpoints,
-    }
+        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
+    };
+    cfg.validate()
+        .expect("test config must pass cross-endpoint validation");
+    cfg
 }
 
 fn pick_free_udp_addr() -> SocketAddr {
@@ -45,7 +48,7 @@ async fn dedup_suppresses_second_copy_from_redundant_uplinks() {
     let uplink_b_addr = pick_free_udp_addr();
     let gcs_addr = pick_free_udp_addr();
 
-    let cli = cli_with_endpoints_and_dedup(
+    let cfg = config_with_endpoints_and_dedup(
         vec![
             format!("udps:127.0.0.1:{}#uplink_a", uplink_a_addr.port()),
             format!("udps:127.0.0.1:{}#uplink_b", uplink_b_addr.port()),
@@ -57,7 +60,7 @@ async fn dedup_suppresses_second_copy_from_redundant_uplinks() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run_with_cancel(cli, cancel).await })
+        tokio::spawn(async move { rmr::run_with_cancel(cfg, cancel).await })
     };
 
     let gcs_probe = UdpSocket::bind(gcs_addr).await.expect("gcs_probe bind");

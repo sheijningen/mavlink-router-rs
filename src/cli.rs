@@ -1,14 +1,16 @@
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 use clap::Parser;
-use tracing::Level;
 
+use crate::config::{Config, LogFormat, LogLevel};
 use crate::endpoint::spec::EndpointSpec;
 use crate::error::Error;
 
-/// Parsed command-line arguments. Built from argv via clap derive; `cli.rs`'s
-/// own parsers turn `endpoints: Vec<String>` into `EndpointSpec`s.
+/// Parsed command-line arguments. Built from argv via clap derive; the
+/// resulting struct is converted into a [`Config`] via
+/// [`Cli::try_into_config`], which is what [`crate::run`] actually consumes.
+/// CLI is one input format among potentially several (TOML next) — `Config`
+/// is the canonical, resolved shape.
 #[derive(Parser, Debug)]
 #[command(name = "rmr", version, about = "Rust MAVLink Router")]
 pub struct Cli {
@@ -17,11 +19,11 @@ pub struct Cli {
     pub config: Option<PathBuf>,
 
     /// Log verbosity
-    #[arg(long, value_enum, default_value_t = LogLevel::Info, value_name = "LEVEL")]
+    #[arg(long, value_enum, default_value_t = LogLevel::default(), value_name = "LEVEL")]
     pub log_level: LogLevel,
 
     /// Log format
-    #[arg(long, value_enum, default_value_t = LogFormat::Text, value_name = "FMT")]
+    #[arg(long, value_enum, default_value_t = LogFormat::default(), value_name = "FMT")]
     pub log_format: LogFormat,
 
     /// Emit periodic per-endpoint stats (JSON-Lines on stdout)
@@ -29,15 +31,15 @@ pub struct Cli {
     pub stats: bool,
 
     /// Stats output interval in seconds
-    #[arg(long, default_value_t = 5, value_name = "N")]
+    #[arg(long, default_value_t = crate::config::DEFAULT_STATS_INTERVAL_SECS, value_name = "N")]
     pub stats_interval: u64,
 
     /// Duplicate suppression window in milliseconds (0 disables dedup)
-    #[arg(long, default_value_t = 0, value_name = "N")]
+    #[arg(long, default_value_t = crate::config::DEFAULT_DEDUP_MS, value_name = "N")]
     pub dedup_ms: u64,
 
     /// Overall wall-clock budget for shutdown in seconds
-    #[arg(long, default_value_t = 5, value_name = "N")]
+    #[arg(long, default_value_t = crate::config::DEFAULT_SHUTDOWN_GRACE_SECS, value_name = "N")]
     pub shutdown_grace: u64,
 
     /// One or more endpoint specifications (scheme:body[#name][?key=val&...])
@@ -45,52 +47,40 @@ pub struct Cli {
     pub endpoints: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum LogFormat {
-    Text,
-    Json,
-}
-
-impl From<LogLevel> for Level {
-    fn from(l: LogLevel) -> Self {
-        match l {
-            LogLevel::Trace => Level::TRACE,
-            LogLevel::Debug => Level::DEBUG,
-            LogLevel::Info => Level::INFO,
-            LogLevel::Warn => Level::WARN,
-            LogLevel::Error => Level::ERROR,
-        }
+impl Cli {
+    /// Build the canonical [`Config`] from this CLI invocation. Parses every
+    /// `endpoints` string into a typed [`EndpointSpec`] and runs
+    /// [`Config::validate`] so cross-endpoint invariants (duplicate names)
+    /// are caught before the spawner sees anything.
+    ///
+    /// TOML config loading is wired in the next Phase 6 commit; today
+    /// `--config <FILE>` is accepted by clap but silently ignored here.
+    pub fn try_into_config(self) -> Result<Config, Error> {
+        let endpoints = parse_specs(&self.endpoints)?;
+        let cfg = Config {
+            log_level: self.log_level,
+            log_format: self.log_format,
+            stats: self.stats,
+            stats_interval: self.stats_interval,
+            dedup_ms: self.dedup_ms,
+            shutdown_grace: self.shutdown_grace,
+            endpoints,
+        };
+        cfg.validate()?;
+        Ok(cfg)
     }
 }
 
-pub fn init_tracing(level: LogLevel, format: LogFormat) {
-    let builder = tracing_subscriber::fmt()
-        .with_max_level(Level::from(level))
-        .with_writer(std::io::stderr);
-    match format {
-        LogFormat::Text => builder.init(),
-        LogFormat::Json => builder.json().init(),
-    }
-}
-
+/// Turn a slice of CLI-style endpoint strings into typed [`EndpointSpec`]s.
+/// Kept on this module because the input shape (`Vec<String>` from argv) is
+/// CLI-specific; TOML parsing builds `EndpointSpec`s through a different
+/// path. Duplicate-name detection is intentionally left to [`Config::validate`]
+/// so the rule is enforced uniformly across CLI-only, TOML-only, and
+/// (eventually) merged inputs.
 pub fn parse_specs(raw: &[String]) -> Result<Vec<EndpointSpec>, Error> {
     let mut specs = Vec::with_capacity(raw.len());
-    let mut seen_names = HashSet::<String>::new();
     for s in raw {
-        let spec = EndpointSpec::parse(s)?;
-        if !seen_names.insert(spec.name.clone()) {
-            return Err(Error::DuplicateName(spec.name));
-        }
-        specs.push(spec);
+        specs.push(EndpointSpec::parse(s)?);
     }
     Ok(specs)
 }
@@ -177,6 +167,40 @@ mod tests {
     }
 
     #[test]
+    fn try_into_config_builds_canonical_config() {
+        let cli = Cli::try_parse_from([
+            "rmr",
+            "--stats",
+            "--dedup-ms",
+            "300",
+            "udps:0.0.0.0:14550#bus",
+            "tcpc:gcs.local:5760#vehicle",
+        ])
+        .unwrap();
+        let cfg = cli.try_into_config().expect("conversion must succeed");
+        assert!(cfg.stats);
+        assert_eq!(cfg.dedup_ms, 300);
+        assert_eq!(cfg.endpoints.len(), 2);
+        assert_eq!(cfg.endpoints[0].name, "bus");
+        assert_eq!(cfg.endpoints[1].name, "vehicle");
+    }
+
+    #[test]
+    fn try_into_config_propagates_duplicate_name() {
+        let cli = Cli::try_parse_from(["rmr", "udps:0.0.0.0:1#foo", "udps:0.0.0.0:2#foo"]).unwrap();
+        match cli.try_into_config() {
+            Err(Error::DuplicateName(n)) => assert_eq!(n, "foo"),
+            other => panic!("expected DuplicateName, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_into_config_propagates_spec_error() {
+        let cli = Cli::try_parse_from(["rmr", "bogus-not-an-endpoint"]).unwrap();
+        assert!(matches!(cli.try_into_config(), Err(Error::Spec(_))));
+    }
+
+    #[test]
     fn parse_specs_ok() {
         let raw = vec![
             "udps:0.0.0.0:14550#bus".to_string(),
@@ -189,35 +213,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_specs_detects_duplicate_explicit_names() {
-        let raw = vec![
-            "udps:0.0.0.0:1#foo".to_string(),
-            "udps:0.0.0.0:2#foo".to_string(),
-        ];
-        match parse_specs(&raw) {
-            Err(Error::DuplicateName(n)) => assert_eq!(n, "foo"),
-            other => panic!("expected DuplicateName, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_specs_detects_duplicate_auto_names() {
-        let raw = vec!["udps:0.0.0.0:1".to_string(), "udps:0.0.0.0:1".to_string()];
-        assert!(matches!(parse_specs(&raw), Err(Error::DuplicateName(_))));
-    }
-
-    #[test]
     fn parse_specs_propagates_spec_error() {
         let raw = vec!["bogus-not-an-endpoint".to_string()];
         assert!(matches!(parse_specs(&raw), Err(Error::Spec(_))));
-    }
-
-    #[test]
-    fn log_level_to_tracing_level() {
-        assert_eq!(Level::from(LogLevel::Trace), Level::TRACE);
-        assert_eq!(Level::from(LogLevel::Debug), Level::DEBUG);
-        assert_eq!(Level::from(LogLevel::Info), Level::INFO);
-        assert_eq!(Level::from(LogLevel::Warn), Level::WARN);
-        assert_eq!(Level::from(LogLevel::Error), Level::ERROR);
     }
 }
