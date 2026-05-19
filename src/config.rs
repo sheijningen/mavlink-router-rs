@@ -20,7 +20,6 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use serde::Deserialize;
-use tracing::Level;
 
 use crate::endpoint::identity_flags::parse_bool;
 use crate::endpoint::spec::{
@@ -57,18 +56,6 @@ pub enum LogFormat {
     #[default]
     Text,
     Json,
-}
-
-impl From<LogLevel> for Level {
-    fn from(l: LogLevel) -> Self {
-        match l {
-            LogLevel::Trace => Level::TRACE,
-            LogLevel::Debug => Level::DEBUG,
-            LogLevel::Info => Level::INFO,
-            LogLevel::Warn => Level::WARN,
-            LogLevel::Error => Level::ERROR,
-        }
-    }
 }
 
 /// Canonical, fully-resolved runtime configuration consumed by [`crate::run`]
@@ -569,19 +556,6 @@ fn missing(index: usize, scheme: &'static str, field: &'static str) -> Error {
     }
 }
 
-/// Install the global tracing subscriber. Called once at process startup
-/// (CLAUDE.md "Lifecycle: Startup"). Tests that drive [`crate::run_with_cancel`]
-/// initialise their own subscriber and bypass this entry point.
-pub fn init_tracing(level: LogLevel, format: LogFormat) {
-    let builder = tracing_subscriber::fmt()
-        .with_max_level(Level::from(level))
-        .with_writer(std::io::stderr);
-    match format {
-        LogFormat::Text => builder.init(),
-        LogFormat::Json => builder.json().init(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,15 +608,6 @@ mod tests {
             ..Config::default()
         };
         assert!(matches!(c.validate(), Err(Error::DuplicateName(_))));
-    }
-
-    #[test]
-    fn log_level_to_tracing_level() {
-        assert_eq!(Level::from(LogLevel::Trace), Level::TRACE);
-        assert_eq!(Level::from(LogLevel::Debug), Level::DEBUG);
-        assert_eq!(Level::from(LogLevel::Info), Level::INFO);
-        assert_eq!(Level::from(LogLevel::Warn), Level::WARN);
-        assert_eq!(Level::from(LogLevel::Error), Level::ERROR);
     }
 
     // -- TOML parser --

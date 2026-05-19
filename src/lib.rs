@@ -2,6 +2,7 @@ pub mod cli;
 pub mod config;
 pub mod endpoint;
 pub mod error;
+pub mod log;
 pub mod mavlink;
 pub mod router;
 pub mod shutdown;
@@ -52,7 +53,7 @@ const DEFAULT_TCPS_PEER_BUDGET: usize = 64;
 /// the router's biased select then guarantees the registration is processed
 /// before any frame stamped with the new `EndpointId`.
 pub async fn run(cfg: Config) -> Result<(), Error> {
-    config::init_tracing(cfg.log_level, cfg.log_format);
+    log::init_tracing(cfg.log_level, cfg.log_format);
     let token = CancellationToken::new();
     let signal_token = token.clone();
     tokio::spawn(async move {
