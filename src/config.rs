@@ -33,10 +33,6 @@ use crate::error::Error;
 /// output).
 pub const DEFAULT_STATS_INTERVAL_SECS: u64 = 5;
 
-/// CLAUDE.md "Defaults" → `shutdown_grace_secs` (overall wall-clock shutdown
-/// budget). Per-task drain is bounded at 2 s inside this envelope.
-pub const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 5;
-
 /// CLAUDE.md "Defaults" → `dedup_ms` default (0 = dedup window disabled).
 pub const DEFAULT_DEDUP_MS: u64 = 0;
 
@@ -86,7 +82,6 @@ pub struct Config {
     pub stats: bool,
     pub stats_interval: u64,
     pub dedup_ms: u64,
-    pub shutdown_grace: u64,
     pub endpoints: Vec<EndpointSpec>,
 }
 
@@ -98,7 +93,6 @@ impl Default for Config {
             stats: false,
             stats_interval: DEFAULT_STATS_INTERVAL_SECS,
             dedup_ms: DEFAULT_DEDUP_MS,
-            shutdown_grace: DEFAULT_SHUTDOWN_GRACE_SECS,
             endpoints: Vec::new(),
         }
     }
@@ -162,8 +156,6 @@ struct ConfigFile {
     #[serde(default)]
     dedup_ms: Option<u64>,
     #[serde(default)]
-    shutdown_grace: Option<u64>,
-    #[serde(default)]
     endpoints: Vec<EndpointEntry>,
 }
 
@@ -188,9 +180,6 @@ impl ConfigFile {
         }
         if let Some(v) = self.dedup_ms {
             cfg.dedup_ms = v;
-        }
-        if let Some(v) = self.shutdown_grace {
-            cfg.shutdown_grace = v;
         }
         cfg.endpoints = endpoints;
         Ok(cfg)
@@ -605,7 +594,6 @@ mod tests {
         assert!(!c.stats);
         assert_eq!(c.stats_interval, 5);
         assert_eq!(c.dedup_ms, 0);
-        assert_eq!(c.shutdown_grace, 5);
         assert!(c.endpoints.is_empty());
     }
 
@@ -674,7 +662,6 @@ log_format = "json"
 stats = true
 stats_interval = 10
 dedup_ms = 200
-shutdown_grace = 8
 "#;
         let cfg = Config::from_toml_str(s).expect("globals-only TOML must parse");
         assert_eq!(cfg.log_level, LogLevel::Debug);
@@ -682,7 +669,6 @@ shutdown_grace = 8
         assert!(cfg.stats);
         assert_eq!(cfg.stats_interval, 10);
         assert_eq!(cfg.dedup_ms, 200);
-        assert_eq!(cfg.shutdown_grace, 8);
     }
 
     #[test]

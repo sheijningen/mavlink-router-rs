@@ -2,10 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::config::{
-    Config, DEFAULT_DEDUP_MS, DEFAULT_SHUTDOWN_GRACE_SECS, DEFAULT_STATS_INTERVAL_SECS, LogFormat,
-    LogLevel,
-};
+use crate::config::{Config, DEFAULT_DEDUP_MS, DEFAULT_STATS_INTERVAL_SECS, LogFormat, LogLevel};
 use crate::endpoint::spec::EndpointSpec;
 use crate::error::Error;
 
@@ -41,10 +38,6 @@ pub struct Cli {
     #[arg(long, default_value_t = DEFAULT_DEDUP_MS, value_name = "N")]
     pub dedup_ms: u64,
 
-    /// Overall wall-clock budget for shutdown in seconds
-    #[arg(long, default_value_t = DEFAULT_SHUTDOWN_GRACE_SECS, value_name = "N")]
-    pub shutdown_grace: u64,
-
     /// One or more endpoint specifications (scheme:body[#name][?key=val&...])
     #[arg(value_name = "ENDPOINT", required_unless_present = "config")]
     pub endpoints: Vec<String>,
@@ -78,7 +71,6 @@ impl Cli {
             stats: self.stats,
             stats_interval: self.stats_interval,
             dedup_ms: self.dedup_ms,
-            shutdown_grace: self.shutdown_grace,
             endpoints,
         };
         cfg.validate()?;
@@ -116,7 +108,6 @@ mod tests {
         assert!(!cli.stats);
         assert_eq!(cli.stats_interval, 5);
         assert_eq!(cli.dedup_ms, 0);
-        assert_eq!(cli.shutdown_grace, 5);
         assert!(cli.config.is_none());
     }
 
@@ -144,15 +135,12 @@ mod tests {
             "10",
             "--dedup-ms",
             "250",
-            "--shutdown-grace",
-            "8",
             "udps:0.0.0.0:1",
         ])
         .unwrap();
         assert!(cli.stats);
         assert_eq!(cli.stats_interval, 10);
         assert_eq!(cli.dedup_ms, 250);
-        assert_eq!(cli.shutdown_grace, 8);
     }
 
     #[test]

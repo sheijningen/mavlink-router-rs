@@ -7,10 +7,15 @@ use tracing::warn;
 /// CLAUDE.md "Per-task 2s shutdown drain": each top-level `JoinSet` entry
 /// gets up to this long after the cancellation token trips to complete its
 /// current operation (final TX flush, final frame write, `PeerRemoved`
-/// emission). Tasks still alive at this point are aborted; the caller's
-/// overall wall-clock budget (default 5s) then bounds how long we wait
-/// for the abort to land.
+/// emission). Tasks still alive at this point are aborted; the overall
+/// wall-clock budget [`SHUTDOWN_GRACE`] then bounds how long we wait for
+/// the abort to land.
 pub const PER_TASK_DRAIN: Duration = Duration::from_secs(2);
+
+/// CLAUDE.md "Shutdown timing": overall wall-clock budget on shutdown.
+/// Hardcoded — operator policy doesn't apply here, the constant is a
+/// liveness bound (after this we abort + drop), not a tunable.
+pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 pub async fn watch_for_shutdown_signal(token: CancellationToken) {
     let ctrl_c = async {

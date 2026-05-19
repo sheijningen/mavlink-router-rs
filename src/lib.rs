@@ -11,7 +11,6 @@ pub use error::Error;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -75,7 +74,6 @@ pub async fn run_with_cancel(cfg: Config, token: CancellationToken) -> Result<()
         stats: _stats,
         stats_interval: _stats_interval,
         dedup_ms,
-        shutdown_grace,
         endpoints: specs,
         log_level: _,
         log_format: _,
@@ -120,7 +118,7 @@ pub async fn run_with_cancel(cfg: Config, token: CancellationToken) -> Result<()
     token.cancelled().await;
     info!("shutdown signal received");
 
-    shutdown::shutdown(tasks, Duration::from_secs(shutdown_grace)).await;
+    shutdown::shutdown(tasks, shutdown::SHUTDOWN_GRACE).await;
     info!("rmr stopped");
 
     Ok(())
