@@ -50,6 +50,10 @@ pub struct Cli {
     #[arg(long, value_name = "N")]
     pub dedup_ms: Option<u64>,
 
+    /// Suppress the INFO dump of the fully-merged config at startup
+    #[arg(long)]
+    pub no_config_log: bool,
+
     /// One or more endpoint specifications (scheme:body[#name][?key=val&...])
     #[arg(value_name = "ENDPOINT", required_unless_present = "config")]
     pub endpoints: Vec<String>,
@@ -72,6 +76,7 @@ pub struct CliConfig {
     pub stats: Option<bool>,
     pub stats_interval_secs: Option<u64>,
     pub dedup_ms: Option<u64>,
+    pub no_config_log: Option<bool>,
     pub endpoints: Vec<EndpointSpec>,
 }
 
@@ -87,14 +92,17 @@ impl Cli {
         let endpoints = parse_specs(&self.endpoints)?;
         // `--stats` is a clap flag (no value), so absence is `false`, not
         // `None`. To preserve "unset means defer to TOML / default", treat
-        // operator-set-to-true as Some(true) and absent as None.
+        // operator-set-to-true as Some(true) and absent as None. Same for
+        // `--no-config-log`: absent stays `None`, present means "force off".
         let stats = if self.stats { Some(true) } else { None };
+        let no_config_log = if self.no_config_log { Some(true) } else { None };
         Ok(CliConfig {
             log_level: self.log_level,
             log_format: self.log_format,
             stats,
             stats_interval_secs: self.stats_interval_secs,
             dedup_ms: self.dedup_ms,
+            no_config_log,
             endpoints,
         })
     }
@@ -232,6 +240,17 @@ mod tests {
         assert!(cfg.stats.is_none());
         assert!(cfg.stats_interval_secs.is_none());
         assert!(cfg.dedup_ms.is_none());
+        assert!(cfg.no_config_log.is_none());
+    }
+
+    #[test]
+    fn no_config_log_flag_present_becomes_some_true() {
+        // `--no-config-log` is a bool flag that, when present, suppresses
+        // the merged-config INFO event. Absence stays `None` so the TOML
+        // value (if any) can win.
+        let cli = Cli::try_parse_from(["rmr", "--no-config-log", "udps:0.0.0.0:1#a"]).unwrap();
+        let cfg = cli.into_cli_config().expect("conversion must succeed");
+        assert_eq!(cfg.no_config_log, Some(true));
     }
 
     #[test]

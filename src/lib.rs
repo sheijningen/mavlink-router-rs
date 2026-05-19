@@ -67,6 +67,10 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
 /// initialised by the caller. Used by integration tests that need to drive
 /// shutdown explicitly; production code path goes through [`run`].
 pub async fn run_with_cancel(cfg: Config, token: CancellationToken) -> Result<(), Error> {
+    if !cfg.no_config_log {
+        log_merged_config(&cfg);
+    }
+
     // Exhaustive destructure: adding a Config field forces a touch here, so
     // we can't silently grow the surface without wiring the new knob into
     // the spawner. `stats` / `stats_interval_secs` are deliberately unused
@@ -78,6 +82,7 @@ pub async fn run_with_cancel(cfg: Config, token: CancellationToken) -> Result<()
         endpoints: specs,
         log_level: _,
         log_format: _,
+        no_config_log: _,
     } = cfg;
 
     let endpoint_count = specs.len();
@@ -136,6 +141,23 @@ fn endpoint_kind_label(kind: &EndpointKind) -> &'static str {
         EndpointKind::TcpServer(_) => "tcps",
         EndpointKind::TcpClient(_) => "tcpc",
     }
+}
+
+/// Emit one INFO event capturing every resolved global plus the per-endpoint
+/// table rendered via `Debug`, so every defaulted-in `?key=val` is visible
+/// in the line. Revisit if any future config field carries a secret.
+fn log_merged_config(cfg: &Config) {
+    info!(
+        log_level = ?cfg.log_level,
+        log_format = ?cfg.log_format,
+        stats = cfg.stats,
+        stats_interval_secs = cfg.stats_interval_secs,
+        dedup_ms = cfg.dedup_ms,
+        no_config_log = cfg.no_config_log,
+        endpoint_count = cfg.endpoints.len(),
+        endpoints = ?cfg.endpoints,
+        "merged config",
+    );
 }
 
 /// Per-spec [`IdentityFlags`] borrow — every `EndpointKind` carries one on

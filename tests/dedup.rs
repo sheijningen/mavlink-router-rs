@@ -25,6 +25,7 @@ fn config_with_endpoints_and_dedup(endpoints: Vec<String>, dedup_ms: u64) -> Con
         stats: false,
         stats_interval_secs: 5,
         dedup_ms,
+        no_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
     };
     cfg.validate()

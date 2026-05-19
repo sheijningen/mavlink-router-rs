@@ -36,6 +36,7 @@ pub struct TomlConfig {
     pub stats: Option<bool>,
     pub stats_interval_secs: Option<u64>,
     pub dedup_ms: Option<u64>,
+    pub no_config_log: Option<bool>,
     pub endpoints: Vec<EndpointSpec>,
 }
 
@@ -85,6 +86,8 @@ struct TomlFile {
     #[serde(default)]
     dedup_ms: Option<u64>,
     #[serde(default)]
+    no_config_log: Option<bool>,
+    #[serde(default)]
     endpoints: Vec<TomlEndpoint>,
 }
 
@@ -100,6 +103,7 @@ impl TomlFile {
             stats: self.stats,
             stats_interval_secs: self.stats_interval_secs,
             dedup_ms: self.dedup_ms,
+            no_config_log: self.no_config_log,
             endpoints,
         })
     }

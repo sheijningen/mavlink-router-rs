@@ -74,6 +74,7 @@ pub struct Config {
     pub stats: bool,
     pub stats_interval_secs: u64,
     pub dedup_ms: u64,
+    pub no_config_log: bool,
     pub endpoints: Vec<EndpointSpec>,
 }
 
@@ -85,6 +86,7 @@ impl Default for Config {
             stats: false,
             stats_interval_secs: DEFAULT_STATS_INTERVAL_SECS,
             dedup_ms: DEFAULT_DEDUP_MS,
+            no_config_log: false,
             endpoints: Vec::new(),
         }
     }
@@ -139,6 +141,7 @@ impl Config {
                 .or(toml.stats_interval_secs)
                 .unwrap_or(DEFAULT_STATS_INTERVAL_SECS),
             dedup_ms: cli.dedup_ms.or(toml.dedup_ms).unwrap_or(DEFAULT_DEDUP_MS),
+            no_config_log: cli.no_config_log.or(toml.no_config_log).unwrap_or(false),
             endpoints,
         };
         config.validate()?;
@@ -211,6 +214,7 @@ mod tests {
         assert!(!c.stats);
         assert_eq!(c.stats_interval_secs, 5);
         assert_eq!(c.dedup_ms, 0);
+        assert!(!c.no_config_log);
         assert!(c.endpoints.is_empty());
     }
 
@@ -254,6 +258,7 @@ mod tests {
             stats: Some(false),
             stats_interval_secs: Some(7),
             dedup_ms: Some(50),
+            no_config_log: Some(false),
             endpoints: vec![],
         });
         let cli = CliConfig {
@@ -262,6 +267,7 @@ mod tests {
             stats: Some(true),
             stats_interval_secs: Some(15),
             dedup_ms: Some(250),
+            no_config_log: Some(true),
             endpoints: vec![ep("udps:0.0.0.0:1#a")],
         };
         let outcome = Config::merge(toml, cli).expect("merge must succeed");
@@ -271,6 +277,7 @@ mod tests {
         assert!(cfg.stats);
         assert_eq!(cfg.stats_interval_secs, 15);
         assert_eq!(cfg.dedup_ms, 250);
+        assert!(cfg.no_config_log);
         assert!(outcome.overridden_names.is_empty());
     }
 
@@ -282,6 +289,7 @@ mod tests {
             stats: Some(true),
             stats_interval_secs: None,
             dedup_ms: Some(99),
+            no_config_log: Some(true),
             endpoints: vec![],
         });
         let cli = CliConfig {
@@ -294,6 +302,7 @@ mod tests {
         assert!(cfg.stats);
         assert_eq!(cfg.stats_interval_secs, DEFAULT_STATS_INTERVAL_SECS); // default fell through
         assert_eq!(cfg.dedup_ms, 99);
+        assert!(cfg.no_config_log);
     }
 
     #[test]
@@ -308,6 +317,24 @@ mod tests {
         assert!(!cfg.stats);
         assert_eq!(cfg.stats_interval_secs, DEFAULT_STATS_INTERVAL_SECS);
         assert_eq!(cfg.dedup_ms, DEFAULT_DEDUP_MS);
+        assert!(!cfg.no_config_log);
+    }
+
+    #[test]
+    fn merge_no_config_log_toml_fallthrough() {
+        // Operator omitted --no-config-log on the CLI but set
+        // `no_config_log = true` in TOML — the TOML value must win.
+        let toml = Some(TomlConfig {
+            no_config_log: Some(true),
+            endpoints: vec![],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig {
+            endpoints: vec![ep("udps:0.0.0.0:1#a")],
+            ..CliConfig::default()
+        };
+        let cfg = Config::merge(toml, cli).expect("merge must succeed").config;
+        assert!(cfg.no_config_log);
     }
 
     // -- merge: endpoints --

@@ -22,6 +22,7 @@ fn config_with_endpoints(endpoints: Vec<String>) -> Config {
         stats: false,
         stats_interval_secs: 5,
         dedup_ms: 0,
+        no_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
     };
     cfg.validate()
