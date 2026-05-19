@@ -131,6 +131,7 @@ impl SeqTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::time::Duration;
 
     fn at(ms: u64) -> Instant {
@@ -153,55 +154,40 @@ mod tests {
         }
     }
 
-    #[test]
-    fn small_gap_returns_lost_count() {
-        let mut t = SeqTracker::new(4);
-        t.observe(1, 1, 10, at(0));
-        // last=10, seq=13 → gap=(13-10-1) mod 256 = 2 frames lost.
-        assert_eq!(t.observe(1, 1, 13, at(1)), 2);
+    /// Gap classification under varied `(last_seq, current_seq, threshold)`:
+    /// each case primes the tracker with `last_seq`, then observes
+    /// `current_seq` and asserts the returned loss count. Covers small gap,
+    /// restart-sized gap, duplicate, backward, and both wraparound branches
+    /// in one matrix so a single regression in `observe` surfaces every
+    /// affected case on the same `cargo test` invocation.
+    #[rstest]
+    #[case::small_gap(10, 13, DEFAULT_SEQ_GAP_THRESHOLD, 2)]
+    #[case::large_gap_classified_as_restart(10, 200, 64, 0)]
+    #[case::duplicate_seq_classified_as_restart(50, 50, 64, 0)]
+    #[case::backward_seq_classified_as_restart(50, 49, 64, 0)]
+    #[case::wraparound_consecutive(255, 0, DEFAULT_SEQ_GAP_THRESHOLD, 0)]
+    #[case::wraparound_small_gap(254, 2, DEFAULT_SEQ_GAP_THRESHOLD, 3)]
+    fn observe_returns_expected_loss(
+        #[case] last_seq: u8,
+        #[case] current_seq: u8,
+        #[case] threshold: u8,
+        #[case] expected_loss: u32,
+    ) {
+        let mut t = SeqTracker::with_threshold(4, threshold);
+        t.observe(1, 1, last_seq, at(0));
+        assert_eq!(t.observe(1, 1, current_seq, at(1)), expected_loss);
     }
 
     #[test]
-    fn large_gap_resets_without_bump() {
+    fn restart_resets_last_seq_to_current() {
+        // Companion to the large-gap case above: after a restart-sized gap
+        // is observed, `last_seq` must be updated to the post-restart seq —
+        // not left pointing at the pre-restart value — so the next
+        // consecutive observation is correctly classified.
         let mut t = SeqTracker::with_threshold(4, 64);
         t.observe(1, 1, 10, at(0));
-        // last=10, seq=200 → gap=189 → ≥ threshold(64) → restart.
         assert_eq!(t.observe(1, 1, 200, at(1)), 0);
-        // After the restart, last_seq is 200. seq=201 is consecutive.
         assert_eq!(t.observe(1, 1, 201, at(2)), 0);
-    }
-
-    #[test]
-    fn duplicate_seq_classified_as_restart() {
-        // gap = 255 when seq == last_seq — far above threshold.
-        let mut t = SeqTracker::with_threshold(4, 64);
-        t.observe(1, 1, 50, at(0));
-        assert_eq!(t.observe(1, 1, 50, at(1)), 0);
-    }
-
-    #[test]
-    fn backward_seq_classified_as_restart() {
-        let mut t = SeqTracker::with_threshold(4, 64);
-        t.observe(1, 1, 50, at(0));
-        // seq=49 → gap=254. >= threshold(64) → restart.
-        assert_eq!(t.observe(1, 1, 49, at(1)), 0);
-    }
-
-    #[test]
-    fn wraparound_consecutive_returns_zero() {
-        let mut t = SeqTracker::new(4);
-        t.observe(1, 1, 255, at(0));
-        // last=255, seq=0 → gap=(0-255-1) mod 256 = 0. Consecutive across
-        // the wrap boundary.
-        assert_eq!(t.observe(1, 1, 0, at(1)), 0);
-    }
-
-    #[test]
-    fn wraparound_small_gap_returns_lost_count() {
-        let mut t = SeqTracker::new(4);
-        t.observe(1, 1, 254, at(0));
-        // last=254, seq=2 → gap=(2-254-1) mod 256 = 3.
-        assert_eq!(t.observe(1, 1, 2, at(1)), 3);
     }
 
     #[test]

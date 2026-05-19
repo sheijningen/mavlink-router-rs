@@ -249,8 +249,9 @@ mod tests {
     use super::{Scheme, sanitize_for_name, validate_name};
     use crate::endpoint::spec::{
         EndpointKind, EndpointSpec, SerialEndpoint, SpecError, TcpClientEndpoint,
-        TcpServerEndpoint, UdpClientEndpoint, UdpServerEndpoint,
+        UdpServerEndpoint,
     };
+    use rstest::rstest;
 
     fn parse_ok(input: &str) -> EndpointSpec {
         EndpointSpec::parse(input).unwrap_or_else(|e| panic!("expected ok for {input:?}, got {e}"))
@@ -274,20 +275,6 @@ mod tests {
         }
     }
 
-    fn as_udpc(spec: &EndpointSpec) -> &UdpClientEndpoint {
-        match &spec.kind {
-            EndpointKind::UdpClient(e) => e,
-            other => panic!("expected udpc, got {other:?}"),
-        }
-    }
-
-    fn as_tcps(spec: &EndpointSpec) -> &TcpServerEndpoint {
-        match &spec.kind {
-            EndpointKind::TcpServer(e) => e,
-            other => panic!("expected tcps, got {other:?}"),
-        }
-    }
-
     fn as_tcpc(spec: &EndpointSpec) -> &TcpClientEndpoint {
         match &spec.kind {
             EndpointKind::TcpClient(e) => e,
@@ -297,49 +284,28 @@ mod tests {
 
     // -- serial: body parser --
 
-    #[test]
-    fn serial_colon_form() {
-        let s = parse_ok("serial:/dev/ttyUSB0:921600");
+    /// Body grammar matrix: every `(path, baud)` pair must round-trip under
+    /// both `:` and `,` separators, across Unix paths, Windows COM names,
+    /// UNC paths, and by-id symlinks. The auto-name derivation for the
+    /// colon-form Unix path is covered separately by
+    /// `auto_names_satisfy_explicit_name_regex` and
+    /// `sanitize_for_name_replaces_disallowed_chars`.
+    #[rstest]
+    #[case::colon_form_unix("serial:/dev/ttyUSB0:921600", "/dev/ttyUSB0", 921600)]
+    #[case::comma_form_unix("serial:/dev/ttyUSB0,921600", "/dev/ttyUSB0", 921600)]
+    #[case::colon_form_windows_com("serial:COM3:115200", "COM3", 115200)]
+    #[case::comma_form_windows_com("serial:COM3,115200", "COM3", 115200)]
+    #[case::windows_unc_path(r"serial:\\.\COM10:115200", r"\\.\COM10", 115200)]
+    #[case::by_id_symlink(
+        "serial:/dev/serial/by-id/usb-FTDI-port0:57600",
+        "/dev/serial/by-id/usb-FTDI-port0",
+        57600
+    )]
+    fn serial_body_parses(#[case] input: &str, #[case] path: &str, #[case] baud: u32) {
+        let s = parse_ok(input);
         let e = as_serial(&s);
-        assert_eq!(e.path, "/dev/ttyUSB0");
-        assert_eq!(e.baud, 921600);
-        assert_eq!(s.name, "serial-_dev_ttyUSB0-921600");
-    }
-
-    #[test]
-    fn serial_comma_form() {
-        let s = parse_ok("serial:/dev/ttyUSB0,921600");
-        let e = as_serial(&s);
-        assert_eq!(e.path, "/dev/ttyUSB0");
-        assert_eq!(e.baud, 921600);
-    }
-
-    #[test]
-    fn serial_windows_com_colon() {
-        let e = as_serial(&parse_ok("serial:COM3:115200")).clone();
-        assert_eq!(e.path, "COM3");
-        assert_eq!(e.baud, 115200);
-    }
-
-    #[test]
-    fn serial_windows_com_comma() {
-        let e = as_serial(&parse_ok("serial:COM3,115200")).clone();
-        assert_eq!(e.path, "COM3");
-        assert_eq!(e.baud, 115200);
-    }
-
-    #[test]
-    fn serial_windows_unc_path() {
-        let e = as_serial(&parse_ok(r"serial:\\.\COM10:115200")).clone();
-        assert_eq!(e.path, r"\\.\COM10");
-        assert_eq!(e.baud, 115200);
-    }
-
-    #[test]
-    fn serial_by_id_symlink() {
-        let e = as_serial(&parse_ok("serial:/dev/serial/by-id/usb-FTDI-port0:57600")).clone();
-        assert_eq!(e.path, "/dev/serial/by-id/usb-FTDI-port0");
-        assert_eq!(e.baud, 57600);
+        assert_eq!(e.path, path);
+        assert_eq!(e.baud, baud);
     }
 
     #[test]
@@ -348,43 +314,19 @@ mod tests {
         assert_eq!(s.name, "vehicle");
     }
 
-    #[test]
-    fn serial_no_separator_fails() {
+    /// `parse_serial_body` rejection matrix: missing separator, non-numeric
+    /// baud, empty path, and zero baud all produce
+    /// `SpecError::MalformedBody { scheme: Serial }`. Pinned together so a
+    /// regression that flips the order of checks (e.g. parsing baud before
+    /// validating the path) surfaces the affected case by name.
+    #[rstest]
+    #[case::no_separator("serial:COM3")]
+    #[case::non_numeric_baud("serial:/dev/foo:abc")]
+    #[case::empty_path("serial::921600")]
+    #[case::zero_baud("serial:/dev/foo:0")]
+    fn serial_body_rejects_malformed(#[case] input: &str) {
         assert!(matches!(
-            parse_err("serial:COM3"),
-            SpecError::MalformedBody {
-                scheme: Scheme::Serial,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn serial_non_numeric_baud_fails() {
-        assert!(matches!(
-            parse_err("serial:/dev/foo:abc"),
-            SpecError::MalformedBody {
-                scheme: Scheme::Serial,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn serial_empty_path_fails() {
-        assert!(matches!(
-            parse_err("serial::921600"),
-            SpecError::MalformedBody {
-                scheme: Scheme::Serial,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn serial_zero_baud_fails() {
-        assert!(matches!(
-            parse_err("serial:/dev/foo:0"),
+            parse_err(input),
             SpecError::MalformedBody {
                 scheme: Scheme::Serial,
                 ..
@@ -394,86 +336,49 @@ mod tests {
 
     // -- host:port body parser (udps/udpc/tcps/tcpc) --
 
-    #[test]
-    fn udps_ipv4() {
-        let s = parse_ok("udps:0.0.0.0:14550");
-        let e = as_udps(&s);
-        assert_eq!(e.bind_addr.to_string(), "0.0.0.0:14550");
-        assert_eq!(s.name, "udps-0_0_0_0-14550");
-    }
-
-    #[test]
-    fn udps_ipv6_dual_stack() {
-        let s = parse_ok("udps:[::]:14550");
-        let e = as_udps(&s);
-        assert_eq!(e.bind_addr.to_string(), "[::]:14550");
-        assert_eq!(s.name, "udps-__-14550");
-    }
-
-    #[test]
-    fn udpc_ipv4() {
-        let s = parse_ok("udpc:192.168.1.5:14550");
-        let e = as_udpc(&s);
-        assert_eq!(e.host, "192.168.1.5");
-        assert_eq!(e.port, 14550);
-    }
-
-    #[test]
-    fn tcps_ipv6_bracketed() {
-        let s = parse_ok("tcps:[2001:db8::1]:5760");
-        let e = as_tcps(&s);
-        assert_eq!(e.bind_addr.to_string(), "[2001:db8::1]:5760");
-    }
-
-    /// CLAUDE.md "malformed addresses are fatal" + the locked-decision rule
-    /// that `tcps:`/`udps:` accept only IP literals: a hostname on the
-    /// listen side must be rejected at parse time, not at spawn time.
-    #[test]
-    fn tcps_hostname_rejected_at_parse() {
-        let err = parse_err("tcps:localhost:5760");
-        match err {
-            SpecError::MalformedBody { scheme, reason, .. } => {
-                assert_eq!(scheme, Scheme::TcpServer);
-                assert!(
-                    reason.contains("must be an IP literal"),
-                    "unexpected reason: {reason}"
-                );
-            }
-            other => panic!("expected MalformedBody, got {other:?}"),
+    /// Listen-side address parser: IPv4 and IPv6 literals round-trip into
+    /// the stored `bind_addr`. The two `udps:` cases also pin the
+    /// auto-derived name, since the `udps-__-14550` form (IPv6 unspecified
+    /// → `__`) is the only place the sanitiser's behaviour on `:` is
+    /// exercised at the EndpointSpec layer.
+    #[rstest]
+    #[case::udps_ipv4("udps:0.0.0.0:14550", "0.0.0.0:14550", Some("udps-0_0_0_0-14550"))]
+    #[case::udps_ipv6_dual_stack("udps:[::]:14550", "[::]:14550", Some("udps-__-14550"))]
+    #[case::tcps_ipv6_bracketed("tcps:[2001:db8::1]:5760", "[2001:db8::1]:5760", None)]
+    fn listen_addr_parses(
+        #[case] input: &str,
+        #[case] expected_addr: &str,
+        #[case] expected_name: Option<&str>,
+    ) {
+        let s = parse_ok(input);
+        let bind = match &s.kind {
+            EndpointKind::UdpServer(e) => e.bind_addr,
+            EndpointKind::TcpServer(e) => e.bind_addr,
+            other => panic!("expected listen-side endpoint, got {other:?}"),
+        };
+        assert_eq!(bind.to_string(), expected_addr);
+        if let Some(n) = expected_name {
+            assert_eq!(s.name, n);
         }
     }
 
-    #[test]
-    fn udps_hostname_rejected_at_parse() {
-        let err = parse_err("udps:gcs.local:14550");
-        match err {
-            SpecError::MalformedBody { scheme, reason, .. } => {
-                assert_eq!(scheme, Scheme::UdpServer);
-                assert!(
-                    reason.contains("must be an IP literal"),
-                    "unexpected reason: {reason}"
-                );
-            }
-            other => panic!("expected MalformedBody, got {other:?}"),
-        }
-    }
-
-    /// `tcpc:` and `udpc:` still accept hostnames (DNS resolved at
-    /// runtime); parse-time validation only applies to the listen side.
-    #[test]
-    fn tcpc_hostname_still_accepted() {
-        let s = parse_ok("tcpc:companion.local:5760");
-        let e = as_tcpc(&s);
-        assert_eq!(e.host, "companion.local");
-        assert_eq!(e.port, 5760);
-    }
-
-    #[test]
-    fn udpc_hostname_still_accepted() {
-        let s = parse_ok("udpc:gcs.example:14550");
-        let e = as_udpc(&s);
-        assert_eq!(e.host, "gcs.example");
-        assert_eq!(e.port, 14550);
+    /// Dial-side body parser: `tcpc:` and `udpc:` accept hostnames (DNS
+    /// resolved at runtime); the listen-side IP-literal restriction does
+    /// not apply here. The `tcpc:` hostname case with explicit `#name` is
+    /// kept separate (below) to assert name propagation alongside the body.
+    #[rstest]
+    #[case::udpc_ipv4("udpc:192.168.1.5:14550", "192.168.1.5", 14550)]
+    #[case::tcpc_hostname("tcpc:companion.local:5760", "companion.local", 5760)]
+    #[case::udpc_hostname("udpc:gcs.example:14550", "gcs.example", 14550)]
+    fn dial_host_port_parses(#[case] input: &str, #[case] expected_host: &str, #[case] expected_port: u16) {
+        let s = parse_ok(input);
+        let (host, port) = match &s.kind {
+            EndpointKind::UdpClient(e) => (e.host.as_str(), e.port),
+            EndpointKind::TcpClient(e) => (e.host.as_str(), e.port),
+            other => panic!("expected dial-side endpoint, got {other:?}"),
+        };
+        assert_eq!(host, expected_host);
+        assert_eq!(port, expected_port);
     }
 
     #[test]
@@ -485,60 +390,38 @@ mod tests {
         assert_eq!(s.name, "vehicle");
     }
 
-    #[test]
-    fn udps_no_port_fails() {
-        assert!(matches!(
-            parse_err("udps:nohost"),
-            SpecError::MalformedBody { .. }
-        ));
-    }
-
-    #[test]
-    fn udps_bad_port_fails() {
-        assert!(matches!(
-            parse_err("udps:foo:abc"),
-            SpecError::MalformedBody { .. }
-        ));
-    }
-
-    #[test]
-    fn udps_port_overflow_fails() {
-        assert!(matches!(
-            parse_err("udps:foo:99999"),
-            SpecError::MalformedBody { .. }
-        ));
-    }
-
-    #[test]
-    fn udps_empty_host_fails() {
-        assert!(matches!(
-            parse_err("udps::14550"),
-            SpecError::MalformedBody { .. }
-        ));
-    }
-
-    #[test]
-    fn ipv6_unclosed_fails() {
-        assert!(matches!(
-            parse_err("udps:[::1"),
-            SpecError::MalformedBody { .. }
-        ));
-    }
-
-    #[test]
-    fn ipv6_no_port_after_bracket_fails() {
-        assert!(matches!(
-            parse_err("udps:[::1]"),
-            SpecError::MalformedBody { .. }
-        ));
-    }
-
-    #[test]
-    fn ipv6_garbage_after_bracket_fails() {
-        assert!(matches!(
-            parse_err("udps:[::1]x14550"),
-            SpecError::MalformedBody { .. }
-        ));
+    /// `host:port` rejection matrix. The first 7 cases assert
+    /// `SpecError::MalformedBody` only (the structural rejections from
+    /// `parse_host_port`). The last 2 also assert the `must be an IP
+    /// literal` reason: CLAUDE.md "malformed addresses are fatal" + the
+    /// listen-side IP-literal-only rule means a hostname must surface at
+    /// parse time, with a message specific enough to be greppable, so the
+    /// reason substring is part of the contract.
+    #[rstest]
+    #[case::udps_no_port("udps:nohost", None)]
+    #[case::udps_bad_port("udps:foo:abc", None)]
+    #[case::udps_port_overflow("udps:foo:99999", None)]
+    #[case::udps_empty_host("udps::14550", None)]
+    #[case::ipv6_unclosed("udps:[::1", None)]
+    #[case::ipv6_no_port_after_bracket("udps:[::1]", None)]
+    #[case::ipv6_garbage_after_bracket("udps:[::1]x14550", None)]
+    #[case::tcps_hostname_must_be_ip("tcps:localhost:5760", Some("must be an IP literal"))]
+    #[case::udps_hostname_must_be_ip("udps:gcs.local:14550", Some("must be an IP literal"))]
+    fn host_port_body_rejects_malformed(
+        #[case] input: &str,
+        #[case] expected_reason_substr: Option<&str>,
+    ) {
+        match parse_err(input) {
+            SpecError::MalformedBody { reason, .. } => {
+                if let Some(needle) = expected_reason_substr {
+                    assert!(
+                        reason.contains(needle),
+                        "reason {reason:?} should contain {needle:?}"
+                    );
+                }
+            }
+            other => panic!("expected MalformedBody for {input:?}, got {other:?}"),
+        }
     }
 
     // -- validate_name / default_name / sanitize_for_name --

@@ -340,7 +340,9 @@ fn scheme_from_toml_type(raw: &str, index: usize) -> Result<Scheme, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::endpoint::filters::Filters;
     use crate::endpoint::spec::EndpointKind;
+    use rstest::rstest;
 
     #[test]
     fn empty_yields_no_endpoints() {
@@ -501,62 +503,87 @@ totally_made_up = 1
         }
     }
 
-    #[test]
-    fn serial_with_bind_rejected() {
-        let s = r#"
-[[endpoints]]
-type = "serial"
-path = "/dev/ttyUSB0"
-baud = 115200
-bind = "0.0.0.0:14550"
-"#;
-        match TomlConfig::parse_str(s) {
+    /// Wrong-scheme field rejection matrix. Each case sets exactly one
+    /// scheme-specific field on the wrong `type`; per the locked
+    /// `disallowed_field_takes_priority_over_missing_field` decision the
+    /// `reject_disallowed_fields` check runs before `synthesize_body`, so
+    /// none of the cases need to also provide the scheme's required body
+    /// fields (the existing `disallowed_field_takes_priority_over_missing_field`
+    /// test pins that ordering separately). Spans every `(scheme, field)`
+    /// pair the previous hand-rolled tests left uncovered: every disallowed
+    /// field is rejected on at least one scheme, and every scheme has at
+    /// least one disallowed-field case.
+    #[rstest]
+    #[case::serial_with_bind("serial", "bind", r#""0.0.0.0:1""#)]
+    #[case::serial_with_idle_secs("serial", "idle_secs", "30")]
+    #[case::udps_with_host("udps", "host", r#""gcs.local""#)]
+    #[case::udps_with_flow_control("udps", "flow_control", r#""rtscts""#)]
+    #[case::udps_with_latch_idle_secs("udps", "latch_idle_secs", "30")]
+    #[case::tcps_with_host("tcps", "host", r#""gcs.local""#)]
+    #[case::tcps_with_idle_secs("tcps", "idle_secs", "30")]
+    #[case::udpc_with_bind("udpc", "bind", r#""0.0.0.0:1""#)]
+    #[case::udpc_with_idle_secs("udpc", "idle_secs", "30")]
+    #[case::tcpc_with_latch_idle_secs("tcpc", "latch_idle_secs", "30")]
+    #[case::tcpc_with_flow_control("tcpc", "flow_control", r#""rtscts""#)]
+    fn wrong_scheme_field_rejected(
+        #[case] type_name: &str,
+        #[case] wrong_field: &str,
+        #[case] toml_value: &str,
+    ) {
+        let s = format!(
+            "[[endpoints]]\ntype = \"{type_name}\"\n{wrong_field} = {toml_value}\n"
+        );
+        match TomlConfig::parse_str(&s) {
             Err(Error::ConfigSchema { index, reason }) => {
                 assert_eq!(index, 0);
-                assert!(reason.contains("'bind'"), "reason: {reason}");
-                assert!(reason.contains("'serial'"), "reason: {reason}");
+                assert!(
+                    reason.contains(&format!("'{wrong_field}'")),
+                    "reason `{reason}` should quote the offending field `{wrong_field}`"
+                );
+                assert!(
+                    reason.contains(&format!("'{type_name}'")),
+                    "reason `{reason}` should quote the scheme `{type_name}`"
+                );
             }
-            other => panic!("expected ConfigSchema, got {other:?}"),
+            other => panic!("expected ConfigSchema for {type_name}+{wrong_field}, got {other:?}"),
         }
     }
 
-    #[test]
-    fn udps_with_host_rejected() {
-        let s = r#"
-[[endpoints]]
-type = "udps"
-bind = "0.0.0.0:14550"
-host = "gcs.local"
-"#;
-        match TomlConfig::parse_str(s) {
-            Err(Error::ConfigSchema { reason, .. }) => assert!(reason.contains("'host'")),
-            other => panic!("expected ConfigSchema, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn udpc_missing_port_rejected() {
-        let s = r#"
-[[endpoints]]
-type = "udpc"
-host = "gcs.local"
-"#;
-        match TomlConfig::parse_str(s) {
-            Err(Error::ConfigSchema { reason, .. }) => assert!(reason.contains("'port'")),
-            other => panic!("expected ConfigSchema, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn serial_missing_baud_rejected() {
-        let s = r#"
-[[endpoints]]
-type = "serial"
-path = "/dev/ttyUSB0"
-"#;
-        match TomlConfig::parse_str(s) {
-            Err(Error::ConfigSchema { reason, .. }) => assert!(reason.contains("'baud'")),
-            other => panic!("expected ConfigSchema, got {other:?}"),
+    /// Missing-required-field rejection matrix. Each case provides the
+    /// scheme plus all-but-one of its required body fields; the synthesizer
+    /// must surface a `ConfigSchema` error naming the missing field. Covers
+    /// every `(scheme, required_field)` pair the previous hand-rolled tests
+    /// left uncovered (only `serial`-missing-`baud` and `udpc`-missing-`port`
+    /// existed; now `udps`/`tcps` missing `bind`, all four `udpc`/`tcpc`
+    /// missing combinations, and `serial` missing `path` are pinned).
+    #[rstest]
+    #[case::serial_no_path("serial", "baud = 115200", "path")]
+    #[case::serial_no_baud("serial", r#"path = "/dev/x""#, "baud")]
+    #[case::udps_no_bind("udps", "", "bind")]
+    #[case::tcps_no_bind("tcps", "", "bind")]
+    #[case::udpc_no_host("udpc", "port = 1", "host")]
+    #[case::udpc_no_port("udpc", r#"host = "h""#, "port")]
+    #[case::tcpc_no_host("tcpc", "port = 1", "host")]
+    #[case::tcpc_no_port("tcpc", r#"host = "h""#, "port")]
+    fn missing_required_field_rejected(
+        #[case] type_name: &str,
+        #[case] other_fields: &str,
+        #[case] missing_field: &str,
+    ) {
+        let s = format!(
+            "[[endpoints]]\ntype = \"{type_name}\"\n{other_fields}\n"
+        );
+        match TomlConfig::parse_str(&s) {
+            Err(Error::ConfigSchema { index, reason }) => {
+                assert_eq!(index, 0);
+                assert!(
+                    reason.contains(&format!("'{missing_field}'")),
+                    "reason `{reason}` should quote the missing field `{missing_field}`"
+                );
+            }
+            other => panic!(
+                "expected ConfigSchema for {type_name} missing {missing_field}, got {other:?}"
+            ),
         }
     }
 
@@ -803,6 +830,92 @@ bind = "0.0.0.0:14551"
             }
             other => panic!("expected ConfigParse from duplicate key, got {other:?}"),
         }
+    }
+
+    fn filter_axis_count(f: &Filters, axis: &str) -> usize {
+        match axis {
+            "allow_msgid_in" => f.allow_msgid_in.len(),
+            "block_msgid_in" => f.block_msgid_in.len(),
+            "allow_msgid_out" => f.allow_msgid_out.len(),
+            "block_msgid_out" => f.block_msgid_out.len(),
+            "allow_src_sys_in" => f.allow_src_sys_in.len(),
+            "block_src_sys_in" => f.block_src_sys_in.len(),
+            "allow_src_sys_out" => f.allow_src_sys_out.len(),
+            "block_src_sys_out" => f.block_src_sys_out.len(),
+            "allow_src_comp_in" => f.allow_src_comp_in.len(),
+            "block_src_comp_in" => f.block_src_comp_in.len(),
+            "allow_src_comp_out" => f.allow_src_comp_out.len(),
+            "block_src_comp_out" => f.block_src_comp_out.len(),
+            other => panic!("unknown filter axis: {other}"),
+        }
+    }
+
+    /// Every filter knob declared on `TomlEndpoint` must round-trip into the
+    /// matching `Filters` axis: the previous tests only exercised 2 of the
+    /// 12 axes (`block_msgid_in`, `allow_src_sys_out`) inside
+    /// `udps_endpoint_with_filters`, so a regression in `collect_pairs` that
+    /// dropped (or swapped) any of the other 10 would have gone unnoticed.
+    /// Each case sets exactly one axis with a 2-range string (`"1,5-10"`,
+    /// valid for both `MsgIdRange` and `U8Range`) and asserts the resulting
+    /// axis Vec is length 2 — proves the knob lands on the right axis, not
+    /// merely "somewhere".
+    #[rstest]
+    #[case("allow_msgid_in")]
+    #[case("block_msgid_in")]
+    #[case("allow_msgid_out")]
+    #[case("block_msgid_out")]
+    #[case("allow_src_sys_in")]
+    #[case("block_src_sys_in")]
+    #[case("allow_src_sys_out")]
+    #[case("block_src_sys_out")]
+    #[case("allow_src_comp_in")]
+    #[case("block_src_comp_in")]
+    #[case("allow_src_comp_out")]
+    #[case("block_src_comp_out")]
+    fn each_filter_knob_round_trips(#[case] axis: &str) {
+        let s = format!(
+            "[[endpoints]]\ntype = \"tcpc\"\nhost = \"h\"\nport = 1\n{axis} = \"1,5-10\"\n"
+        );
+        let cfg = TomlConfig::parse_str(&s).expect("must parse");
+        let ep = match &cfg.endpoints[0].kind {
+            EndpointKind::TcpClient(e) => e,
+            other => panic!("expected tcpc, got {other:?}"),
+        };
+        assert_eq!(
+            filter_axis_count(&ep.identity.filters, axis),
+            2,
+            "filter knob `{axis}` did not land on its named axis"
+        );
+    }
+
+    #[test]
+    fn explicit_stats_false_distinguishable_from_unset() {
+        // CLAUDE.md merge: `Some(false)` falls through to CLI overrides /
+        // defaults differently than `None`. Pin that an explicit
+        // `stats = false` in TOML survives parsing as `Some(false)` so the
+        // merge step can act on the operator's choice.
+        let cfg = TomlConfig::parse_str("stats = false\n").expect("must parse");
+        assert_eq!(cfg.stats, Some(false));
+    }
+
+    #[test]
+    fn sniffer_true_propagates_to_identity() {
+        // `udps_endpoint_with_filters` covers `sniffer = false`; without a
+        // matching `sniffer = true` test, swapping the bool inside
+        // `collect_pairs` (or `IdentityFlags::apply`) would only break one
+        // value and pass the existing assertions.
+        let s = r#"
+[[endpoints]]
+type = "udps"
+bind = "0.0.0.0:14550"
+sniffer = true
+"#;
+        let cfg = TomlConfig::parse_str(s).expect("must parse");
+        let ep = match &cfg.endpoints[0].kind {
+            EndpointKind::UdpServer(e) => e,
+            other => panic!("expected udps, got {other:?}"),
+        };
+        assert!(ep.identity.sniffer);
     }
 
     #[test]
