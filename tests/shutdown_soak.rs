@@ -168,25 +168,37 @@ async fn shutdown_drains_with_inflight_udp_traffic() {
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
-/// Binary-driven shutdown soak: spawn `rmr` as a subprocess, send SIGTERM
-/// while it's serving endpoints, assert it exits 0 within the wall-clock
-/// budget. Unix-only because the Windows side of the signal contract has no
-/// portable `assert_cmd` analogue to SIGTERM (kill-on-Windows terminates
-/// without running the in-process cancellation handler).
+/// Binary-driven shutdown soak: spawn `rmr` as a subprocess with `--stats`,
+/// send SIGTERM while it's serving endpoints, assert it exits 0 within the
+/// wall-clock budget AND that every registered endpoint's last JSON-Line on
+/// stdout has a terminal `state` (`down`/`idle`) — the literal CLAUDE.md
+/// Phase 6 bullet "assert every registered endpoint emits its final
+/// synthetic stats line with the right terminal state". Unix-only because
+/// the Windows side of the signal contract has no portable analogue to
+/// SIGTERM (kill-on-Windows terminates without running the in-process
+/// cancellation handler).
 #[cfg(unix)]
 #[test]
-fn binary_shutdown_soak_returns_zero_within_budget() {
+fn binary_shutdown_emits_final_synthetic_stats_lines() {
     use assert_cmd::Command;
+    use std::collections::HashMap;
+    use std::io::Read;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Command as StdCommand, Stdio};
     use std::thread;
     use std::time::Duration;
 
     let listener_addr = pick_free_udp_addr();
+    let sender_target = pick_free_udp_addr();
+    let endpoints = [
+        // Connected after bind.
+        format!("udps:127.0.0.1:{}#listener", listener_addr.port()),
+        // Connected after local socket bind.
+        format!("udpc:127.0.0.1:{}#sender", sender_target.port()),
+        // Reconnecting forever (no listener on port 1).
+        "tcpc:127.0.0.1:1#stuck".to_string(),
+    ];
 
-    // `assert_cmd::Command` doesn't expose mid-run signalling, so use the
-    // path it computes and then drop to `std::process::Command` for the
-    // actual spawn + signal sequence.
     let bin_path = Command::cargo_bin("rmr")
         .expect("cargo_bin")
         .get_program()
@@ -194,23 +206,24 @@ fn binary_shutdown_soak_returns_zero_within_budget() {
 
     let mut child = StdCommand::new(bin_path)
         .args([
+            "--stats",
+            "--stats-interval-secs=1",
             "--skip-config-log",
             "--log-level=warn",
-            &format!("udps:127.0.0.1:{}#listener", listener_addr.port()),
-            "tcpc:127.0.0.1:1#stuck",
+            &endpoints[0],
+            &endpoints[1],
+            &endpoints[2],
         ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn rmr");
 
-    // Give the binary time to bind and reach steady state before
-    // signalling. 300ms is plenty for loopback bind + dial-loop entry.
-    thread::sleep(Duration::from_millis(300));
+    // Let at least one stats interval fire so steady-state lines accumulate
+    // and the final synthetic lines are distinguishable as "after the last
+    // interval" lines.
+    thread::sleep(Duration::from_millis(1_500));
 
-    // Shell out to `/bin/kill` to deliver SIGTERM — avoids pulling `libc`
-    // or `nix` in just for this one syscall. The child's PID is stable
-    // because we still hold the `Child` handle.
     let kill_status = StdCommand::new("/bin/kill")
         .args(["-TERM", &child.id().to_string()])
         .status()
@@ -218,8 +231,6 @@ fn binary_shutdown_soak_returns_zero_within_budget() {
     assert!(kill_status.success(), "/bin/kill -TERM failed");
 
     let started = Instant::now();
-    // Poll for exit so we can enforce the wall-clock budget without `wait`
-    // blocking forever if the child hung.
     let exit_status = loop {
         match child.try_wait().expect("try_wait") {
             Some(status) => break status,
@@ -243,4 +254,42 @@ fn binary_shutdown_soak_returns_zero_within_budget() {
         "rmr took {:?} to exit; budget is 5s plus 1s slack",
         started.elapsed()
     );
+
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    if let Some(mut s) = child.stdout.take() {
+        let _ = s.read_to_end(&mut out);
+    }
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_end(&mut err);
+    }
+    let stdout = String::from_utf8(out).expect("stdout utf8");
+    let stderr = String::from_utf8(err).expect("stderr utf8");
+
+    // Walk every JSON-Line, recording the most-recent (state) per endpoint.
+    let mut last_state: HashMap<String, String> = HashMap::new();
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("bad json on stdout: '{line}': {e}"));
+        let endpoint = v["endpoint"]
+            .as_str()
+            .unwrap_or_else(|| panic!("line missing endpoint field: {line}"));
+        let state = v["state"]
+            .as_str()
+            .unwrap_or_else(|| panic!("line missing state field: {line}"));
+        last_state.insert(endpoint.to_string(), state.to_string());
+    }
+    assert!(
+        !last_state.is_empty(),
+        "no JSON-Lines on stdout; stderr=`{stderr}`"
+    );
+    for name in ["listener", "sender", "stuck"] {
+        let final_state = last_state.get(name).unwrap_or_else(|| {
+            panic!("no final stats line for endpoint '{name}'; got: {last_state:?}")
+        });
+        assert!(
+            final_state == "down" || final_state == "idle",
+            "endpoint '{name}' final state is '{final_state}', not down/idle; stderr=`{stderr}`"
+        );
+    }
 }
