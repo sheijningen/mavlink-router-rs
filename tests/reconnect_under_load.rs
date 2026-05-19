@@ -299,3 +299,202 @@ async fn tcpc_survives_repeated_flaps_under_sustained_ingress() {
         .expect("rmr::run task panicked");
     result.expect("rmr::run errored");
 }
+
+/// Binary-driven flap-cycle test that asserts the CLAUDE.md "`dropped_tx`
+/// accounting" bullet at the wire level. Spawns `rmr --stats` with the
+/// `tcpc:` endpoint forced to a small (`tx_queue_frames=8`) writer queue
+/// so a burst of stale frames during a disconnect window overflows on the
+/// router-side `force_push` path on top of the writer-side
+/// `drain_and_discard` path on reconnect. After two flap cycles, parses
+/// stdout JSON-Lines and asserts the tcpc endpoint's `dropped_tx` counter
+/// climbed past a wide-margin floor. Unix-only — same signal-portability
+/// caveat as the binary shutdown_soak case.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {
+    use std::io::Read;
+    use std::process::{Command as StdCommand, Stdio};
+    use std::time::Instant;
+
+    use assert_cmd::Command;
+
+    // Frame builders local to this test (the sysid/seq tagging differs
+    // from the helper at the top of the file).
+    fn build_heartbeat(sys: u8, seq: u8) -> Vec<u8> {
+        TestFrame::v2_message(&Heartbeat::default())
+            .sysid(sys)
+            .compid(1)
+            .seq(seq)
+            .build()
+    }
+
+    async fn inject_burst(sock: &UdpSocket, sys: u8, range: std::ops::Range<u8>) {
+        for seq in range {
+            let _ = sock.send(&build_heartbeat(sys, seq)).await;
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener bind");
+    let listen_addr: SocketAddr = listener.local_addr().expect("listen_addr");
+    let udps_addr = pick_free_udp_addr();
+
+    let bin_path = Command::cargo_bin("rmr")
+        .expect("cargo_bin")
+        .get_program()
+        .to_os_string();
+
+    let mut child = StdCommand::new(bin_path)
+        .args([
+            "--stats",
+            "--stats-interval-secs=1",
+            "--skip-config-log",
+            "--log-level=warn",
+            &format!("udps:127.0.0.1:{}#bus", udps_addr.port()),
+            // Small tx_queue_frames forces router-side force_push eviction
+            // on the burst during the disconnect window, on top of the
+            // writer-side drain-on-disconnect drops.
+            &format!(
+                "tcpc:127.0.0.1:{}#client?tx_queue_frames=8",
+                listen_addr.port()
+            ),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn rmr");
+
+    let (mut conn, _) = timeout(Duration::from_secs(3), listener.accept())
+        .await
+        .expect("first accept timeout")
+        .expect("first accept");
+
+    let injector = UdpSocket::bind("127.0.0.1:0").await.expect("injector bind");
+    injector
+        .connect(("127.0.0.1", udps_addr.port()))
+        .await
+        .expect("injector connect");
+
+    // Baseline: confirm forwarding works at all.
+    inject_burst(&injector, 10, 0..10).await;
+    let _ = read_until_quiet(&mut conn, 200, Duration::from_millis(300)).await;
+
+    // -- Flap cycle 1 --
+    drop(conn);
+    drop(listener);
+    // Burst 30 stale frames into the udps while rmr can't reach the
+    // (gone) tcps listener — these queue in tcpc's TxQueue (cap 8) and
+    // then get drained-and-discarded on reconnect.
+    inject_burst(&injector, 99, 0..30).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let listener2 = bind_reusable_listener(listen_addr);
+    let (mut conn2, _) = timeout(Duration::from_secs(3), listener2.accept())
+        .await
+        .expect("cycle-1 reconnect accept timeout")
+        .expect("cycle-1 reconnect accept");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    inject_burst(&injector, 10, 100..120).await;
+    let cycle1 = read_until_quiet(&mut conn2, 1024, Duration::from_millis(500)).await;
+    // No sysid=99 byte at index 5 of any v2 frame should survive — the
+    // simplest spot-check that none of the stale frames replayed.
+    let stale_in_cycle1 = (0..cycle1.len().saturating_sub(6))
+        .filter(|i| cycle1[*i] == 0xFD && cycle1[i + 5] == 99)
+        .count();
+    assert_eq!(
+        stale_in_cycle1, 0,
+        "cycle 1 leaked {stale_in_cycle1} stale frames after reconnect"
+    );
+
+    // -- Flap cycle 2 --
+    drop(conn2);
+    drop(listener2);
+    inject_burst(&injector, 99, 50..80).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let listener3 = bind_reusable_listener(listen_addr);
+    let (mut conn3, _) = timeout(Duration::from_secs(3), listener3.accept())
+        .await
+        .expect("cycle-2 reconnect accept timeout")
+        .expect("cycle-2 reconnect accept");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    inject_burst(&injector, 10, 200..220).await;
+    let cycle2 = read_until_quiet(&mut conn3, 1024, Duration::from_millis(500)).await;
+    let stale_in_cycle2 = (0..cycle2.len().saturating_sub(6))
+        .filter(|i| cycle2[*i] == 0xFD && cycle2[i + 5] == 99)
+        .count();
+    assert_eq!(
+        stale_in_cycle2, 0,
+        "cycle 2 leaked {stale_in_cycle2} stale frames after reconnect"
+    );
+
+    // Wait long enough that at least one stats interval fires after the
+    // two flap cycles so a steady-state line (not just the final
+    // synthetic) reflects the climbed `dropped_tx`.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+    let kill_status = StdCommand::new("/bin/kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("kill spawn");
+    assert!(kill_status.success(), "/bin/kill -TERM failed");
+
+    let started = Instant::now();
+    let exit_status = loop {
+        match child.try_wait().expect("try_wait") {
+            Some(status) => break status,
+            None => {
+                if started.elapsed() > Duration::from_secs(7) {
+                    let _ = child.kill();
+                    panic!("rmr binary did not exit within 7s of SIGTERM");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
+    assert!(
+        exit_status.success(),
+        "rmr exited non-zero: {exit_status:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "shutdown took {:?}; suggests task leak across flap cycles",
+        started.elapsed()
+    );
+
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    if let Some(mut s) = child.stdout.take() {
+        let _ = s.read_to_end(&mut out);
+    }
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_end(&mut err);
+    }
+    let stdout = String::from_utf8(out).expect("stdout utf8");
+    let stderr = String::from_utf8(err).expect("stderr utf8");
+
+    // Two flap cycles × 30 stale frames each = 60 inbound frames bound
+    // for tcpc that never reach the wire. With tx_queue_frames=8, at
+    // most 8 can survive in the queue at any moment; the rest are
+    // `force_push` evictions (router-side) or drain-on-disconnect drops
+    // (writer-side). A floor of 20 leaves comfortable headroom against
+    // scheduling jitter while still proving the counter moved.
+    let mut max_dropped_client: u64 = 0;
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v["endpoint"].as_str() != Some("client") {
+            continue;
+        }
+        if let Some(n) = v["dropped_tx"].as_u64()
+            && n > max_dropped_client
+        {
+            max_dropped_client = n;
+        }
+    }
+    assert!(
+        max_dropped_client >= 20,
+        "expected dropped_tx >= 20 on tcpc 'client' after 2 flap cycles; \
+         got max={max_dropped_client}. stdout=`{stdout}` stderr=`{stderr}`"
+    );
+}
