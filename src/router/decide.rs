@@ -239,7 +239,7 @@ mod tests {
         );
     }
 
-    // ----- Out-filter (Phase 5b) -----
+    // ----- Out-filter -----
 
     #[test]
     fn out_filter_block_rejects_with_out_filter_blocked() {
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(decide(&h, &empty_learn(), &id), Decision::OutFilterBlocked);
     }
 
-    // ----- Sniffer (Phase 5b) -----
+    // ----- Sniffer -----
 
     #[test]
     fn sniffer_admits_even_when_looped() {

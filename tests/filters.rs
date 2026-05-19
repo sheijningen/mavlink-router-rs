@@ -1,13 +1,8 @@
-//! Out-filter end-to-end through `rmr::run`. Router unit tests
-//! cover the per-destination decision against synthetic channels; this binary
-//! is the transport-level proof that a `?block_msgid_out=` on a real `udpc:`
-//! actually suppresses the frame at the wire while a non-matching msgid still
-//! reaches the destination. CLAUDE.md "Phase 5b checklist" — "Per-endpoint
-//! Out-filters (egress, applied per destination)".
-//!
-//! More advanced multi-transport fan-out belongs in Phase 6's e2e tests; this
-//! file just locks the egress filter into the integration-test surface so a
-//! refactor that bypassed it would surface immediately.
+//! Out-filter end-to-end through `rmr::run`. Router unit tests cover the
+//! per-destination decision against synthetic channels; this binary is the
+//! transport-level proof that a `?block_msgid_out=` on a real `udpc:`
+//! actually suppresses the frame at the wire while a non-matching msgid
+//! still reaches the destination.
 
 #[path = "common/mod.rs"]
 mod common;

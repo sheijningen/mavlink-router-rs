@@ -386,7 +386,7 @@ The last phase that lands code. End state: full v1 feature surface — TOML conf
   - **Multi-transport fan-out** — three or more endpoints over mixed transports (e.g. `udpc:` + `tcps:` + `serial:` PTY) on one router; assert the routing matrix under learn + loop-prevention (frame from A reaches B and C but not back to A; targeted frame reaches only the endpoint whose learn-set contains the target; broadcast reaches everyone but the source).
   - **Reconnect-under-load** — sustained ingress on a `udps:` while a `tcpc:` peer flaps every few seconds; assert `dropped_tx` accounting matches expected (router-side overflow + writer-side drain-on-disconnect both count), no FD / task leaks across the flap cycles, no replay of pre-disconnect frames after the link comes back.
   - **Shutdown soak** — cancel the router mid-stream with N endpoints in mixed states (connected, reconnecting, UDP peers about to idle-reap); assert every registered endpoint emits its final synthetic stats line with the right terminal `state` (`Down`/`Idle`), all tasks join within the 5s wall-clock budget, no panics.
-- [ ] Sweep any code that has become genuinely unused now that Phase 5b is complete (e.g. the `#[allow(dead_code)]` scaffold on `src/stats.rs::RegisteredEndpoint`, kept until the JSON-Lines sink consumes it)
+- [x] Sweep any code that has become genuinely unused now that Phase 5b is complete (e.g. the `#[allow(dead_code)]` scaffold on `src/stats.rs::RegisteredEndpoint`, kept until the JSON-Lines sink consumes it)
 
 ### Phase 7 — release packaging & documentation
 

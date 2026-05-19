@@ -1,11 +1,12 @@
-//! CLAUDE.md Phase 3 integration test: "start a `tcps:` on a port already in
-//! use, free the port, verify the listener picks it up without restart".
+//! Bind-retry: a `tcps:` started against an in-use port stays in
+//! `Reconnecting`, retries on the backoff curve, and attaches once the
+//! port is freed — without a process restart.
 //!
-//! Linux/macOS only: `SO_REUSEADDR` does not allow two listening sockets on
-//! the same port on Unix, which is what makes this test deterministic. On
-//! Windows `SO_REUSEADDR` lets the second bind succeed immediately —
-//! observable port-hold behaviour there would need `SO_EXCLUSIVEADDRUSE` on
-//! the probe socket, which we don't model here.
+//! Linux/macOS only: `SO_REUSEADDR` does not allow two listening sockets
+//! on the same port on Unix, which is what makes this test deterministic.
+//! On Windows `SO_REUSEADDR` lets the second bind succeed immediately —
+//! observable port-hold behaviour there would need `SO_EXCLUSIVEADDRUSE`
+//! on the probe socket, which we don't model here.
 
 #![cfg(unix)]
 

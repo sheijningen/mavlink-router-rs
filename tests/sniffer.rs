@@ -1,12 +1,10 @@
-//! Sniffer end-to-end through `rmr::run`. Router unit tests cover
-//! the per-destination decision's sniffer override against synthetic channels;
+//! Sniffer end-to-end through `rmr::run`. Router unit tests cover the
+//! per-destination decision's sniffer override against synthetic channels;
 //! this binary is the transport-level proof that `?sniffer=true` on a real
 //! `udpc:` endpoint actually admits a frame at the wire that a non-sniffer
-//! destination would reject by target-match.
-//!
-//! CLAUDE.md "Phase 5b checklist" — "Sniffer mode per endpoint: bypasses
-//! loop-prevention, target-match, and out-filters; receives every accepted
-//! frame". Phase 6 will add multi-transport variants of this scenario.
+//! destination would reject by target-match. A sniffer bypasses
+//! loop-prevention, target-match, and out-filters; it sees every accepted
+//! frame.
 
 #[path = "common/mod.rs"]
 mod common;

@@ -1,9 +1,9 @@
-//! End-to-end TCP reconnect behaviour under sustained UDP ingress (Phase 6
-//! "Reconnect-under-load"). Verifies the locked decision "TX queue on
-//! disconnect: drain and discard, never replay": when a `tcpc:` peer drops,
-//! frames in the writer's queue must be discarded before the link is
-//! reestablished, so the GCS on the other side never sees stale telemetry
-//! ahead of fresh frames after a flap.
+//! End-to-end TCP reconnect behaviour under sustained UDP ingress.
+//! Verifies the locked decision "TX queue on disconnect: drain and
+//! discard, never replay": when a `tcpc:` peer drops, frames in the
+//! writer's queue must be discarded before the link is reestablished, so
+//! the GCS on the other side never sees stale telemetry ahead of fresh
+//! frames after a flap.
 
 #[path = "common/mod.rs"]
 mod common;

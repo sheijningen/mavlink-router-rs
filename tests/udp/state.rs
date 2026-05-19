@@ -1,12 +1,13 @@
-//! Endpoint state transitions for `udps:` and `udpc:` (CLAUDE.md Phase 5a
-//! "EndpointState on EndpointStats" decision and the split-authority rule).
+//! Endpoint state transitions for `udps:` and `udpc:` under the
+//! split-authority rule on [`EndpointStats::state`].
 //!
 //! UDP has no transport-up/down event after the initial bind succeeds, so
 //! the endpoint task writes `Connected` exactly once and never flips back
 //! to `Reconnecting` on its own. Sub-endpoint state (UDP peers) is
 //! initialised to `Connected` at admission (admission is the transport-up
-//! event) and only the router writes `Idle` / `Down` afterwards — see
-//! CLAUDE.md.
+//! event) and only the router writes `Idle` / `Down` afterwards.
+//!
+//! [`EndpointStats::state`]: rmr::endpoint::stats::EndpointStats::state
 
 use std::net::SocketAddr;
 use std::sync::Arc;

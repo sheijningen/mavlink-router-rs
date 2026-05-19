@@ -9,8 +9,9 @@
 //!
 //! CLAUDE.md mandates: fixed-capacity flat structure (no `HashMap`), LRU
 //! eviction by oldest `last_seen` on insert when full. Default capacity
-//! 32. Phase 5b's endpoint-groups feature shares one table across group
-//! members; the Phase 5a skeleton ships a strictly per-endpoint table.
+//! 32. Endpoints in the same `?group=` share a single learn table via
+//! [`super::group::GroupRegistry`]; this module's `LearnTable` is the
+//! per-endpoint variant used when no group is set.
 
 use tokio::time::Instant;
 

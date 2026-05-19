@@ -1,18 +1,17 @@
-//! End-to-end shutdown drain through `rmr::run` (Phase 6 "Shutdown soak").
-//!
-//! Cancel the router mid-run with a mix of endpoints in different lifecycle
-//! states — a UDP server (Connected via bind), a UDP client (Connected via
-//! local bind), and a TCP client pointing at an unbound port (stuck in
-//! Reconnecting forever) — and assert that:
+//! End-to-end shutdown drain through `rmr::run`. Cancel the router mid-run
+//! with a mix of endpoints in different lifecycle states — a UDP server
+//! (Connected via bind), a UDP client (Connected via local bind), and a
+//! TCP client pointing at an unbound port (stuck in Reconnecting forever)
+//! — and assert that:
 //!
 //! - every spawned task joins within the 5s wall-clock shutdown budget
 //!   documented in CLAUDE.md ("Shutdown timing" locked decision),
 //! - the function returns `Ok(())` (no panic propagated),
 //! - the total elapsed time stays comfortably under the budget.
 //!
-//! The Phase 6 bullet calls for a binary-driven shutdown soak (Unix-only via
-//! `assert_cmd` + SIGTERM); that case lives separately below — both paths
-//! exercise the same `CancellationToken`-driven drain logic.
+//! A binary-driven `#[cfg(unix)]` case below spawns `rmr` as a subprocess
+//! and delivers SIGTERM, exercising the same `CancellationToken`-driven
+//! drain via the binary's signal handler.
 
 #[path = "common/mod.rs"]
 mod common;
