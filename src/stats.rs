@@ -185,7 +185,7 @@ pub async fn run<W>(
             }
             ev = event_rx.recv() => match ev {
                 Some(ev) => {
-                    handle_event(&mut registry, &mut queue, cfg.queue_capacity, &mut total_dropped, ev);
+                    handle_event(&mut registry, &mut queue, cfg.queue_capacity, &mut total_dropped, cfg.enabled, ev);
                     drain_queue(&mut queue, &mut writer, &mut broken_pipe_warned).await;
                 }
                 None => {
@@ -205,6 +205,7 @@ pub async fn run<W>(
             &mut queue,
             cfg.queue_capacity,
             &mut total_dropped,
+            cfg.enabled,
             ev,
         );
     }
@@ -236,6 +237,7 @@ fn handle_event(
     queue: &mut VecDeque<QueueEntry>,
     queue_capacity: usize,
     total_dropped: &mut u64,
+    emit_lines: bool,
     ev: StatsEvent,
 ) {
     match ev {
@@ -245,10 +247,19 @@ fn handle_event(
         }
         StatsEvent::Finalize { id } => {
             trace!(%id, "stats: finalize");
-            if let Some(entry) = registry.remove(&id) {
-                let line = build_line(&entry.name, &entry.stats, rfc3339_now());
-                enqueue_synthetic(queue, queue_capacity, line, total_dropped);
+            let Some(entry) = registry.remove(&id) else {
+                return;
+            };
+            // When stats output is disabled the registry mirror still
+            // serves its role (router fire-and-forget needs a consumer),
+            // but no synthetic line should reach stdout. Skipping the
+            // enqueue here also means `--stats=false` never grows the
+            // queue or burns the BrokenPipe path.
+            if !emit_lines {
+                return;
             }
+            let line = build_line(&entry.name, &entry.stats, rfc3339_now());
+            enqueue_synthetic(queue, queue_capacity, line, total_dropped);
         }
     }
 }
@@ -569,6 +580,45 @@ mod tests {
             .await
             .expect("stats task did not exit when channel closed")
             .expect("stats task panicked");
+    }
+
+    #[tokio::test]
+    async fn disabled_task_emits_no_lines_on_finalize() {
+        // Regression: when `--stats` is off, the registry mirror still runs
+        // (the router fire-and-forwards Register/Finalize), but no bytes
+        // must reach stdout. Test fixtures that build a `Config` with
+        // `stats: false` rely on this so their stdout stays clean.
+        let (tx, rx) = mpsc::channel::<StatsEvent>(8);
+        let cancel = CancellationToken::new();
+        let (writer, mut reader) = duplex(4096);
+        let handle = tokio::spawn(run(rx, cancel.clone(), disabled_config(), writer));
+
+        let alloc = EndpointIdAllocator::new();
+        let id = alloc.alloc();
+        let stats = Arc::new(EndpointStats::default());
+        stats.store_state(EndpointState::Connected);
+        tx.send(make_register(id, "ep", stats.clone()))
+            .await
+            .expect("register");
+        tx.send(StatsEvent::Finalize { id })
+            .await
+            .expect("finalize");
+
+        // Give the task time to process events; with stats disabled, no
+        // lines should land on the duplex reader.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("stats task did not exit")
+            .expect("stats task panicked");
+
+        // Reader side: every byte the task wrote is buffered in the duplex.
+        // We close the writer half by dropping it (already done when the
+        // task returned), so `read` returns 0 cleanly at EOF.
+        let mut buf = vec![0u8; 1024];
+        let n = reader.read(&mut buf).await.expect("read");
+        assert_eq!(n, 0, "disabled stats wrote {n} bytes to stdout");
     }
 
     #[tokio::test(start_paused = true)]
