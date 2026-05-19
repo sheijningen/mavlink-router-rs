@@ -84,7 +84,7 @@ pub fn parse_kind(
     }
 }
 
-fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> {
+pub(crate) fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> {
     if body.is_empty() {
         return Err(SpecError::MalformedBody {
             scheme: "serial",
@@ -135,7 +135,7 @@ fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> {
 /// as `parse_host_port`, but with an additional constraint that the host
 /// must be an IP literal (CLAUDE.md "malformed addresses are fatal" — bind
 /// targets are not resolved at runtime, only dial targets are).
-fn parse_listen_addr(body: &str, scheme: &'static str) -> Result<SocketAddr, SpecError> {
+pub(crate) fn parse_listen_addr(body: &str, scheme: &'static str) -> Result<SocketAddr, SpecError> {
     let (host, port) = parse_host_port(body, scheme)?;
     let ip: IpAddr = host.parse().map_err(|_| SpecError::MalformedBody {
         scheme,
@@ -147,7 +147,10 @@ fn parse_listen_addr(body: &str, scheme: &'static str) -> Result<SocketAddr, Spe
     Ok(SocketAddr::new(ip, port))
 }
 
-fn parse_host_port(body: &str, scheme: &'static str) -> Result<(String, u16), SpecError> {
+pub(crate) fn parse_host_port(
+    body: &str,
+    scheme: &'static str,
+) -> Result<(String, u16), SpecError> {
     if body.is_empty() {
         return Err(SpecError::MalformedBody {
             scheme,

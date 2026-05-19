@@ -62,7 +62,7 @@ impl IdentityFlags {
     }
 }
 
-fn parse_bool(v: &str, key: &'static str) -> Result<bool, SpecError> {
+pub(crate) fn parse_bool(v: &str, key: &'static str) -> Result<bool, SpecError> {
     match v {
         "true" => Ok(true),
         "false" => Ok(false),

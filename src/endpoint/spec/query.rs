@@ -196,7 +196,7 @@ pub fn apply_pairs(
     Ok(())
 }
 
-fn suggest_query_key(scheme: &str, unknown: &str) -> Option<&'static str> {
+pub(crate) fn suggest_query_key(scheme: &str, unknown: &str) -> Option<&'static str> {
     let extras = known_keys_for(scheme);
     COMMON_KEYS
         .iter()
@@ -235,14 +235,14 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
     prev[n]
 }
 
-fn parse_u64(v: &str, key: &'static str) -> Result<u64, SpecError> {
+pub(crate) fn parse_u64(v: &str, key: &'static str) -> Result<u64, SpecError> {
     v.parse().map_err(|_| SpecError::InvalidQueryValue {
         key,
         reason: format!("expected a non-negative integer, got '{v}'"),
     })
 }
 
-fn parse_usize(v: &str, key: &'static str) -> Result<usize, SpecError> {
+pub(crate) fn parse_usize(v: &str, key: &'static str) -> Result<usize, SpecError> {
     v.parse().map_err(|_| SpecError::InvalidQueryValue {
         key,
         reason: format!("expected a non-negative integer, got '{v}'"),

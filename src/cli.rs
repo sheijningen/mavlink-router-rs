@@ -83,16 +83,19 @@ impl Cli {
     }
 }
 
-/// Turn a slice of CLI-style endpoint strings into typed [`EndpointSpec`]s.
-/// Kept on this module because the input shape (`Vec<String>` from argv) is
-/// CLI-specific; TOML parsing builds `EndpointSpec`s through a different
-/// path. Duplicate-name detection is intentionally left to [`Config::validate`]
-/// so the rule is enforced uniformly across CLI-only, TOML-only, and
-/// (eventually) merged inputs.
+/// Turn a slice of CLI-style endpoint strings into typed [`EndpointSpec`]s,
+/// routing each one through the same [`crate::config::EndpointEntry`] that
+/// TOML deserialisation produces. CLI argv is the "thin wrapper" input format;
+/// the TOML schema's typed-entry shape is the canonical intermediate — both
+/// paths flow into [`crate::config::EndpointEntry::into_spec`] →
+/// [`crate::endpoint::spec::EndpointSpec::build`], so a single tokenize +
+/// validate + build pipeline covers every operator input. Duplicate-name
+/// detection is left to [`crate::config::Config::validate`].
 pub fn parse_specs(raw: &[String]) -> Result<Vec<EndpointSpec>, Error> {
     let mut specs = Vec::with_capacity(raw.len());
-    for s in raw {
-        specs.push(EndpointSpec::parse(s)?);
+    for (idx, s) in raw.iter().enumerate() {
+        let entry = crate::config::EndpointEntry::from_cli_string(s)?;
+        specs.push(entry.into_spec(idx)?);
     }
     Ok(specs)
 }

@@ -1,7 +1,14 @@
 //! Canonical input to [`crate::run`]: globals + the fully-typed endpoint
-//! table that the spawner consumes. Both [`crate::cli::Cli`] and the TOML
-//! parser feed into this struct — `Cli` is one input format among several,
-//! not the authoritative shape.
+//! table that the spawner consumes.
+//!
+//! TOML is the primary configuration shape; CLI argv is a thin adapter into
+//! it. Concretely, both [`Config::from_toml_str`] and [`crate::cli::parse_specs`]
+//! produce a `Vec<`[`EndpointEntry`]`>`, and the same [`EndpointEntry::into_spec`]
+//! → [`crate::endpoint::spec::EndpointSpec::build`] pipeline converts each
+//! entry into the runtime spec the spawner consumes. The CLI parser
+//! ([`EndpointEntry::from_cli_string`]) tokenises a `scheme:body[#name][?key=val]`
+//! string into the same typed-entry shape serde produces from a `[[endpoints]]`
+//! table.
 //!
 //! CLAUDE.md "Project layout" → `config.rs`: TOML schema (serde) plus the
 //! eventual CLI+file merge rules. The merge rules ("TOML endpoints first then
@@ -15,7 +22,11 @@ use std::path::Path;
 use serde::Deserialize;
 use tracing::Level;
 
-use crate::endpoint::spec::EndpointSpec;
+use crate::endpoint::identity_flags::parse_bool;
+use crate::endpoint::spec::{
+    EndpointSpec, SpecError, parse_host_port, parse_listen_addr, parse_query_pairs,
+    parse_serial_body, parse_u64, parse_usize, split_body_name_query, suggest_query_key,
+};
 use crate::error::Error;
 
 /// CLAUDE.md "Defaults" → `stats_interval_secs` (period of stats JSON-Lines
@@ -192,9 +203,13 @@ impl ConfigFile {
 /// to fail loudly. Scheme-conditional validation (e.g. `serial` requires
 /// `path`/`baud`, must not carry `bind`/`host`/`port`) runs post-parse in
 /// [`EndpointEntry::into_spec`].
+///
+/// Visible to `cli.rs` (and only there) because CLI argv goes through
+/// [`EndpointEntry::from_cli_string`] before reaching `into_spec` — TOML is
+/// the primary configuration shape; CLI is a typed adapter into it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EndpointEntry {
+pub(crate) struct EndpointEntry {
     #[serde(rename = "type")]
     scheme: String,
     name: Option<String>,
@@ -228,7 +243,7 @@ struct EndpointEntry {
 }
 
 impl EndpointEntry {
-    fn into_spec(self, index: usize) -> Result<EndpointSpec, Error> {
+    pub(crate) fn into_spec(self, index: usize) -> Result<EndpointSpec, Error> {
         let scheme_static: &'static str = match self.scheme.as_str() {
             "serial" => "serial",
             "udps" => "udps",
@@ -407,6 +422,148 @@ impl EndpointEntry {
             self.block_src_comp_out.as_deref(),
         );
         pairs
+    }
+
+    /// Parse a CLI-style spec string (`scheme:body[#name][?key=val&...]`) into
+    /// an [`EndpointEntry`]. CLAUDE.md's "one parser for both CLI and TOML"
+    /// locked decision: this is how `cli::parse_specs` reaches `into_spec` —
+    /// CLI argv goes through the same typed-entry funnel TOML uses, so a
+    /// single conversion path (`into_spec` → [`EndpointSpec::build`]) covers
+    /// both inputs. Filter and identity values stay in string form; bounds
+    /// and per-key parsing are deferred to [`EndpointEntry::into_spec`] where
+    /// the shared applier machinery enforces them.
+    pub(crate) fn from_cli_string(input: &str) -> Result<Self, SpecError> {
+        let (scheme, rest) = input
+            .split_once(':')
+            .ok_or_else(|| SpecError::MissingScheme(input.to_string()))?;
+        if scheme.is_empty() {
+            return Err(SpecError::MissingScheme(input.to_string()));
+        }
+        let (body, explicit_name, query_str) = split_body_name_query(rest);
+        if body.contains('?') {
+            return Err(SpecError::MalformedQuery(format!(
+                "'?' must follow '#name' (got '{body}')"
+            )));
+        }
+        let pairs = parse_query_pairs(query_str.unwrap_or(""))?;
+
+        let scheme_static: &'static str = match scheme {
+            "serial" => "serial",
+            "udps" => "udps",
+            "udpc" => "udpc",
+            "tcps" => "tcps",
+            "tcpc" => "tcpc",
+            other => return Err(SpecError::UnknownScheme(other.to_string())),
+        };
+
+        let mut entry = EndpointEntry {
+            scheme: scheme.to_string(),
+            name: explicit_name.map(str::to_string),
+            ..EndpointEntry::default()
+        };
+        // Name validation is intentionally deferred to `into_spec` →
+        // `EndpointSpec::build` so that the CLI path produces the same
+        // error precedence as `EndpointSpec::parse` for inputs that fail
+        // both a body/query check AND a name check (body/query errors win).
+        entry.apply_cli_body(scheme_static, body)?;
+        for (k, v) in &pairs {
+            entry.apply_cli_pair(scheme_static, k, v)?;
+        }
+        Ok(entry)
+    }
+
+    /// Set the scheme-specific address fields (`path`/`baud`, `bind`, or
+    /// `host`/`port`) from a CLI-style body. Reuses the existing body
+    /// parsers in `endpoint::spec::parse` so the CLI and TOML paths share
+    /// the same address grammar.
+    fn apply_cli_body(&mut self, scheme: &'static str, body: &str) -> Result<(), SpecError> {
+        match scheme {
+            "serial" => {
+                let (path, baud) = parse_serial_body(body)?;
+                self.path = Some(path);
+                self.baud = Some(baud);
+            }
+            "udps" | "tcps" => {
+                // Validate as a listen address (IP literal + port) at CLI
+                // tokenize time — same rule the typed-spec path enforces in
+                // `parse_listen_addr`, so a hostname on the listen side
+                // surfaces at the CLI caller (the existing UX) rather than
+                // bubbling up later via `into_spec`. The original body
+                // string is round-tripped through `into_spec` and re-parsed
+                // by the same helper.
+                let _addr = parse_listen_addr(body, scheme)?;
+                self.bind = Some(body.to_string());
+            }
+            "udpc" | "tcpc" => {
+                let (host, port) = parse_host_port(body, scheme)?;
+                self.host = Some(host);
+                self.port = Some(port);
+            }
+            _ => unreachable!("scheme already validated"),
+        }
+        Ok(())
+    }
+
+    /// Assign one query-string pair into the matching typed field. Unknown
+    /// keys produce [`SpecError::UnknownQueryKey`] with the same did-you-mean
+    /// suggestion the existing applier produces — the CLI's operator-visible
+    /// error contract is preserved. Bounds-checking is intentionally deferred
+    /// to [`EndpointEntry::into_spec`] where the shared `apply_pairs` path
+    /// runs against the same data structure for TOML and CLI.
+    fn apply_cli_pair(
+        &mut self,
+        scheme: &'static str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), SpecError> {
+        let unknown = || SpecError::UnknownQueryKey {
+            scheme,
+            key: key.to_string(),
+            suggestion: suggest_query_key(scheme, key),
+        };
+        match key {
+            "tx_queue_frames" => {
+                self.tx_queue_frames = Some(parse_usize(value, "tx_queue_frames")?);
+            }
+            "sniffer" => {
+                self.sniffer = Some(parse_bool(value, "sniffer")?);
+            }
+            "group" => {
+                self.group = Some(value.to_string());
+            }
+            "flow_control" => {
+                if scheme != "serial" {
+                    return Err(unknown());
+                }
+                self.flow_control = Some(value.to_string());
+            }
+            "idle_secs" => {
+                if scheme != "udps" {
+                    return Err(unknown());
+                }
+                self.idle_secs = Some(parse_u64(value, "idle_secs")?);
+            }
+            "latch_idle_secs" => {
+                if scheme != "udpc" {
+                    return Err(unknown());
+                }
+                self.latch_idle_secs = Some(parse_u64(value, "latch_idle_secs")?);
+            }
+            "allow_msgid_in" => self.allow_msgid_in = Some(value.to_string()),
+            "block_msgid_in" => self.block_msgid_in = Some(value.to_string()),
+            "allow_msgid_out" => self.allow_msgid_out = Some(value.to_string()),
+            "block_msgid_out" => self.block_msgid_out = Some(value.to_string()),
+            "allow_src_sys_in" => self.allow_src_sys_in = Some(value.to_string()),
+            "block_src_sys_in" => self.block_src_sys_in = Some(value.to_string()),
+            "allow_src_sys_out" => self.allow_src_sys_out = Some(value.to_string()),
+            "block_src_sys_out" => self.block_src_sys_out = Some(value.to_string()),
+            "allow_src_comp_in" => self.allow_src_comp_in = Some(value.to_string()),
+            "block_src_comp_in" => self.block_src_comp_in = Some(value.to_string()),
+            "allow_src_comp_out" => self.allow_src_comp_out = Some(value.to_string()),
+            "block_src_comp_out" => self.block_src_comp_out = Some(value.to_string()),
+            _ => return Err(unknown()),
+        }
+        Ok(())
     }
 }
 
@@ -888,6 +1045,170 @@ totally_made_up = 1
                 );
             }
             other => panic!("expected ConfigParse, got {other:?}"),
+        }
+    }
+
+    // -- CLI → EndpointEntry path (from_cli_string) --
+
+    #[test]
+    fn cli_path_equivalent_to_direct_endpoint_spec_parse() {
+        // Both paths must yield the same EndpointSpec across a
+        // representative input set, so the "CLI is a thin adapter into the
+        // TOML internals" architectural property is enforced by test rather
+        // than by code convention. If this ever fails, the two parsers have
+        // drifted and one of them is wrong.
+        let cases = [
+            "serial:/dev/ttyUSB0:921600",
+            "serial:/dev/ttyUSB0,921600#fc?flow_control=rtscts&group=uplink",
+            "serial:/dev/serial/by-id/usb-FTDI:port0:57600",
+            "udps:0.0.0.0:14550",
+            "udps:0.0.0.0:14550#bus?idle_secs=30&sniffer=true",
+            "udps:[::]:14550",
+            "udpc:192.168.1.5:14550",
+            "udpc:gcs.local:14550#tap?latch_idle_secs=15&block_msgid_in=33,100-150",
+            "udpc:[::1]:14550",
+            "tcps:0.0.0.0:5760",
+            "tcps:[2001:db8::1]:5760",
+            "tcpc:companion.local:5760#vehicle?group=uplink&allow_src_sys_out=1",
+            "tcpc:gcs.local:5760?tx_queue_frames=128&block_msgid_in=33,100-150,32",
+            // Edge cases CLI tokenization is finicky about:
+            "udps:0.0.0.0:1?",                             // empty query after `?`
+            "udps:0.0.0.0:1?sniffer=true&",                // trailing `&`
+            "udps:0.0.0.0:1?group=",                       // empty value
+            "udps:0.0.0.0:1?group=a=b",                    // embedded `=` in value
+            &format!("udps:0.0.0.0:1#{}", "a".repeat(64)), // max-length name
+        ];
+        for input in &cases {
+            let direct = EndpointSpec::parse(input)
+                .unwrap_or_else(|e| panic!("EndpointSpec::parse({input}) failed: {e}"));
+            let entry = EndpointEntry::from_cli_string(input)
+                .unwrap_or_else(|e| panic!("from_cli_string({input}) failed: {e}"));
+            let via_entry = entry
+                .into_spec(0)
+                .unwrap_or_else(|e| panic!("into_spec for {input} failed: {e}"));
+            assert_eq!(
+                direct, via_entry,
+                "CLI and entry-path parsers diverged for {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_path_error_precedence_matches_direct_parse() {
+        // Inputs that fail BOTH a body/query check and a name check: the
+        // body/query error must win on both paths (regression guard against
+        // the validate_name-too-early bug). Compare error discriminants —
+        // exact message text is allowed to differ.
+        fn discriminant(e: &SpecError) -> &'static str {
+            match e {
+                SpecError::MissingScheme(_) => "MissingScheme",
+                SpecError::UnknownScheme(_) => "UnknownScheme",
+                SpecError::InvalidName(_) => "InvalidName",
+                SpecError::UnknownQueryKey { .. } => "UnknownQueryKey",
+                SpecError::MalformedQuery(_) => "MalformedQuery",
+                SpecError::DuplicateQueryKey(_) => "DuplicateQueryKey",
+                SpecError::MalformedBody { .. } => "MalformedBody",
+                SpecError::InvalidQueryValue { .. } => "InvalidQueryValue",
+            }
+        }
+        let cases = [
+            // bad-name + unknown query key → UnknownQueryKey wins
+            "udps:0.0.0.0:1#bad.name?weirdkey=x",
+            // bad-name + bad query value (idle_secs=0 fails bounds check
+            // inside into_spec, after name validation in build's parse_kind
+            // path — but the bounds happen *before* `validate_name` in
+            // build, so InvalidQueryValue wins)
+            "udps:0.0.0.0:1#bad.name?idle_secs=0",
+            // bad-name alone → InvalidName both ways
+            "udps:0.0.0.0:1#bad.name",
+        ];
+        for input in cases {
+            let direct_err = EndpointSpec::parse(input)
+                .err()
+                .unwrap_or_else(|| panic!("expected err for {input}"));
+            let entry = EndpointEntry::from_cli_string(input);
+            let via_err = match entry {
+                Err(e) => e,
+                Ok(e) => match e.into_spec(0) {
+                    Err(Error::Spec(e)) => e,
+                    Err(other) => panic!("expected Spec, got {other:?} for {input}"),
+                    Ok(_) => panic!("expected err for {input}"),
+                },
+            };
+            assert_eq!(
+                discriminant(&direct_err),
+                discriminant(&via_err),
+                "error-class divergence for {input}: direct={direct_err:?}, via_entry={via_err:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn cli_path_reports_unknown_query_key_with_did_you_mean() {
+        // Three cases, one for each source the suggester walks
+        // (IdentityFlags::KEYS, COMMON_KEYS, scheme-extras), so a future
+        // refactor of `suggest_query_key` can't silently regress one of the
+        // three feeds.
+        let cases = [
+            ("udps:0.0.0.0:1?snifer=true", "snifer", "sniffer"), // IdentityFlags::KEYS
+            (
+                "udps:0.0.0.0:1?tx_queue_frame=10",
+                "tx_queue_frame",
+                "tx_queue_frames",
+            ), // COMMON_KEYS
+            ("udps:0.0.0.0:1?idle_sec=30", "idle_sec", "idle_secs"), // scheme-extra
+        ];
+        for (input, expected_key, expected_suggestion) in cases {
+            match EndpointEntry::from_cli_string(input) {
+                Err(SpecError::UnknownQueryKey {
+                    key, suggestion, ..
+                }) => {
+                    assert_eq!(key, expected_key, "wrong key in error for {input}");
+                    assert_eq!(
+                        suggestion,
+                        Some(expected_suggestion),
+                        "wrong suggestion for {input}"
+                    );
+                }
+                other => panic!("expected UnknownQueryKey for {input}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn cli_path_rejects_wrong_scheme_query_key() {
+        match EndpointEntry::from_cli_string("udps:0.0.0.0:1?flow_control=rtscts") {
+            Err(SpecError::UnknownQueryKey { key, scheme, .. }) => {
+                assert_eq!(key, "flow_control");
+                assert_eq!(scheme, "udps");
+            }
+            other => panic!("expected UnknownQueryKey, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_path_rejects_listen_hostname_at_tokenize() {
+        match EndpointEntry::from_cli_string("udps:gcs.local:14550") {
+            Err(SpecError::MalformedBody { scheme, reason, .. }) => {
+                assert_eq!(scheme, "udps");
+                assert!(reason.contains("must be an IP literal"));
+            }
+            other => panic!("expected MalformedBody, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_path_propagates_bounds_check_through_into_spec() {
+        // Bounds-checking is intentionally deferred from apply_cli_pair to
+        // into_spec → build → applier. Pin that an out-of-range value still
+        // surfaces correctly (as a Spec error, not a silent acceptance).
+        let entry = EndpointEntry::from_cli_string("udps:0.0.0.0:1?idle_secs=0")
+            .expect("from_cli_string accepts the raw value");
+        match entry.into_spec(0) {
+            Err(Error::Spec(SpecError::InvalidQueryValue { key, .. })) => {
+                assert_eq!(key, "idle_secs");
+            }
+            other => panic!("expected InvalidQueryValue for idle_secs=0, got {other:?}"),
         }
     }
 
