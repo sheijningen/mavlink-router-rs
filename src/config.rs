@@ -290,38 +290,34 @@ impl EndpointEntry {
     /// keys; this method catches "known key, wrong scheme" — e.g. a serial
     /// entry that also carries `bind = "..."`.
     fn reject_disallowed_fields(&self, index: usize, scheme: &'static str) -> Result<(), Error> {
-        let (allowed_address_fields, allowed_extra): (&[&str], &[&str]) = match scheme {
-            "serial" => (&["path", "baud"], &["flow_control"]),
-            "udps" => (&["bind"], &["idle_secs"]),
-            "tcps" => (&["bind"], &[]),
-            "udpc" => (&["host", "port"], &["latch_idle_secs"]),
-            "tcpc" => (&["host", "port"], &[]),
+        let allowed: &[&str] = match scheme {
+            "serial" => &["path", "baud", "flow_control"],
+            "udps" => &["bind", "idle_secs"],
+            "tcps" => &["bind"],
+            "udpc" => &["host", "port", "latch_idle_secs"],
+            "tcpc" => &["host", "port"],
             _ => unreachable!(),
         };
 
-        let deny = |present: bool, field: &'static str| -> Result<(), Error> {
-            if !present {
-                return Ok(());
-            }
-            let allowed = allowed_address_fields.contains(&field) || allowed_extra.contains(&field);
-            if allowed {
-                Ok(())
-            } else {
-                Err(Error::ConfigSchema {
+        let provided: [(&str, bool); 8] = [
+            ("path", self.path.is_some()),
+            ("baud", self.baud.is_some()),
+            ("flow_control", self.flow_control.is_some()),
+            ("bind", self.bind.is_some()),
+            ("host", self.host.is_some()),
+            ("port", self.port.is_some()),
+            ("idle_secs", self.idle_secs.is_some()),
+            ("latch_idle_secs", self.latch_idle_secs.is_some()),
+        ];
+
+        for (field, present) in provided {
+            if present && !allowed.contains(&field) {
+                return Err(Error::ConfigSchema {
                     index,
                     reason: format!("field '{field}' is not valid for type '{scheme}'"),
-                })
+                });
             }
-        };
-
-        deny(self.path.is_some(), "path")?;
-        deny(self.baud.is_some(), "baud")?;
-        deny(self.flow_control.is_some(), "flow_control")?;
-        deny(self.bind.is_some(), "bind")?;
-        deny(self.host.is_some(), "host")?;
-        deny(self.port.is_some(), "port")?;
-        deny(self.idle_secs.is_some(), "idle_secs")?;
-        deny(self.latch_idle_secs.is_some(), "latch_idle_secs")?;
+        }
         Ok(())
     }
 
@@ -900,7 +896,7 @@ name = "foo"
     }
 
     #[test]
-    fn toml_multiple_endpoints_preserve_order_and_kind() {
+    fn toml_multiple_endpoints() {
         // Mixed-scheme TOML with several correctly-formed `[[endpoints]]`
         // entries: every entry must round-trip into the matching
         // `EndpointKind`, and the resulting `Vec<EndpointSpec>` must preserve
