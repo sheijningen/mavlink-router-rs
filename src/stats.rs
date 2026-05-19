@@ -196,22 +196,43 @@ pub async fn run<W>(
         }
     }
 
-    // After cancel: drain any in-flight events the router pushed during its
-    // own drain budget, then flush whatever's queued one last time so the
-    // authoritative Finalize lines make it out.
-    while let Ok(ev) = event_rx.try_recv() {
-        handle_event(
-            &mut registry,
-            &mut queue,
-            cfg.queue_capacity,
-            &mut total_dropped,
-            cfg.enabled,
-            ev,
-        );
+    // After cancel: keep processing events until the channel closes
+    // (every sender — router + sub-endpoint tasks — drops their handle
+    // when they finish their own drain) OR we burn the producer's slice
+    // of the per-task drain budget. Using `recv().await` (not `try_recv`)
+    // is load-bearing: the router emits its shutdown-sweep Finalizes
+    // AFTER its own cancel observation, so a tight try_recv loop here
+    // would race those emissions and exit before they arrived, leaving
+    // every top-level endpoint with an interval-line as its last
+    // observable state instead of the authoritative Down.
+    let drain_deadline = tokio::time::Instant::now() + POST_CANCEL_DRAIN;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= drain_deadline {
+            break;
+        }
+        let remaining = drain_deadline - now;
+        match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Some(ev)) => handle_event(
+                &mut registry,
+                &mut queue,
+                cfg.queue_capacity,
+                &mut total_dropped,
+                cfg.enabled,
+                ev,
+            ),
+            Ok(None) | Err(_) => break,
+        }
     }
     drain_queue(&mut queue, &mut writer, &mut broken_pipe_warned).await;
     let _ = writer.flush().await;
 }
+
+/// Post-cancel slice of the per-task 2s drain budget the harness honours
+/// (see [`crate::shutdown::PER_TASK_DRAIN`]). 1500 ms for processing
+/// in-flight Register/Finalize events leaves ~500 ms of slack for the
+/// final `drain_queue` writes to land before the harness aborts.
+const POST_CANCEL_DRAIN: Duration = Duration::from_millis(1500);
 
 /// Queued line tagged with its origin so the bypass path can preferentially
 /// evict regular interval lines before touching a synthetic Finalize line.
@@ -557,16 +578,66 @@ mod tests {
 
     #[tokio::test]
     async fn task_exits_on_cancel_with_sender_alive_disabled() {
+        // With the sender held alive, the post-cancel drain awaits more
+        // events for up to `POST_CANCEL_DRAIN` (1.5s) before timing out
+        // and exiting. The 3s join budget covers that drain plus slack.
         let (tx, rx) = mpsc::channel::<StatsEvent>(4);
         let cancel = CancellationToken::new();
         let (writer, _reader) = duplex(1024);
         let handle = tokio::spawn(run(rx, cancel.clone(), disabled_config(), writer));
         cancel.cancel();
-        tokio::time::timeout(Duration::from_secs(1), handle)
+        tokio::time::timeout(Duration::from_secs(3), handle)
             .await
-            .expect("stats task did not exit on cancel")
+            .expect("stats task did not exit on cancel within drain budget")
             .expect("stats task panicked");
         drop(tx);
+    }
+
+    #[tokio::test]
+    async fn post_cancel_drain_processes_finalize_arriving_after_cancel() {
+        // Regression: the prior `try_recv()` drain raced the router's
+        // shutdown_sweep — a Finalize emitted AFTER the stats task
+        // observed cancel was missed, and the final synthetic line never
+        // reached stdout. The bounded `recv().await` drain catches the
+        // late event; verify by reading the synthetic line off the
+        // duplex writer after cancel.
+        let (tx, rx) = mpsc::channel::<StatsEvent>(8);
+        let cancel = CancellationToken::new();
+        let (writer, mut reader) = duplex(4096);
+        let cfg = enabled_config(60_000, 32); // interval long enough not to fire
+        let handle = tokio::spawn(run(rx, cancel.clone(), cfg, writer));
+
+        let alloc = EndpointIdAllocator::new();
+        let id = alloc.alloc();
+        let stats = Arc::new(EndpointStats::default());
+        stats.store_state(EndpointState::Connected);
+        tx.send(make_register(id, "ep", stats.clone()))
+            .await
+            .expect("register");
+
+        // Cancel FIRST, then send Finalize — simulating the router's
+        // shutdown_sweep which emits Finalize after observing cancel.
+        cancel.cancel();
+        // Yield so the stats task observes cancel before our send lands.
+        tokio::task::yield_now().await;
+        stats.store_state(EndpointState::Down);
+        tx.send(StatsEvent::Finalize { id })
+            .await
+            .expect("finalize after cancel");
+        drop(tx);
+
+        tokio::time::timeout(Duration::from_secs(3), handle)
+            .await
+            .expect("stats task did not exit")
+            .expect("stats task panicked");
+
+        let mut buf = vec![0u8; 4096];
+        let n = reader.read(&mut buf).await.expect("read");
+        assert!(n > 0, "no synthetic line emitted post-cancel");
+        let line = std::str::from_utf8(&buf[..n]).unwrap().trim_end();
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["endpoint"], "ep");
+        assert_eq!(v["state"], "down");
     }
 
     #[tokio::test]
@@ -607,6 +678,10 @@ mod tests {
         // Give the task time to process events; with stats disabled, no
         // lines should land on the duplex reader.
         tokio::time::sleep(Duration::from_millis(20)).await;
+        // Drop the sender before cancel so the post-cancel drain's
+        // `recv().await` returns `Ok(None)` immediately and the task
+        // exits without burning the drain budget.
+        drop(tx);
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(2), handle)
             .await
@@ -668,6 +743,10 @@ mod tests {
         endpoints.sort();
         assert_eq!(endpoints, vec!["alpha", "beta"]);
 
+        // Drop the sender so the post-cancel drain exits via `Ok(None)`
+        // immediately. Under `start_paused`, the alternative (timeout
+        // expiry) would require manual `tokio::time::advance` calls.
+        drop(tx);
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(2), handle)
             .await
@@ -711,6 +790,7 @@ mod tests {
         assert_eq!(v["endpoint"], "ep");
         assert_eq!(v["state"], "down");
 
+        drop(tx);
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(2), handle)
             .await
@@ -736,6 +816,7 @@ mod tests {
         // task must keep ticking despite the writer being dead.
         tokio::time::sleep(Duration::from_millis(80)).await;
 
+        drop(tx);
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(2), handle)
             .await
