@@ -23,7 +23,7 @@ use serde::Deserialize;
 
 use crate::endpoint::identity_flags::parse_bool;
 use crate::endpoint::spec::{
-    EndpointSpec, SpecError, parse_host_port, parse_listen_addr, parse_query_pairs,
+    EndpointSpec, Scheme, SpecError, parse_host_port, parse_listen_addr, parse_query_pairs,
     parse_serial_body, parse_u64, parse_usize, split_body_name_query, suggest_query_key,
 };
 use crate::error::Error;
@@ -218,38 +218,35 @@ pub(crate) struct EndpointEntry {
     block_src_comp_out: Option<String>,
 }
 
+/// Translate the TOML `type = "..."` literal into a typed [`Scheme`]. Wraps
+/// the shared [`Scheme::try_from_str`] with the `Error::ConfigSchema` shape
+/// the TOML path is contracted to produce (the same operator-visible error
+/// shape the test `toml_unknown_endpoint_type_rejected` pins).
+fn scheme_from_toml_type(raw: &str, index: usize) -> Result<Scheme, Error> {
+    Scheme::try_from_str(raw).ok_or_else(|| Error::ConfigSchema {
+        index,
+        reason: format!("unknown endpoint type '{raw}' (valid: serial, udps, udpc, tcps, tcpc)"),
+    })
+}
+
 impl EndpointEntry {
     pub(crate) fn into_spec(self, index: usize) -> Result<EndpointSpec, Error> {
-        let scheme_static: &'static str = match self.scheme.as_str() {
-            "serial" => "serial",
-            "udps" => "udps",
-            "udpc" => "udpc",
-            "tcps" => "tcps",
-            "tcpc" => "tcpc",
-            other => {
-                return Err(Error::ConfigSchema {
-                    index,
-                    reason: format!(
-                        "unknown endpoint type '{other}' (valid: serial, udps, udpc, tcps, tcpc)"
-                    ),
-                });
-            }
-        };
+        let scheme = scheme_from_toml_type(&self.scheme, index)?;
 
         // Reject wrong-scheme fields *before* synthesizing the body so that
         // an entry carrying both `path` and `bind` surfaces "field 'bind' is
         // not valid for type 'serial'" — the operator's real mistake — rather
         // than the body-synthesizer's downstream missing-`baud` complaint.
-        self.reject_disallowed_fields(index, scheme_static)?;
-        let body = self.synthesize_body(index, scheme_static)?;
+        self.reject_disallowed_fields(index, scheme)?;
+        let body = self.synthesize_body(index, scheme)?;
         let pairs = self.collect_pairs();
         let name_opt = self.name.as_deref();
-        EndpointSpec::build(scheme_static, &body, name_opt, &pairs).map_err(Error::from)
+        EndpointSpec::build(scheme, &body, name_opt, &pairs).map_err(Error::from)
     }
 
-    fn synthesize_body(&self, index: usize, scheme: &'static str) -> Result<String, Error> {
+    fn synthesize_body(&self, index: usize, scheme: Scheme) -> Result<String, Error> {
         match scheme {
-            "serial" => {
+            Scheme::Serial => {
                 let path = self
                     .path
                     .as_ref()
@@ -257,14 +254,14 @@ impl EndpointEntry {
                 let baud = self.baud.ok_or_else(|| missing(index, scheme, "baud"))?;
                 Ok(format!("{path}:{baud}"))
             }
-            "udps" | "tcps" => {
+            Scheme::UdpServer | Scheme::TcpServer => {
                 let bind = self
                     .bind
                     .as_ref()
                     .ok_or_else(|| missing(index, scheme, "bind"))?;
                 Ok(bind.clone())
             }
-            "udpc" | "tcpc" => {
+            Scheme::UdpClient | Scheme::TcpClient => {
                 let host = self
                     .host
                     .as_ref()
@@ -281,7 +278,6 @@ impl EndpointEntry {
                     Ok(format!("{host}:{port}"))
                 }
             }
-            _ => unreachable!("scheme already validated"),
         }
     }
 
@@ -289,14 +285,13 @@ impl EndpointEntry {
     /// `deny_unknown_fields` on the struct already catches truly-unknown
     /// keys; this method catches "known key, wrong scheme" — e.g. a serial
     /// entry that also carries `bind = "..."`.
-    fn reject_disallowed_fields(&self, index: usize, scheme: &'static str) -> Result<(), Error> {
+    fn reject_disallowed_fields(&self, index: usize, scheme: Scheme) -> Result<(), Error> {
         let allowed: &[&str] = match scheme {
-            "serial" => &["path", "baud", "flow_control"],
-            "udps" => &["bind", "idle_secs"],
-            "tcps" => &["bind"],
-            "udpc" => &["host", "port", "latch_idle_secs"],
-            "tcpc" => &["host", "port"],
-            _ => unreachable!(),
+            Scheme::Serial => &["path", "baud", "flow_control"],
+            Scheme::UdpServer => &["bind", "idle_secs"],
+            Scheme::TcpServer => &["bind"],
+            Scheme::UdpClient => &["host", "port", "latch_idle_secs"],
+            Scheme::TcpClient => &["host", "port"],
         };
 
         let provided: [(&str, bool); 8] = [
@@ -418,18 +413,10 @@ impl EndpointEntry {
             )));
         }
         let pairs = parse_query_pairs(query_str.unwrap_or(""))?;
-
-        let scheme_static: &'static str = match scheme {
-            "serial" => "serial",
-            "udps" => "udps",
-            "udpc" => "udpc",
-            "tcps" => "tcps",
-            "tcpc" => "tcpc",
-            other => return Err(SpecError::UnknownScheme(other.to_string())),
-        };
+        let scheme_enum = Scheme::from_cli_prefix(scheme)?;
 
         let mut entry = EndpointEntry {
-            scheme: scheme.to_string(),
+            scheme: scheme_enum.as_str().to_string(),
             name: explicit_name.map(str::to_string),
             ..EndpointEntry::default()
         };
@@ -437,9 +424,9 @@ impl EndpointEntry {
         // `EndpointSpec::build` so that the CLI path produces the same
         // error precedence as `EndpointSpec::parse` for inputs that fail
         // both a body/query check AND a name check (body/query errors win).
-        entry.apply_cli_body(scheme_static, body)?;
+        entry.apply_cli_body(scheme_enum, body)?;
         for (k, v) in &pairs {
-            entry.apply_cli_pair(scheme_static, k, v)?;
+            entry.apply_cli_pair(scheme_enum, k, v)?;
         }
         Ok(entry)
     }
@@ -448,14 +435,14 @@ impl EndpointEntry {
     /// `host`/`port`) from a CLI-style body. Reuses the existing body
     /// parsers in `endpoint::spec::parse` so the CLI and TOML paths share
     /// the same address grammar.
-    fn apply_cli_body(&mut self, scheme: &'static str, body: &str) -> Result<(), SpecError> {
+    fn apply_cli_body(&mut self, scheme: Scheme, body: &str) -> Result<(), SpecError> {
         match scheme {
-            "serial" => {
+            Scheme::Serial => {
                 let (path, baud) = parse_serial_body(body)?;
                 self.path = Some(path);
                 self.baud = Some(baud);
             }
-            "udps" | "tcps" => {
+            Scheme::UdpServer | Scheme::TcpServer => {
                 // Validate as a listen address (IP literal + port) at CLI
                 // tokenize time — same rule the typed-spec path enforces in
                 // `parse_listen_addr`, so a hostname on the listen side
@@ -466,12 +453,11 @@ impl EndpointEntry {
                 let _addr = parse_listen_addr(body, scheme)?;
                 self.bind = Some(body.to_string());
             }
-            "udpc" | "tcpc" => {
+            Scheme::UdpClient | Scheme::TcpClient => {
                 let (host, port) = parse_host_port(body, scheme)?;
                 self.host = Some(host);
                 self.port = Some(port);
             }
-            _ => unreachable!("scheme already validated"),
         }
         Ok(())
     }
@@ -484,7 +470,7 @@ impl EndpointEntry {
     /// runs against the same data structure for TOML and CLI.
     fn apply_cli_pair(
         &mut self,
-        scheme: &'static str,
+        scheme: Scheme,
         key: &str,
         value: &str,
     ) -> Result<(), SpecError> {
@@ -504,19 +490,19 @@ impl EndpointEntry {
                 self.group = Some(value.to_string());
             }
             "flow_control" => {
-                if scheme != "serial" {
+                if scheme != Scheme::Serial {
                     return Err(unknown());
                 }
                 self.flow_control = Some(value.to_string());
             }
             "idle_secs" => {
-                if scheme != "udps" {
+                if scheme != Scheme::UdpServer {
                     return Err(unknown());
                 }
                 self.idle_secs = Some(parse_u64(value, "idle_secs")?);
             }
             "latch_idle_secs" => {
-                if scheme != "udpc" {
+                if scheme != Scheme::UdpClient {
                     return Err(unknown());
                 }
                 self.latch_idle_secs = Some(parse_u64(value, "latch_idle_secs")?);
@@ -545,7 +531,7 @@ fn push_str_pair(pairs: &mut Vec<(String, String)>, key: &str, val: Option<&str>
     }
 }
 
-fn missing(index: usize, scheme: &'static str, field: &'static str) -> Error {
+fn missing(index: usize, scheme: Scheme, field: &'static str) -> Error {
     Error::ConfigSchema {
         index,
         reason: format!("type '{scheme}' requires field '{field}'"),
@@ -1221,7 +1207,7 @@ totally_made_up = 1
         match EndpointEntry::from_cli_string("udps:0.0.0.0:1?flow_control=rtscts") {
             Err(SpecError::UnknownQueryKey { key, scheme, .. }) => {
                 assert_eq!(key, "flow_control");
-                assert_eq!(scheme, "udps");
+                assert_eq!(scheme, Scheme::UdpServer);
             }
             other => panic!("expected UnknownQueryKey, got {other:?}"),
         }
@@ -1231,7 +1217,7 @@ totally_made_up = 1
     fn cli_path_rejects_listen_hostname_at_tokenize() {
         match EndpointEntry::from_cli_string("udps:gcs.local:14550") {
             Err(SpecError::MalformedBody { scheme, reason, .. }) => {
-                assert_eq!(scheme, "udps");
+                assert_eq!(scheme, Scheme::UdpServer);
                 assert!(reason.contains("must be an IP literal"));
             }
             other => panic!("expected MalformedBody, got {other:?}"),

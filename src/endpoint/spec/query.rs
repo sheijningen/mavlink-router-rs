@@ -5,6 +5,7 @@ use super::super::filters::Filters;
 use super::super::identity_flags::IdentityFlags;
 use super::super::udp::client::{MAX_LATCH_IDLE_SECS, MIN_LATCH_IDLE_SECS};
 use super::super::udp::server::{MAX_IDLE_SECS, MIN_IDLE_SECS};
+use super::Scheme;
 use super::bounds::{check_u64_range, check_usize_range};
 use super::endpoint_kinds::{
     CommonQuery, SerialEndpoint, SerialFlowControl, TcpClientEndpoint, TcpServerEndpoint,
@@ -23,14 +24,13 @@ const UDPC_EXTRA: &[&str] = &["latch_idle_secs"];
 const TCPS_EXTRA: &[&str] = &[];
 const TCPC_EXTRA: &[&str] = &[];
 
-fn known_keys_for(scheme: &str) -> &'static [&'static str] {
+fn known_keys_for(scheme: Scheme) -> &'static [&'static str] {
     match scheme {
-        "serial" => SERIAL_EXTRA,
-        "udps" => UDPS_EXTRA,
-        "udpc" => UDPC_EXTRA,
-        "tcps" => TCPS_EXTRA,
-        "tcpc" => TCPC_EXTRA,
-        _ => &[],
+        Scheme::Serial => SERIAL_EXTRA,
+        Scheme::UdpServer => UDPS_EXTRA,
+        Scheme::UdpClient => UDPC_EXTRA,
+        Scheme::TcpServer => TCPS_EXTRA,
+        Scheme::TcpClient => TCPC_EXTRA,
     }
 }
 
@@ -180,7 +180,7 @@ impl QueryApplier for TcpClientApplier<'_> {
 /// [`SpecError::UnknownQueryKey`] with a scheme-aware did-you-mean suggestion.
 pub fn apply_pairs(
     applier: &mut dyn QueryApplier,
-    scheme: &'static str,
+    scheme: Scheme,
     pairs: &[(String, String)],
 ) -> Result<(), SpecError> {
     for (k, v) in pairs {
@@ -196,7 +196,7 @@ pub fn apply_pairs(
     Ok(())
 }
 
-pub(crate) fn suggest_query_key(scheme: &str, unknown: &str) -> Option<&'static str> {
+pub(crate) fn suggest_query_key(scheme: Scheme, unknown: &str) -> Option<&'static str> {
     let extras = known_keys_for(scheme);
     COMMON_KEYS
         .iter()
@@ -255,7 +255,8 @@ mod tests {
     use crate::endpoint::filters::{Filters, MsgIdRange, U8Range};
     use crate::endpoint::identity_flags::IdentityFlags;
     use crate::endpoint::spec::{
-        EndpointKind, EndpointSpec, SerialEndpoint, SpecError, TcpClientEndpoint, UdpServerEndpoint,
+        EndpointKind, EndpointSpec, Scheme, SerialEndpoint, SpecError, TcpClientEndpoint,
+        UdpServerEndpoint,
     };
 
     fn parse_ok(input: &str) -> EndpointSpec {
@@ -536,7 +537,7 @@ mod tests {
         match parse_err("udps:0.0.0.0:1?flow_control=rtscts") {
             SpecError::UnknownQueryKey { key, scheme, .. } => {
                 assert_eq!(key, "flow_control");
-                assert_eq!(scheme, "udps");
+                assert_eq!(scheme, Scheme::UdpServer);
             }
             other => panic!("wrong error: {other:?}"),
         }
@@ -563,7 +564,7 @@ mod tests {
         match parse_err("udps:0.0.0.0:14550?latch_idle_secs=15") {
             SpecError::UnknownQueryKey { key, scheme, .. } => {
                 assert_eq!(key, "latch_idle_secs");
-                assert_eq!(scheme, "udps");
+                assert_eq!(scheme, Scheme::UdpServer);
             }
             other => panic!("wrong error: {other:?}"),
         }
@@ -574,7 +575,7 @@ mod tests {
         match parse_err("udpc:1.2.3.4:14550?idle_secs=15") {
             SpecError::UnknownQueryKey { key, scheme, .. } => {
                 assert_eq!(key, "idle_secs");
-                assert_eq!(scheme, "udpc");
+                assert_eq!(scheme, Scheme::UdpClient);
             }
             other => panic!("wrong error: {other:?}"),
         }

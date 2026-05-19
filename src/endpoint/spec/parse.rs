@@ -1,5 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 
+use super::Scheme;
 use super::endpoint_kinds::{
     EndpointKind, SerialEndpoint, TcpClientEndpoint, TcpServerEndpoint, UdpClientEndpoint,
     UdpServerEndpoint,
@@ -31,63 +32,65 @@ pub fn split_body_name_query(rest: &str) -> (&str, Option<&str>, Option<&str>) {
 /// Dispatch from scheme + body + parsed query pairs to the concrete
 /// `EndpointKind` variant. Each arm parses the address, defaults the
 /// endpoint struct, then applies query knobs via the per-scheme applier.
+/// Scheme arrives as a typed [`Scheme`] — the string→enum boundary is owned
+/// by the caller ([`super::EndpointSpec::parse`] / the TOML path), so this
+/// match is exhaustive and needs no `UnknownScheme` fallback.
 pub fn parse_kind(
-    scheme: &str,
+    scheme: Scheme,
     body: &str,
     pairs: &[(String, String)],
 ) -> Result<EndpointKind, SpecError> {
     match scheme {
-        "serial" => parse_serial_body(body).and_then(|(path, baud)| {
+        Scheme::Serial => parse_serial_body(body).and_then(|(path, baud)| {
             let mut ep = SerialEndpoint {
                 path,
                 baud,
                 ..SerialEndpoint::default()
             };
-            apply_pairs(&mut SerialApplier(&mut ep), "serial", pairs)?;
+            apply_pairs(&mut SerialApplier(&mut ep), Scheme::Serial, pairs)?;
             Ok(EndpointKind::Serial(ep))
         }),
-        "udps" => parse_listen_addr(body, "udps").and_then(|bind_addr| {
+        Scheme::UdpServer => parse_listen_addr(body, Scheme::UdpServer).and_then(|bind_addr| {
             let mut ep = UdpServerEndpoint {
                 bind_addr,
                 ..UdpServerEndpoint::default()
             };
-            apply_pairs(&mut UdpServerApplier(&mut ep), "udps", pairs)?;
+            apply_pairs(&mut UdpServerApplier(&mut ep), Scheme::UdpServer, pairs)?;
             Ok(EndpointKind::UdpServer(ep))
         }),
-        "udpc" => parse_host_port(body, "udpc").and_then(|(host, port)| {
+        Scheme::UdpClient => parse_host_port(body, Scheme::UdpClient).and_then(|(host, port)| {
             let mut ep = UdpClientEndpoint {
                 host,
                 port,
                 ..UdpClientEndpoint::default()
             };
-            apply_pairs(&mut UdpClientApplier(&mut ep), "udpc", pairs)?;
+            apply_pairs(&mut UdpClientApplier(&mut ep), Scheme::UdpClient, pairs)?;
             Ok(EndpointKind::UdpClient(ep))
         }),
-        "tcps" => parse_listen_addr(body, "tcps").and_then(|bind_addr| {
+        Scheme::TcpServer => parse_listen_addr(body, Scheme::TcpServer).and_then(|bind_addr| {
             let mut ep = TcpServerEndpoint {
                 bind_addr,
                 ..TcpServerEndpoint::default()
             };
-            apply_pairs(&mut TcpServerApplier(&mut ep), "tcps", pairs)?;
+            apply_pairs(&mut TcpServerApplier(&mut ep), Scheme::TcpServer, pairs)?;
             Ok(EndpointKind::TcpServer(ep))
         }),
-        "tcpc" => parse_host_port(body, "tcpc").and_then(|(host, port)| {
+        Scheme::TcpClient => parse_host_port(body, Scheme::TcpClient).and_then(|(host, port)| {
             let mut ep = TcpClientEndpoint {
                 host,
                 port,
                 ..TcpClientEndpoint::default()
             };
-            apply_pairs(&mut TcpClientApplier(&mut ep), "tcpc", pairs)?;
+            apply_pairs(&mut TcpClientApplier(&mut ep), Scheme::TcpClient, pairs)?;
             Ok(EndpointKind::TcpClient(ep))
         }),
-        other => Err(SpecError::UnknownScheme(other.to_string())),
     }
 }
 
 pub(crate) fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> {
     if body.is_empty() {
         return Err(SpecError::MalformedBody {
-            scheme: "serial",
+            scheme: Scheme::Serial,
             body: body.to_string(),
             reason: "empty body".to_string(),
         });
@@ -102,7 +105,7 @@ pub(crate) fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> 
     };
     let Some(pos) = pos else {
         return Err(SpecError::MalformedBody {
-            scheme: "serial",
+            scheme: Scheme::Serial,
             body: body.to_string(),
             reason: "expected '<path>:<baud>' or '<path>,<baud>'".to_string(),
         });
@@ -111,19 +114,19 @@ pub(crate) fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> 
     let baud_str = &body[pos + 1..];
     if path.is_empty() {
         return Err(SpecError::MalformedBody {
-            scheme: "serial",
+            scheme: Scheme::Serial,
             body: body.to_string(),
             reason: "empty device path".to_string(),
         });
     }
     let baud: u32 = baud_str.parse().map_err(|_| SpecError::MalformedBody {
-        scheme: "serial",
+        scheme: Scheme::Serial,
         body: body.to_string(),
         reason: format!("baud '{baud_str}' is not a valid u32"),
     })?;
     if baud == 0 {
         return Err(SpecError::MalformedBody {
-            scheme: "serial",
+            scheme: Scheme::Serial,
             body: body.to_string(),
             reason: "baud must be > 0".to_string(),
         });
@@ -135,7 +138,7 @@ pub(crate) fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> 
 /// as `parse_host_port`, but with an additional constraint that the host
 /// must be an IP literal (CLAUDE.md "malformed addresses are fatal" — bind
 /// targets are not resolved at runtime, only dial targets are).
-pub(crate) fn parse_listen_addr(body: &str, scheme: &'static str) -> Result<SocketAddr, SpecError> {
+pub(crate) fn parse_listen_addr(body: &str, scheme: Scheme) -> Result<SocketAddr, SpecError> {
     let (host, port) = parse_host_port(body, scheme)?;
     let ip: IpAddr = host.parse().map_err(|_| SpecError::MalformedBody {
         scheme,
@@ -147,10 +150,7 @@ pub(crate) fn parse_listen_addr(body: &str, scheme: &'static str) -> Result<Sock
     Ok(SocketAddr::new(ip, port))
 }
 
-pub(crate) fn parse_host_port(
-    body: &str,
-    scheme: &'static str,
-) -> Result<(String, u16), SpecError> {
+pub(crate) fn parse_host_port(body: &str, scheme: Scheme) -> Result<(String, u16), SpecError> {
     if body.is_empty() {
         return Err(SpecError::MalformedBody {
             scheme,
@@ -246,7 +246,7 @@ pub fn sanitize_for_name(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_for_name, validate_name};
+    use super::{Scheme, sanitize_for_name, validate_name};
     use crate::endpoint::spec::{
         EndpointKind, EndpointSpec, SerialEndpoint, SpecError, TcpClientEndpoint,
         TcpServerEndpoint, UdpClientEndpoint, UdpServerEndpoint,
@@ -353,7 +353,7 @@ mod tests {
         assert!(matches!(
             parse_err("serial:COM3"),
             SpecError::MalformedBody {
-                scheme: "serial",
+                scheme: Scheme::Serial,
                 ..
             }
         ));
@@ -364,7 +364,7 @@ mod tests {
         assert!(matches!(
             parse_err("serial:/dev/foo:abc"),
             SpecError::MalformedBody {
-                scheme: "serial",
+                scheme: Scheme::Serial,
                 ..
             }
         ));
@@ -375,7 +375,7 @@ mod tests {
         assert!(matches!(
             parse_err("serial::921600"),
             SpecError::MalformedBody {
-                scheme: "serial",
+                scheme: Scheme::Serial,
                 ..
             }
         ));
@@ -386,7 +386,7 @@ mod tests {
         assert!(matches!(
             parse_err("serial:/dev/foo:0"),
             SpecError::MalformedBody {
-                scheme: "serial",
+                scheme: Scheme::Serial,
                 ..
             }
         ));
@@ -433,7 +433,7 @@ mod tests {
         let err = parse_err("tcps:localhost:5760");
         match err {
             SpecError::MalformedBody { scheme, reason, .. } => {
-                assert_eq!(scheme, "tcps");
+                assert_eq!(scheme, Scheme::TcpServer);
                 assert!(
                     reason.contains("must be an IP literal"),
                     "unexpected reason: {reason}"
@@ -448,7 +448,7 @@ mod tests {
         let err = parse_err("udps:gcs.local:14550");
         match err {
             SpecError::MalformedBody { scheme, reason, .. } => {
-                assert_eq!(scheme, "udps");
+                assert_eq!(scheme, Scheme::UdpServer);
                 assert!(
                     reason.contains("must be an IP literal"),
                     "unexpected reason: {reason}"

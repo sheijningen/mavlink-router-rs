@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use super::Scheme;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SpecError {
     #[error("missing scheme in '{0}'")]
@@ -13,7 +15,7 @@ pub enum SpecError {
         fmt_suggestion(suggestion)
     )]
     UnknownQueryKey {
-        scheme: &'static str,
+        scheme: Scheme,
         key: String,
         suggestion: Option<&'static str>,
     },
@@ -23,7 +25,7 @@ pub enum SpecError {
     DuplicateQueryKey(String),
     #[error("malformed body for scheme '{scheme}': '{body}' ({reason})")]
     MalformedBody {
-        scheme: &'static str,
+        scheme: Scheme,
         body: String,
         reason: String,
     },

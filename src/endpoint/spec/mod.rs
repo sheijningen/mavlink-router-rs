@@ -2,6 +2,8 @@
 //! fully-typed [`EndpointSpec`]. See the "Project layout" section of
 //! `CLAUDE.md` for the per-file breakdown.
 
+use std::fmt;
+
 pub(crate) mod bounds;
 mod endpoint_kinds;
 mod error;
@@ -13,6 +15,61 @@ pub use endpoint_kinds::{
     TcpServerEndpoint, UdpClientEndpoint, UdpServerEndpoint,
 };
 pub use error::SpecError;
+
+/// Closed set of endpoint schemes the parser recognises. Carrying the scheme
+/// as an enum past the string-tokenising boundary (CLI argv, TOML `type`
+/// field) makes downstream matches exhaustive — every helper that branches on
+/// scheme is type-checked against this list, with no `unreachable!` fallback
+/// needed when a new variant is added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Scheme {
+    Serial,
+    UdpServer,
+    UdpClient,
+    TcpServer,
+    TcpClient,
+}
+
+impl Scheme {
+    /// CLI prefix / TOML `type` literal for this variant. Pinned strings —
+    /// these appear verbatim in error messages and CLAUDE.md's CLI grammar.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scheme::Serial => "serial",
+            Scheme::UdpServer => "udps",
+            Scheme::UdpClient => "udpc",
+            Scheme::TcpServer => "tcps",
+            Scheme::TcpClient => "tcpc",
+        }
+    }
+
+    /// String → enum at the parser boundary. `None` means the prefix isn't a
+    /// known scheme; callers decide which error to raise (CLI:
+    /// [`SpecError::UnknownScheme`], TOML: [`crate::error::Error::ConfigSchema`]).
+    pub fn try_from_str(raw: &str) -> Option<Self> {
+        match raw {
+            "serial" => Some(Scheme::Serial),
+            "udps" => Some(Scheme::UdpServer),
+            "udpc" => Some(Scheme::UdpClient),
+            "tcps" => Some(Scheme::TcpServer),
+            "tcpc" => Some(Scheme::TcpClient),
+            _ => None,
+        }
+    }
+
+    /// String → enum on the CLI path, surfacing [`SpecError::UnknownScheme`]
+    /// on a bad prefix. Used by [`EndpointSpec::parse`] and the CLI adapter
+    /// in `config::EndpointEntry::from_cli_string`.
+    pub fn from_cli_prefix(raw: &str) -> Result<Self, SpecError> {
+        Self::try_from_str(raw).ok_or_else(|| SpecError::UnknownScheme(raw.to_string()))
+    }
+}
+
+impl fmt::Display for Scheme {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 use parse::{default_name, parse_kind, validate_name};
 
@@ -48,10 +105,10 @@ impl EndpointSpec {
     /// [`EndpointSpec`] values for the same input (pinned by
     /// `cli_path_equivalent_to_direct_endpoint_spec_parse` in `config.rs`).
     pub fn parse(input: &str) -> Result<Self, SpecError> {
-        let (scheme, rest) = input
+        let (scheme_str, rest) = input
             .split_once(':')
             .ok_or_else(|| SpecError::MissingScheme(input.to_string()))?;
-        if scheme.is_empty() {
+        if scheme_str.is_empty() {
             return Err(SpecError::MissingScheme(input.to_string()));
         }
 
@@ -64,6 +121,7 @@ impl EndpointSpec {
         }
 
         let pairs = parse_query_pairs(query_str.unwrap_or(""))?;
+        let scheme = Scheme::from_cli_prefix(scheme_str)?;
         Self::build(scheme, body, explicit_name, &pairs)
     }
 
@@ -75,7 +133,7 @@ impl EndpointSpec {
     /// "one parser for both CLI and TOML" locked decision is enforced by
     /// type-system reuse rather than by convention.
     pub fn build(
-        scheme: &str,
+        scheme: Scheme,
         body: &str,
         explicit_name: Option<&str>,
         pairs: &[(String, String)],
