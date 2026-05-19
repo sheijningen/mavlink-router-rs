@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::config::{Config, LogFormat, LogLevel};
+use crate::config::{
+    Config, DEFAULT_DEDUP_MS, DEFAULT_SHUTDOWN_GRACE_SECS, DEFAULT_STATS_INTERVAL_SECS, LogFormat,
+    LogLevel,
+};
 use crate::endpoint::spec::EndpointSpec;
 use crate::error::Error;
 
@@ -31,15 +34,15 @@ pub struct Cli {
     pub stats: bool,
 
     /// Stats output interval in seconds
-    #[arg(long, default_value_t = crate::config::DEFAULT_STATS_INTERVAL_SECS, value_name = "N")]
+    #[arg(long, default_value_t = DEFAULT_STATS_INTERVAL_SECS, value_name = "N")]
     pub stats_interval: u64,
 
     /// Duplicate suppression window in milliseconds (0 disables dedup)
-    #[arg(long, default_value_t = crate::config::DEFAULT_DEDUP_MS, value_name = "N")]
+    #[arg(long, default_value_t = DEFAULT_DEDUP_MS, value_name = "N")]
     pub dedup_ms: u64,
 
     /// Overall wall-clock budget for shutdown in seconds
-    #[arg(long, default_value_t = crate::config::DEFAULT_SHUTDOWN_GRACE_SECS, value_name = "N")]
+    #[arg(long, default_value_t = DEFAULT_SHUTDOWN_GRACE_SECS, value_name = "N")]
     pub shutdown_grace: u64,
 
     /// One or more endpoint specifications (scheme:body[#name][?key=val&...])
