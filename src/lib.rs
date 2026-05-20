@@ -170,53 +170,27 @@ fn spec_identity(spec: &EndpointSpec) -> &IdentityFlags {
     }
 }
 
-/// Weight a spec contributes to its group's "effective member" count. The
-/// trigger for the dedup warning is whether the group can host duplicate
-/// uplink frames at runtime, which is broader than "≥2 top-level entries":
-/// a single `tcps:` / `udps:` parent listener with `?group=` is the canonical
-/// redundant-uplink configuration too — its accepted clients (or learned
-/// peers) inherit the group at admission, so two upstreams dialling the same
-/// listener already share the learn-set. Parents therefore weigh 2 on their
-/// own. Sniffers contribute 0 — a sniffer in a group is a diagnostic tap,
-/// not a redundant leg.
-fn group_member_weight(spec: &EndpointSpec) -> usize {
-    if spec_identity(spec).sniffer {
-        return 0;
-    }
-    match &spec.kind {
-        EndpointKind::TcpServer(_) | EndpointKind::UdpServer(_) => 2,
-        _ => 1,
-    }
-}
-
-/// Return every group whose effective membership is high enough that a
-/// `--dedup-ms=0` run is likely a misconfig. Pure helper: `dedup_ms > 0`
-/// short-circuits to an empty `Vec`, so the gate is testable from one entry
-/// point. The reported count is the *declared* member count (sniffers
-/// excluded) — operators see the same number they put in their config, not
-/// the weighted internal score.
+/// Return every group with two or more non-sniffer members when dedup is
+/// off. Sniffers are diagnostic taps, not redundant legs, so they don't
+/// count. `dedup_ms > 0` short-circuits to an empty `Vec`.
 fn groups_needing_dedup_warning(specs: &[EndpointSpec], dedup_ms: u64) -> Vec<(Arc<str>, usize)> {
     if dedup_ms > 0 {
         return Vec::new();
     }
-    // (effective_weight, declared_count)
-    let mut by_group: HashMap<Arc<str>, (usize, usize)> = HashMap::new();
+    let mut by_group: HashMap<Arc<str>, usize> = HashMap::new();
     for spec in specs {
-        let Some(name) = &spec_identity(spec).group else {
-            continue;
-        };
-        let weight = group_member_weight(spec);
-        if weight == 0 {
+        let identity = spec_identity(spec);
+        if identity.sniffer {
             continue;
         }
-        let entry = by_group.entry(name.clone()).or_default();
-        entry.0 += weight;
-        entry.1 += 1;
+        let Some(name) = &identity.group else {
+            continue;
+        };
+        *by_group.entry(name.clone()).or_insert(0) += 1;
     }
     let mut groups: Vec<(Arc<str>, usize)> = by_group
         .into_iter()
-        .filter(|(_, (weight, _))| *weight >= 2)
-        .map(|(name, (_, count))| (name, count))
+        .filter(|(_, count)| *count >= 2)
         .collect();
     groups.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     groups
@@ -543,16 +517,14 @@ mod tests {
     }
 
     #[test]
-    fn groups_needing_dedup_warning_fires_on_lone_listener_parent() {
-        // A single `tcps:` listener with `?group=` is itself the
-        // redundant-uplink pattern — accepted clients inherit the group
-        // and share learn-state at runtime.
+    fn groups_needing_dedup_warning_ignores_lone_listener_parent() {
+        // A single `tcps:` / `udps:` listener with `?group=` declares one
+        // member; the warning fires only once a second leg joins the group.
         for body in ["tcps:0.0.0.0:1?group=uplink", "udps:0.0.0.0:1?group=uplink"] {
             let specs = vec![EndpointSpec::parse(body).unwrap()];
-            assert_eq!(
-                group_names(&groups_needing_dedup_warning(&specs, 0)),
-                vec![("uplink", 1)],
-                "expected listener-only group to warn: {body}"
+            assert!(
+                groups_needing_dedup_warning(&specs, 0).is_empty(),
+                "lone listener parent should not warn: {body}"
             );
         }
     }
@@ -592,25 +564,14 @@ mod tests {
     }
 
     #[test]
-    fn group_member_weight_matrix() {
-        // Regression guard: any future EndpointKind silently defaulting to
-        // weight 1 would under-count listener-style additions.
-        let cases = [
-            ("tcpc:127.0.0.1:1?group=g", 1),
-            ("udpc:127.0.0.1:2?group=g", 1),
-            ("serial:/dev/null:115200?group=g", 1),
-            ("tcps:0.0.0.0:3?group=g", 2),
-            ("udps:0.0.0.0:4?group=g", 2),
-            ("tcpc:127.0.0.1:5?group=g&sniffer=true", 0),
-            ("tcps:0.0.0.0:6?group=g&sniffer=true", 0),
+    fn groups_needing_dedup_warning_fires_on_two_listeners() {
+        let specs = vec![
+            EndpointSpec::parse("tcps:0.0.0.0:1?group=uplink").unwrap(),
+            EndpointSpec::parse("udps:0.0.0.0:2?group=uplink").unwrap(),
         ];
-        for (body, expected) in cases {
-            let spec = EndpointSpec::parse(body).unwrap();
-            assert_eq!(
-                group_member_weight(&spec),
-                expected,
-                "weight mismatch for {body}"
-            );
-        }
+        assert_eq!(
+            group_names(&groups_needing_dedup_warning(&specs, 0)),
+            vec![("uplink", 2)]
+        );
     }
 }
