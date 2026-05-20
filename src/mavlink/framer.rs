@@ -18,7 +18,6 @@ pub struct Framer {
     buf: BytesMut,
     resync_bytes: u64,
     crc_errors: u64,
-    read_capacity: usize,
 }
 
 impl Framer {
@@ -31,7 +30,6 @@ impl Framer {
             buf: BytesMut::with_capacity(cap),
             resync_bytes: 0,
             crc_errors: 0,
-            read_capacity: cap,
         }
     }
 
@@ -170,7 +168,7 @@ impl Framer {
             ..header
         };
         let frame = self.buf.split_to(frame_len).freeze();
-        self.buf.reserve(self.read_capacity);
+        self.buf.reserve(DEFAULT_BUF_CAPACITY);
         Some((full_header, frame))
     }
 
