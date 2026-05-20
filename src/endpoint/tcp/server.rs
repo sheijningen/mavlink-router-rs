@@ -131,12 +131,12 @@ async fn run_accept_loop(listener: TcpListener, spec: &TcpServerSpec, wiring: &T
                     Ok((stream, peer_addr)) => {
                         accept_one_client(stream, peer_addr, spec, wiring, &mut children).await;
                     }
-                    Err(e) => {
+                    Err(err) => {
                         // Per CLAUDE.md: removal of a child without killing the
                         // router. Accept errors are typically EMFILE-style
                         // per-connection failures, not listener death; log and
                         // continue.
-                        warn!(error = %e, "tcps accept failed; continuing");
+                        warn!(error = %err, "tcps accept failed; continuing");
                     }
                 }
             }
@@ -156,8 +156,8 @@ async fn accept_one_client(
     wiring: &TcpServerWiring,
     children: &mut JoinSet<()>,
 ) {
-    if let Err(e) = configure_tcp_stream(&stream) {
-        warn!(error = %e, %peer_addr, "tcps configure_tcp_stream failed on accept");
+    if let Err(err) = configure_tcp_stream(&stream) {
+        warn!(error = %err, %peer_addr, "tcps configure_tcp_stream failed on accept");
     }
 
     let child_id = wiring.allocator.alloc();

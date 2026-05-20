@@ -102,8 +102,8 @@ pub struct StatsRunConfig {
 /// Stable lowercase label for the stats JSON's `state` field — pinned by
 /// CLAUDE.md's "Stats `state` field" decision (`connected | reconnecting |
 /// idle | down`).
-fn state_label(s: EndpointState) -> &'static str {
-    match s {
+fn state_label(state: EndpointState) -> &'static str {
+    match state {
         EndpointState::Reconnecting => "reconnecting",
         EndpointState::Connected => "connected",
         EndpointState::Idle => "idle",
@@ -168,9 +168,9 @@ pub async fn run<W>(
     // back-to-back lines on recovery).
     let mut interval = cfg.enabled.then(|| {
         let start = tokio::time::Instant::now() + cfg.interval;
-        let mut i = tokio::time::interval_at(start, cfg.interval);
-        i.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        i
+        let mut timer = tokio::time::interval_at(start, cfg.interval);
+        timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        timer
     });
 
     loop {
@@ -183,9 +183,9 @@ pub async fn run<W>(
                 warn_on_new_drops(total_dropped, &mut last_warned_dropped);
                 drain_queue(&mut queue, &mut writer, &mut broken_pipe_warned).await;
             }
-            ev = event_rx.recv() => match ev {
-                Some(ev) => {
-                    handle_event(&mut registry, &mut queue, cfg.queue_capacity, &mut total_dropped, cfg.enabled, ev);
+            received = event_rx.recv() => match received {
+                Some(event) => {
+                    handle_event(&mut registry, &mut queue, cfg.queue_capacity, &mut total_dropped, cfg.enabled, event);
                     drain_queue(&mut queue, &mut writer, &mut broken_pipe_warned).await;
                 }
                 None => {
@@ -213,13 +213,13 @@ pub async fn run<W>(
         }
         let remaining = drain_deadline - now;
         match tokio::time::timeout(remaining, event_rx.recv()).await {
-            Ok(Some(ev)) => handle_event(
+            Ok(Some(event)) => handle_event(
                 &mut registry,
                 &mut queue,
                 cfg.queue_capacity,
                 &mut total_dropped,
                 cfg.enabled,
-                ev,
+                event,
             ),
             Ok(None) | Err(_) => break,
         }
@@ -246,8 +246,8 @@ struct QueueEntry {
 /// enabled or not without a second copy of the loop.
 async fn interval_tick(interval: Option<&mut tokio::time::Interval>) {
     match interval {
-        Some(i) => {
-            i.tick().await;
+        Some(timer) => {
+            timer.tick().await;
         }
         None => std::future::pending::<()>().await,
     }
@@ -259,9 +259,9 @@ fn handle_event(
     queue_capacity: usize,
     total_dropped: &mut u64,
     emit_lines: bool,
-    ev: StatsEvent,
+    event: StatsEvent,
 ) {
-    match ev {
+    match event {
         StatsEvent::Register { id, name, stats } => {
             trace!(%id, %name, "stats: register");
             registry.insert(id, RegisteredEndpoint { name, stats });
@@ -344,7 +344,7 @@ fn enqueue_synthetic(
         return;
     }
     if queue.len() >= queue_capacity {
-        if let Some(pos) = queue.iter().position(|e| !e.synthetic) {
+        if let Some(pos) = queue.iter().position(|entry| !entry.synthetic) {
             queue.remove(pos);
             *total_dropped = total_dropped.saturating_add(1);
         } else if let Some(evicted) = queue.pop_front() {
@@ -390,21 +390,21 @@ async fn drain_queue<W>(
         }
         let line = &entry.line;
         let mut json = match serde_json::to_vec(line) {
-            Ok(v) => v,
-            Err(e) => {
-                debug!(error = %e, "stats: serialize failed; dropping line");
+            Ok(bytes) => bytes,
+            Err(err) => {
+                debug!(error = %err, "stats: serialize failed; dropping line");
                 continue;
             }
         };
         json.push(b'\n');
         match writer.write_all(&json).await {
             Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+            Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {
                 warn!("stats stdout broken pipe; suppressing further stats output");
                 *broken_pipe_warned = true;
             }
-            Err(e) => {
-                debug!(error = %e, "stats: write error");
+            Err(err) => {
+                debug!(error = %err, "stats: write error");
             }
         }
     }
@@ -495,71 +495,74 @@ mod tests {
         assert!(!ts.contains('.'), "ts = {ts}");
     }
 
-    fn line(endpoint: &str) -> StatsLine {
+    fn make_line(endpoint: &str) -> StatsLine {
         build_line(endpoint, &EndpointStats::default(), "t".to_string())
     }
 
-    fn entry_endpoints(q: &VecDeque<QueueEntry>) -> Vec<&str> {
-        q.iter().map(|e| e.line.endpoint.as_str()).collect()
+    fn entry_endpoints(queue: &VecDeque<QueueEntry>) -> Vec<&str> {
+        queue
+            .iter()
+            .map(|entry| entry.line.endpoint.as_str())
+            .collect()
     }
 
     #[test]
     fn regular_enqueue_drops_oldest_when_capacity_exceeded() {
-        let mut q = VecDeque::new();
+        let mut queue = VecDeque::new();
         let mut dropped = 0u64;
-        enqueue_regular(&mut q, 2, line("a"), &mut dropped);
-        enqueue_regular(&mut q, 2, line("b"), &mut dropped);
-        enqueue_regular(&mut q, 2, line("c"), &mut dropped);
+        enqueue_regular(&mut queue, 2, make_line("a"), &mut dropped);
+        enqueue_regular(&mut queue, 2, make_line("b"), &mut dropped);
+        enqueue_regular(&mut queue, 2, make_line("c"), &mut dropped);
         assert_eq!(dropped, 1);
-        assert_eq!(entry_endpoints(&q), vec!["b", "c"]);
+        assert_eq!(entry_endpoints(&queue), vec!["b", "c"]);
     }
 
     #[test]
     fn regular_enqueue_zero_capacity_drops_everything() {
-        let mut q = VecDeque::new();
+        let mut queue = VecDeque::new();
         let mut dropped = 0u64;
-        enqueue_regular(&mut q, 0, line("a"), &mut dropped);
+        enqueue_regular(&mut queue, 0, make_line("a"), &mut dropped);
         assert_eq!(dropped, 1);
-        assert!(q.is_empty());
+        assert!(queue.is_empty());
     }
 
     #[test]
     fn synthetic_enqueue_evicts_oldest_regular_first() {
         // Bypass path: a synthetic Finalize line entering a full queue must
         // displace an interval line, not another synthetic line.
-        let mut q = VecDeque::new();
+        let mut queue = VecDeque::new();
         let mut dropped = 0u64;
-        enqueue_regular(&mut q, 3, line("reg-a"), &mut dropped);
-        enqueue_synthetic(&mut q, 3, line("syn-x"), &mut dropped);
-        enqueue_regular(&mut q, 3, line("reg-b"), &mut dropped);
+        enqueue_regular(&mut queue, 3, make_line("reg-a"), &mut dropped);
+        enqueue_synthetic(&mut queue, 3, make_line("syn-x"), &mut dropped);
+        enqueue_regular(&mut queue, 3, make_line("reg-b"), &mut dropped);
         // Queue is now [reg-a (R), syn-x (S), reg-b (R)] at cap 3.
-        enqueue_synthetic(&mut q, 3, line("syn-y"), &mut dropped);
+        enqueue_synthetic(&mut queue, 3, make_line("syn-y"), &mut dropped);
         // syn-y enters via bypass → reg-a (oldest regular) is evicted, syn-x stays.
         assert_eq!(dropped, 1);
-        assert_eq!(entry_endpoints(&q), vec!["syn-x", "reg-b", "syn-y"]);
+        assert_eq!(entry_endpoints(&queue), vec!["syn-x", "reg-b", "syn-y"]);
     }
 
     #[test]
     fn synthetic_enqueue_falls_back_to_oldest_synthetic_when_no_regular() {
-        let mut q = VecDeque::new();
+        let mut queue = VecDeque::new();
         let mut dropped = 0u64;
-        enqueue_synthetic(&mut q, 2, line("syn-a"), &mut dropped);
-        enqueue_synthetic(&mut q, 2, line("syn-b"), &mut dropped);
+        enqueue_synthetic(&mut queue, 2, make_line("syn-a"), &mut dropped);
+        enqueue_synthetic(&mut queue, 2, make_line("syn-b"), &mut dropped);
         // Queue is now [syn-a, syn-b] at cap 2 — every entry is synthetic.
-        enqueue_synthetic(&mut q, 2, line("syn-c"), &mut dropped);
+        enqueue_synthetic(&mut queue, 2, make_line("syn-c"), &mut dropped);
         // syn-c displaces syn-a (oldest synthetic) and the lost endpoint is
         // named in a dedicated WARN by `enqueue_synthetic`.
         assert_eq!(dropped, 1);
-        assert_eq!(entry_endpoints(&q), vec!["syn-b", "syn-c"]);
+        assert_eq!(entry_endpoints(&queue), vec!["syn-b", "syn-c"]);
     }
 
     #[test]
     fn synthetic_enqueue_zero_capacity_drops_and_warns() {
-        let mut q = VecDeque::new();
+        let mut queue = VecDeque::new();
         let mut dropped = 0u64;
-        enqueue_synthetic(&mut q, 0, line("syn-a"), &mut dropped);
+        enqueue_synthetic(&mut queue, 0, make_line("syn-a"), &mut dropped);
         assert_eq!(dropped, 1);
-        assert!(q.is_empty());
+        assert!(queue.is_empty());
     }
 
     #[test]
@@ -632,12 +635,12 @@ mod tests {
             .expect("stats task panicked");
 
         let mut buf = vec![0u8; 4096];
-        let n = reader.read(&mut buf).await.expect("read");
-        assert!(n > 0, "no synthetic line emitted post-cancel");
-        let line = std::str::from_utf8(&buf[..n]).unwrap().trim_end();
-        let v: serde_json::Value = serde_json::from_str(line).unwrap();
-        assert_eq!(v["endpoint"], "ep");
-        assert_eq!(v["state"], "down");
+        let bytes_read = reader.read(&mut buf).await.expect("read");
+        assert!(bytes_read > 0, "no synthetic line emitted post-cancel");
+        let line = std::str::from_utf8(&buf[..bytes_read]).unwrap().trim_end();
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(value["endpoint"], "ep");
+        assert_eq!(value["state"], "down");
     }
 
     #[tokio::test]
@@ -692,8 +695,11 @@ mod tests {
         // We close the writer half by dropping it (already done when the
         // task returned), so `read` returns 0 cleanly at EOF.
         let mut buf = vec![0u8; 1024];
-        let n = reader.read(&mut buf).await.expect("read");
-        assert_eq!(n, 0, "disabled stats wrote {n} bytes to stdout");
+        let bytes_read = reader.read(&mut buf).await.expect("read");
+        assert_eq!(
+            bytes_read, 0,
+            "disabled stats wrote {bytes_read} bytes to stdout"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -705,18 +711,18 @@ mod tests {
         let handle = tokio::spawn(run(rx, cancel.clone(), cfg, writer));
 
         let alloc = EndpointIdAllocator::new();
-        let a = alloc.alloc();
-        let b = alloc.alloc();
+        let id_a = alloc.alloc();
+        let id_b = alloc.alloc();
         let stats_a = Arc::new(EndpointStats::default());
         let stats_b = Arc::new(EndpointStats::default());
         stats_a.add_rx_frame(10);
         stats_b.add_tx_frame(20);
         stats_a.store_state(EndpointState::Connected);
         stats_b.store_state(EndpointState::Reconnecting);
-        tx.send(make_register(a, "alpha", stats_a))
+        tx.send(make_register(id_a, "alpha", stats_a))
             .await
             .expect("register a");
-        tx.send(make_register(b, "beta", stats_b))
+        tx.send(make_register(id_b, "beta", stats_b))
             .await
             .expect("register b");
 
@@ -726,18 +732,18 @@ mod tests {
         // Read whatever was written so far. duplex buffer is in-process so
         // bytes are available immediately after the write.
         let mut buf = vec![0u8; 4096];
-        let n = tokio::time::timeout(Duration::from_secs(1), reader.read(&mut buf))
+        let bytes_read = tokio::time::timeout(Duration::from_secs(1), reader.read(&mut buf))
             .await
             .expect("reader timeout")
             .expect("reader read");
-        let text = std::str::from_utf8(&buf[..n]).unwrap();
+        let text = std::str::from_utf8(&buf[..bytes_read]).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "expected 2 lines, got: {text}");
         let mut endpoints: Vec<String> = lines
             .iter()
-            .map(|l| {
-                let v: serde_json::Value = serde_json::from_str(l).unwrap();
-                v["endpoint"].as_str().unwrap().to_string()
+            .map(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                value["endpoint"].as_str().unwrap().to_string()
             })
             .collect();
         endpoints.sort();
@@ -781,14 +787,14 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         let mut buf = vec![0u8; 4096];
-        let n = tokio::time::timeout(Duration::from_secs(1), reader.read(&mut buf))
+        let bytes_read = tokio::time::timeout(Duration::from_secs(1), reader.read(&mut buf))
             .await
             .expect("reader timeout")
             .expect("reader read");
-        let line = std::str::from_utf8(&buf[..n]).unwrap().trim_end();
-        let v: serde_json::Value = serde_json::from_str(line).unwrap();
-        assert_eq!(v["endpoint"], "ep");
-        assert_eq!(v["state"], "down");
+        let line = std::str::from_utf8(&buf[..bytes_read]).unwrap().trim_end();
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(value["endpoint"], "ep");
+        assert_eq!(value["state"], "down");
 
         drop(tx);
         cancel.cancel();

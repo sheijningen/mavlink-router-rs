@@ -176,12 +176,12 @@ async fn open_until_cancel(
             return OpenOutcome::Cancelled;
         }
         match try_open(path, baud, flow_control) {
-            Ok(s) => {
+            Ok(stream) => {
                 info!(%path, baud, "serial opened");
-                return OpenOutcome::Opened(s);
+                return OpenOutcome::Opened(stream);
             }
-            Err(e) => {
-                warn!(error = %e, %path, baud, "serial open failed; retrying");
+            Err(err) => {
+                warn!(error = %err, %path, baud, "serial open failed; retrying");
                 if !wait_or_cancel(cancel, REOPEN_DELAY).await {
                     return OpenOutcome::Cancelled;
                 }

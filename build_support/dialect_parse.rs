@@ -39,28 +39,28 @@ pub(crate) enum ParseArrayError {
 }
 
 impl std::fmt::Display for ParseArrayError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Malformed(t) => write!(f, "malformed array type '{t}'"),
-            Self::BadLength(t) => write!(f, "bad array length in '{t}'"),
-            Self::ZeroLength(t) => write!(f, "zero-length array in '{t}'"),
+            Self::Malformed(type_name) => write!(formatter, "malformed array type '{type_name}'"),
+            Self::BadLength(type_name) => write!(formatter, "bad array length in '{type_name}'"),
+            Self::ZeroLength(type_name) => write!(formatter, "zero-length array in '{type_name}'"),
         }
     }
 }
 
-pub(crate) fn parse_array_suffix(t: &str) -> Result<(String, u8), ParseArrayError> {
-    let Some(lb) = t.find('[') else {
-        return Ok((t.to_string(), 0));
+pub(crate) fn parse_array_suffix(type_name: &str) -> Result<(String, u8), ParseArrayError> {
+    let Some(lb) = type_name.find('[') else {
+        return Ok((type_name.to_string(), 0));
     };
-    let rb = t
+    let rb = type_name
         .find(']')
-        .ok_or_else(|| ParseArrayError::Malformed(t.to_string()))?;
-    let elem = t[..lb].to_string();
-    let len: u8 = t[lb + 1..rb]
+        .ok_or_else(|| ParseArrayError::Malformed(type_name.to_string()))?;
+    let elem = type_name[..lb].to_string();
+    let len: u8 = type_name[lb + 1..rb]
         .parse()
-        .map_err(|_| ParseArrayError::BadLength(t.to_string()))?;
+        .map_err(|_| ParseArrayError::BadLength(type_name.to_string()))?;
     if len == 0 {
-        return Err(ParseArrayError::ZeroLength(t.to_string()));
+        return Err(ParseArrayError::ZeroLength(type_name.to_string()));
     }
     Ok((elem, len))
 }
@@ -82,7 +82,7 @@ pub(crate) enum MergeError {
 }
 
 impl std::fmt::Display for MergeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::CrcExtraConflict {
                 id,
@@ -91,7 +91,7 @@ impl std::fmt::Display for MergeError {
                 prev_crc,
                 new_crc,
             } => write!(
-                f,
+                formatter,
                 "crc_extra conflict for msgid {id} ({prev_name} vs {new_name}): {prev_crc} != {new_crc}"
             ),
             Self::NameConflict {
@@ -99,7 +99,7 @@ impl std::fmt::Display for MergeError {
                 prev_name,
                 new_name,
             } => write!(
-                f,
+                formatter,
                 "msgid {id} declared under two names: '{prev_name}' and '{new_name}'"
             ),
         }
@@ -215,8 +215,8 @@ mod tests {
     // ---- merge_entry ----
 
     fn seeded() -> HashMap<u32, MsgEntryGen> {
-        let mut m = HashMap::new();
-        m.insert(
+        let mut entries = HashMap::new();
+        entries.insert(
             0,
             MsgEntryGen {
                 name: "HEARTBEAT".to_string(),
@@ -225,7 +225,7 @@ mod tests {
                 target_comp_offset: None,
             },
         );
-        m
+        entries
     }
 
     #[test]
@@ -319,21 +319,21 @@ mod tests {
             prev_crc: 11,
             new_crc: 22,
         };
-        let s = crc.to_string();
-        assert!(s.contains("42"));
-        assert!(s.contains("FOO"));
-        assert!(s.contains("BAR"));
-        assert!(s.contains("11"));
-        assert!(s.contains("22"));
+        let crc_text = crc.to_string();
+        assert!(crc_text.contains("42"));
+        assert!(crc_text.contains("FOO"));
+        assert!(crc_text.contains("BAR"));
+        assert!(crc_text.contains("11"));
+        assert!(crc_text.contains("22"));
 
         let name = MergeError::NameConflict {
             id: 7,
             prev_name: "OLD".to_string(),
             new_name: "NEW".to_string(),
         };
-        let s = name.to_string();
-        assert!(s.contains("7"));
-        assert!(s.contains("OLD"));
-        assert!(s.contains("NEW"));
+        let name_text = name.to_string();
+        assert!(name_text.contains("7"));
+        assert!(name_text.contains("OLD"));
+        assert!(name_text.contains("NEW"));
     }
 }

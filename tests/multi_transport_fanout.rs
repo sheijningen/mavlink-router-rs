@@ -27,7 +27,7 @@ use rmr::config::{Config, LogFormat, LogLevel};
 use rmr::parsers::cli::parse_specs;
 
 fn config_with_endpoints(endpoints: Vec<String>) -> Config {
-    let cfg = Config {
+    let config = Config {
         log_level: LogLevel::Warn,
         log_format: LogFormat::Text,
         stats: false,
@@ -36,9 +36,10 @@ fn config_with_endpoints(endpoints: Vec<String>) -> Config {
         skip_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
     };
-    cfg.validate()
+    config
+        .validate()
         .expect("test config must pass cross-endpoint validation");
-    cfg
+    config
 }
 
 fn pick_free_udp_addr() -> SocketAddr {
@@ -54,15 +55,19 @@ fn pick_free_tcp_addr() -> SocketAddr {
 /// Drain a TCP stream into a `Vec<u8>` until we've collected at least
 /// `min_bytes` or hit the timeout. Returns whatever we got — the caller
 /// asserts on shape.
-async fn read_tcp_at_least(stream: &mut TcpStream, min_bytes: usize, dur: Duration) -> Vec<u8> {
+async fn read_tcp_at_least(
+    stream: &mut TcpStream,
+    min_bytes: usize,
+    duration: Duration,
+) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 512];
-    let deadline = tokio::time::Instant::now() + dur;
+    let deadline = tokio::time::Instant::now() + duration;
     while buf.len() < min_bytes && tokio::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         match timeout(remaining, stream.read(&mut tmp)).await {
             Ok(Ok(0)) => break,
-            Ok(Ok(n)) => buf.extend_from_slice(&tmp[..n]),
+            Ok(Ok(bytes_read)) => buf.extend_from_slice(&tmp[..bytes_read]),
             Ok(Err(_)) | Err(_) => break,
         }
     }
@@ -84,7 +89,7 @@ async fn fanout_routes_broadcast_to_other_transports_but_not_source() {
     let udpc_target = pick_free_udp_addr();
     let tcps_addr = pick_free_tcp_addr();
 
-    let cfg = config_with_endpoints(vec![
+    let config = config_with_endpoints(vec![
         format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
         format!("udpc:127.0.0.1:{}#downlink", udpc_target.port()),
         format!("tcps:127.0.0.1:{}#gw", tcps_addr.port()),
@@ -93,7 +98,7 @@ async fn fanout_routes_broadcast_to_other_transports_but_not_source() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run(cfg, cancel).await })
+        tokio::spawn(async move { rmr::run(config, cancel).await })
     };
 
     // Peer B listens on udpc's target address so the router's outbound
@@ -109,10 +114,10 @@ async fn fanout_routes_broadcast_to_other_transports_but_not_source() {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
             match TcpStream::connect(tcps_addr).await {
-                Ok(s) => break s,
-                Err(e) => {
+                Ok(stream) => break stream,
+                Err(err) => {
                     if tokio::time::Instant::now() >= deadline {
-                        panic!("peer_c could not connect to tcps within 2s: {e}");
+                        panic!("peer_c could not connect to tcps within 2s: {err}");
                     }
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
@@ -143,11 +148,11 @@ async fn fanout_routes_broadcast_to_other_transports_but_not_source() {
 
     // Peer B should receive the broadcast via udpc.
     let mut buf_b = vec![0u8; 256];
-    let (n_b, _src_b) = timeout(Duration::from_secs(2), peer_b.recv_from(&mut buf_b))
+    let (bytes_read_b, _src_b) = timeout(Duration::from_secs(2), peer_b.recv_from(&mut buf_b))
         .await
         .expect("peer_b never received frame")
         .expect("peer_b recv_from");
-    assert_eq!(&buf_b[..n_b], &frame[..], "peer_b got wrong bytes");
+    assert_eq!(&buf_b[..bytes_read_b], &frame[..], "peer_b got wrong bytes");
 
     // Peer C should receive the broadcast via tcps. We read up to one frame
     // worth of bytes from the TCP stream.
@@ -165,10 +170,12 @@ async fn fanout_routes_broadcast_to_other_transports_but_not_source() {
     let mut buf_a = vec![0u8; 256];
     match timeout(Duration::from_millis(250), peer_a.recv_from(&mut buf_a)).await {
         Err(_) => {} // timeout = good
-        Ok(Ok((n, _))) => {
-            panic!("peer_a received its own frame back (loop prevention failed): {n} bytes")
+        Ok(Ok((bytes_read, _))) => {
+            panic!(
+                "peer_a received its own frame back (loop prevention failed): {bytes_read} bytes"
+            )
         }
-        Ok(Err(e)) => panic!("peer_a recv_from errored: {e}"),
+        Ok(Err(err)) => panic!("peer_a recv_from errored: {err}"),
     }
 
     cancel.cancel();
@@ -191,7 +198,7 @@ async fn fanout_routes_targeted_frame_only_to_endpoint_that_learned_target() {
     let udpc_target = pick_free_udp_addr();
     let tcps_addr = pick_free_tcp_addr();
 
-    let cfg = config_with_endpoints(vec![
+    let config = config_with_endpoints(vec![
         format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
         format!("udpc:127.0.0.1:{}#downlink", udpc_target.port()),
         format!("tcps:127.0.0.1:{}#gw", tcps_addr.port()),
@@ -200,7 +207,7 @@ async fn fanout_routes_targeted_frame_only_to_endpoint_that_learned_target() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run(cfg, cancel).await })
+        tokio::spawn(async move { rmr::run(config, cancel).await })
     };
 
     let peer_b = UdpSocket::bind(udpc_target).await.expect("peer_b bind");
@@ -209,8 +216,8 @@ async fn fanout_routes_targeted_frame_only_to_endpoint_that_learned_target() {
     let mut peer_c = {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
-            if let Ok(s) = TcpStream::connect(tcps_addr).await {
-                break s;
+            if let Ok(stream) = TcpStream::connect(tcps_addr).await {
+                break stream;
             }
             if tokio::time::Instant::now() >= deadline {
                 panic!("peer_c could not connect to tcps within 2s");
@@ -243,7 +250,7 @@ async fn fanout_routes_targeted_frame_only_to_endpoint_that_learned_target() {
         .await
         .expect("prime_a send");
     let mut tmp = vec![0u8; 256];
-    let (_n, udpc_src) = timeout(Duration::from_secs(2), peer_b.recv_from(&mut tmp))
+    let (_bytes_read, udpc_src) = timeout(Duration::from_secs(2), peer_b.recv_from(&mut tmp))
         .await
         .expect("peer_b waiting for udpc fan-out")
         .expect("peer_b recv");
@@ -303,7 +310,9 @@ async fn fanout_routes_targeted_frame_only_to_endpoint_that_learned_target() {
     // peer_c (behind tcps:gw, which has (30,1) in its learn-set) must get it.
     let bytes_c = read_tcp_at_least(&mut peer_c, targeted.len(), Duration::from_secs(2)).await;
     assert!(
-        bytes_c.windows(targeted.len()).any(|w| w == &targeted[..]),
+        bytes_c
+            .windows(targeted.len())
+            .any(|window| window == &targeted[..]),
         "peer_c never received the targeted frame ({} bytes observed)",
         bytes_c.len()
     );
@@ -312,14 +321,14 @@ async fn fanout_routes_targeted_frame_only_to_endpoint_that_learned_target() {
     let mut maybe_b = vec![0u8; 256];
     match timeout(Duration::from_millis(300), peer_b.recv_from(&mut maybe_b)).await {
         Err(_) => {}
-        Ok(Ok((n, _))) => {
+        Ok(Ok((bytes_read, _))) => {
             assert_ne!(
-                &maybe_b[..n],
+                &maybe_b[..bytes_read],
                 &targeted[..],
                 "peer_b received a targeted frame that wasn't for it"
             );
         }
-        Ok(Err(e)) => panic!("peer_b recv errored: {e}"),
+        Ok(Err(err)) => panic!("peer_b recv errored: {err}"),
     }
 
     cancel.cancel();

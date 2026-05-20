@@ -54,8 +54,8 @@ pub fn peer_endpoint_name(parent_name: &str, addr: SocketAddr) -> String {
 pub struct EndpointId(u64);
 
 impl fmt::Display for EndpointId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.0)
     }
 }
 
@@ -119,10 +119,10 @@ mod tests {
 
     #[test]
     fn allocator_returns_unique_ids() {
-        let a = EndpointIdAllocator::new();
-        let id0 = a.alloc();
-        let id1 = a.alloc();
-        let id2 = a.alloc();
+        let allocator = EndpointIdAllocator::new();
+        let id0 = allocator.alloc();
+        let id1 = allocator.alloc();
+        let id2 = allocator.alloc();
         assert_eq!(id0.0, 0);
         assert_eq!(id1.0, 1);
         assert_eq!(id2.0, 2);
@@ -131,8 +131,8 @@ mod tests {
 
     #[test]
     fn endpoint_id_display() {
-        let a = EndpointIdAllocator::new();
-        let id = a.alloc();
+        let allocator = EndpointIdAllocator::new();
+        let id = allocator.alloc();
         assert_eq!(format!("{id}"), "0");
     }
 
@@ -140,16 +140,16 @@ mod tests {
     async fn wait_or_cancel_returns_false_when_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let r = wait_or_cancel(&cancel, Duration::from_secs(60)).await;
-        assert!(!r);
+        let result = wait_or_cancel(&cancel, Duration::from_secs(60)).await;
+        assert!(!result);
     }
 
     #[tokio::test]
     async fn wait_or_cancel_returns_true_after_delay() {
         let cancel = CancellationToken::new();
         let start = tokio::time::Instant::now();
-        let r = wait_or_cancel(&cancel, Duration::from_millis(20)).await;
-        assert!(r);
+        let result = wait_or_cancel(&cancel, Duration::from_millis(20)).await;
+        assert!(result);
         assert!(start.elapsed() >= Duration::from_millis(20));
     }
 }

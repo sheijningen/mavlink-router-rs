@@ -90,7 +90,7 @@ impl Framer {
             .buf
             .iter()
             .enumerate()
-            .find_map(|(i, &b)| Stx::from_byte(b).map(|s| (i, s)));
+            .find_map(|(index, &byte)| Stx::from_byte(byte).map(|stx| (index, stx)));
         match found {
             Some((pos, stx)) => {
                 if pos > 0 {
@@ -148,7 +148,7 @@ impl Framer {
         let entry: Option<&'static MsgEntry> = msgid_table::lookup(header.msgid);
 
         let crc_ok = match entry {
-            Some(e) => validate_crc(&self.buf[..frame_len], &header, e.crc_extra),
+            Some(entry) => validate_crc(&self.buf[..frame_len], &header, entry.crc_extra),
             None => true,
         };
         if !crc_ok {
@@ -175,8 +175,8 @@ impl Framer {
     }
 
     #[inline]
-    fn add_resync(&mut self, n: u64) {
-        self.resync_bytes = self.resync_bytes.saturating_add(n);
+    fn add_resync(&mut self, count: u64) {
+        self.resync_bytes = self.resync_bytes.saturating_add(count);
     }
 
     /// Discard one byte from the front of the buffer and count it as resync.
@@ -275,9 +275,9 @@ mod tests {
         let mut crc = Crc16::new();
         crc.update_slice(&frame[1..]);
         crc.update(crc_extra);
-        let c = crc.finalize();
-        frame.push((c & 0xFF) as u8);
-        frame.push((c >> 8) as u8);
+        let crc_value = crc.finalize();
+        frame.push((crc_value & 0xFF) as u8);
+        frame.push((crc_value >> 8) as u8);
         frame
     }
 
@@ -303,9 +303,9 @@ mod tests {
         let mut crc = Crc16::new();
         crc.update_slice(&frame[1..]);
         crc.update(crc_extra);
-        let c = crc.finalize();
-        frame.push((c & 0xFF) as u8);
-        frame.push((c >> 8) as u8);
+        let crc_value = crc.finalize();
+        frame.push((crc_value & 0xFF) as u8);
+        frame.push((crc_value >> 8) as u8);
         if let Some(sig) = signature {
             frame.extend_from_slice(sig);
         }
@@ -314,14 +314,14 @@ mod tests {
 
     fn heartbeat_payload() -> Vec<u8> {
         // custom_mode u32 + type + autopilot + base_mode + system_status + mavlink_version
-        let mut p = Vec::with_capacity(9);
-        p.extend_from_slice(&0u32.to_le_bytes());
-        p.push(2); // MAV_TYPE_QUADROTOR
-        p.push(3); // MAV_AUTOPILOT_ARDUPILOTMEGA
-        p.push(0);
-        p.push(0);
-        p.push(3);
-        p
+        let mut payload = Vec::with_capacity(9);
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.push(2); // MAV_TYPE_QUADROTOR
+        payload.push(3); // MAV_AUTOPILOT_ARDUPILOTMEGA
+        payload.push(0);
+        payload.push(0);
+        payload.push(3);
+        payload
     }
 
     #[test]
@@ -329,9 +329,9 @@ mod tests {
         let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
         let frame = build_v1(0, &heartbeat_payload(), crc_extra);
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&frame);
-        let (header, bytes) = f.try_next_frame().expect("frame");
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&frame);
+        let (header, bytes) = framer.try_next_frame().expect("frame");
         assert_eq!(header.version, Version::V1);
         assert_eq!(header.msgid, 0);
         assert_eq!(header.source.sys, 1);
@@ -340,8 +340,8 @@ mod tests {
         assert_eq!(header.target_component, None);
         assert_eq!(bytes.len(), frame.len());
         assert_eq!(&bytes[..], &frame[..]);
-        assert_eq!(f.crc_errors(), 0);
-        assert_eq!(f.resync_bytes(), 0);
+        assert_eq!(framer.crc_errors(), 0);
+        assert_eq!(framer.resync_bytes(), 0);
     }
 
     #[test]
@@ -349,9 +349,9 @@ mod tests {
         let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
         let frame = build_v2(0, &heartbeat_payload(), crc_extra, 0, None);
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&frame);
-        let (header, bytes) = f.try_next_frame().expect("frame");
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&frame);
+        let (header, bytes) = framer.try_next_frame().expect("frame");
         assert_eq!(header.version, Version::V2);
         assert_eq!(header.msgid, 0);
         assert_eq!(bytes.len(), frame.len());
@@ -369,9 +369,9 @@ mod tests {
             Some(&sig),
         );
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&frame);
-        let (_, bytes) = f.try_next_frame().expect("frame");
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&frame);
+        let (_, bytes) = framer.try_next_frame().expect("frame");
         assert_eq!(
             bytes.len(),
             frame.len(),
@@ -379,7 +379,7 @@ mod tests {
         );
         // The trailing 13 bytes should be the signature verbatim.
         assert_eq!(&bytes[bytes.len() - V2_SIGNATURE_LEN..], &sig[..]);
-        assert_eq!(f.crc_errors(), 0);
+        assert_eq!(framer.crc_errors(), 0);
     }
 
     #[test]
@@ -405,12 +405,12 @@ mod tests {
         frame.push(0x00);
         frame.push(0x00);
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&frame);
-        let (header, _) = f.try_next_frame().expect("frame should pass-through");
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&frame);
+        let (header, _) = framer.try_next_frame().expect("frame should pass-through");
         assert_eq!(header.msgid, 99_999);
         assert_eq!(header.target_system, None);
-        assert_eq!(f.crc_errors(), 0);
+        assert_eq!(framer.crc_errors(), 0);
     }
 
     #[test]
@@ -424,9 +424,9 @@ mod tests {
         payload.push(9); // target_component
         let frame = build_v2(4, &payload, crc_extra, 0, None);
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&frame);
-        let (header, _) = f.try_next_frame().expect("frame");
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&frame);
+        let (header, _) = framer.try_next_frame().expect("frame");
         assert_eq!(header.target_system, Some(7));
         assert_eq!(header.target_component, Some(9));
     }
@@ -441,9 +441,9 @@ mod tests {
         payload.extend_from_slice(&42u32.to_le_bytes());
         let frame = build_v2(4, &payload, crc_extra, 0, None);
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&frame);
-        let (header, _) = f.try_next_frame().expect("frame");
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&frame);
+        let (header, _) = framer.try_next_frame().expect("frame");
         assert_eq!(header.target_system, None);
         assert_eq!(header.target_component, None);
     }
@@ -455,11 +455,11 @@ mod tests {
         let mut input = vec![0x00, 0xFF, 0xAB, 0xCD]; // 4 bytes of garbage
         input.extend_from_slice(&frame);
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&input);
-        let (header, _) = f.try_next_frame().expect("frame after resync");
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&input);
+        let (header, _) = framer.try_next_frame().expect("frame after resync");
         assert_eq!(header.msgid, 0);
-        assert_eq!(f.resync_bytes(), 4);
+        assert_eq!(framer.resync_bytes(), 4);
     }
 
     #[test]
@@ -469,13 +469,13 @@ mod tests {
         let last = frame.len() - 1;
         frame[last] ^= 0xFF; // flip CRC high byte
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&frame);
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&frame);
         // The framer should drop the frame, count one CRC error, and resync.
         // Since there's no second frame after, it returns None.
-        assert!(f.try_next_frame().is_none());
-        assert_eq!(f.crc_errors(), 1);
-        assert!(f.resync_bytes() >= 1);
+        assert!(framer.try_next_frame().is_none());
+        assert_eq!(framer.crc_errors(), 1);
+        assert!(framer.resync_bytes() >= 1);
     }
 
     #[test]
@@ -483,13 +483,13 @@ mod tests {
         let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
         let frame = build_v1(0, &heartbeat_payload(), crc_extra);
 
-        let mut f = Framer::new();
+        let mut framer = Framer::new();
         // Feed everything except the last 3 bytes.
-        f.buffer_mut().put_slice(&frame[..frame.len() - 3]);
-        assert!(f.try_next_frame().is_none());
+        framer.buffer_mut().put_slice(&frame[..frame.len() - 3]);
+        assert!(framer.try_next_frame().is_none());
         // Then the rest.
-        f.buffer_mut().put_slice(&frame[frame.len() - 3..]);
-        let (header, _) = f.try_next_frame().expect("frame");
+        framer.buffer_mut().put_slice(&frame[frame.len() - 3..]);
+        let (header, _) = framer.try_next_frame().expect("frame");
         assert_eq!(header.msgid, 0);
     }
 
@@ -500,11 +500,11 @@ mod tests {
         let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
         let frame = build_v2(0, &heartbeat_payload(), crc_extra, 0x02, None);
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&frame);
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&frame);
         // No frame parsed: the STX is discarded and the rest looks like garbage.
-        assert!(f.try_next_frame().is_none());
-        assert!(f.resync_bytes() >= 1);
+        assert!(framer.try_next_frame().is_none());
+        assert!(framer.resync_bytes() >= 1);
     }
 
     #[test]
@@ -512,26 +512,26 @@ mod tests {
         let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
         let frame = build_v1(0, &heartbeat_payload(), crc_extra);
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&frame);
-        f.buffer_mut().put_slice(&frame);
-        f.buffer_mut().put_slice(&frame);
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&frame);
+        framer.buffer_mut().put_slice(&frame);
+        framer.buffer_mut().put_slice(&frame);
         let mut count = 0;
-        while f.try_next_frame().is_some() {
+        while framer.try_next_frame().is_some() {
             count += 1;
         }
         assert_eq!(count, 3);
-        assert_eq!(f.resync_bytes(), 0);
-        assert_eq!(f.crc_errors(), 0);
+        assert_eq!(framer.resync_bytes(), 0);
+        assert_eq!(framer.crc_errors(), 0);
     }
 
     #[test]
     fn default_constructor_is_usable() {
         let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
         let frame = build_v1(0, &heartbeat_payload(), crc_extra);
-        let mut f: Framer = Framer::default();
-        f.buffer_mut().put_slice(&frame);
-        assert!(f.try_next_frame().is_some());
+        let mut framer: Framer = Framer::default();
+        framer.buffer_mut().put_slice(&frame);
+        assert!(framer.try_next_frame().is_some());
     }
 
     #[test]
@@ -540,41 +540,41 @@ mod tests {
         // put_slice; the framer must not panic on zero initial headroom.
         let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
         let frame = build_v1(0, &heartbeat_payload(), crc_extra);
-        let mut f = Framer::with_capacity(0);
-        f.buffer_mut().put_slice(&frame);
-        let (h, _) = f.try_next_frame().expect("frame");
-        assert_eq!(h.msgid, 0);
+        let mut framer = Framer::with_capacity(0);
+        framer.buffer_mut().put_slice(&frame);
+        let (header, _) = framer.try_next_frame().expect("frame");
+        assert_eq!(header.msgid, 0);
     }
 
     #[test]
     fn buffer_with_only_stx_byte_waits_without_consuming() {
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&[STX_V1]);
-        assert!(f.try_next_frame().is_none());
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&[STX_V1]);
+        assert!(framer.try_next_frame().is_none());
         // The STX must be retained — the framer can't decide anything yet.
-        assert_eq!(f.resync_bytes(), 0);
-        assert_eq!(f.buffer_mut().len(), 1);
+        assert_eq!(framer.resync_bytes(), 0);
+        assert_eq!(framer.buffer_mut().len(), 1);
     }
 
     #[test]
     fn buffer_ending_mid_v1_header_waits() {
         // V1 header is 6 bytes; feed only 3 (STX + 2). The framer should hold
         // them and return None until the header completes.
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&[STX_V1, 9, 0]);
-        assert!(f.try_next_frame().is_none());
-        assert_eq!(f.resync_bytes(), 0);
-        assert_eq!(f.buffer_mut().len(), 3);
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&[STX_V1, 9, 0]);
+        assert!(framer.try_next_frame().is_none());
+        assert_eq!(framer.resync_bytes(), 0);
+        assert_eq!(framer.buffer_mut().len(), 3);
     }
 
     #[test]
     fn buffer_ending_mid_v2_header_waits() {
         // V2 header is 10 bytes; feed 5. The framer must wait.
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&[STX_V2, 9, 0, 0, 7]);
-        assert!(f.try_next_frame().is_none());
-        assert_eq!(f.resync_bytes(), 0);
-        assert_eq!(f.buffer_mut().len(), 5);
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&[STX_V2, 9, 0, 0, 7]);
+        assert!(framer.try_next_frame().is_none());
+        assert_eq!(framer.resync_bytes(), 0);
+        assert_eq!(framer.buffer_mut().len(), 5);
     }
 
     #[test]
@@ -583,17 +583,17 @@ mod tests {
         // The whole prefix should be consumed as resync_bytes in a single call
         // (the framer clears the buffer once it finds no STX).
         let garbage = vec![0u8; 12_000];
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&garbage);
-        assert!(f.try_next_frame().is_none());
-        assert_eq!(f.resync_bytes(), 12_000);
-        assert_eq!(f.buffer_mut().len(), 0);
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&garbage);
+        assert!(framer.try_next_frame().is_none());
+        assert_eq!(framer.resync_bytes(), 12_000);
+        assert_eq!(framer.buffer_mut().len(), 0);
 
         // Then a real frame still parses.
         let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
         let frame = build_v1(0, &heartbeat_payload(), crc_extra);
-        f.buffer_mut().put_slice(&frame);
-        assert!(f.try_next_frame().is_some());
+        framer.buffer_mut().put_slice(&frame);
+        assert!(framer.try_next_frame().is_some());
     }
 
     #[test]
@@ -601,18 +601,18 @@ mod tests {
         let crc_extra = msgid_table::lookup(0).unwrap().crc_extra;
         let frame = build_v1(0, &heartbeat_payload(), crc_extra);
 
-        let mut f = Framer::new();
+        let mut framer = Framer::new();
         let mut parsed = 0;
-        for &b in &frame {
-            f.buffer_mut().put_slice(&[b]);
-            if let Some((h, _)) = f.try_next_frame() {
-                assert_eq!(h.msgid, 0);
+        for &byte in &frame {
+            framer.buffer_mut().put_slice(&[byte]);
+            if let Some((header, _)) = framer.try_next_frame() {
+                assert_eq!(header.msgid, 0);
                 parsed += 1;
             }
         }
         assert_eq!(parsed, 1);
-        assert_eq!(f.resync_bytes(), 0);
-        assert_eq!(f.crc_errors(), 0);
+        assert_eq!(framer.resync_bytes(), 0);
+        assert_eq!(framer.crc_errors(), 0);
     }
 
     #[test]
@@ -628,11 +628,11 @@ mod tests {
         payload[0] = 42; // target_system byte
         let frame = build_v1(5, &payload, entry.crc_extra);
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&frame);
-        let (h, _) = f.try_next_frame().expect("frame");
-        assert_eq!(h.target_system, Some(42));
-        assert_eq!(h.target_component, None);
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&frame);
+        let (header, _) = framer.try_next_frame().expect("frame");
+        assert_eq!(header.target_system, Some(42));
+        assert_eq!(header.target_component, None);
     }
 
     #[test]
@@ -645,16 +645,16 @@ mod tests {
         stream.extend_from_slice(&frame);
         stream.extend_from_slice(&frame[..4]); // partial third
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&stream);
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&stream);
 
         let mut count = 0;
-        while f.try_next_frame().is_some() {
+        while framer.try_next_frame().is_some() {
             count += 1;
         }
         assert_eq!(count, 2);
-        assert_eq!(f.buffer_mut().len(), 4);
-        assert_eq!(f.resync_bytes(), 0);
+        assert_eq!(framer.buffer_mut().len(), 4);
+        assert_eq!(framer.resync_bytes(), 0);
     }
 
     #[test]
@@ -675,15 +675,17 @@ mod tests {
 
         let mut stream = signed.clone();
         stream.extend_from_slice(&followup);
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&stream);
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&stream);
 
-        let (_, b1) = f.try_next_frame().expect("signed frame parses");
-        assert_eq!(b1.len(), signed.len());
-        let (_, b2) = f.try_next_frame().expect("followup parses immediately");
-        assert_eq!(b2.len(), followup.len());
-        assert_eq!(f.resync_bytes(), 0);
-        assert_eq!(f.crc_errors(), 0);
+        let (_, signed_bytes) = framer.try_next_frame().expect("signed frame parses");
+        assert_eq!(signed_bytes.len(), signed.len());
+        let (_, followup_bytes) = framer
+            .try_next_frame()
+            .expect("followup parses immediately");
+        assert_eq!(followup_bytes.len(), followup.len());
+        assert_eq!(framer.resync_bytes(), 0);
+        assert_eq!(framer.crc_errors(), 0);
     }
 
     #[test]
@@ -703,10 +705,10 @@ mod tests {
         let crc_lo_pos = frame.len() - V2_SIGNATURE_LEN - CRC_LEN;
         frame[crc_lo_pos] ^= 0x01;
 
-        let mut f = Framer::new();
-        f.buffer_mut().put_slice(&frame);
-        assert!(f.try_next_frame().is_none());
-        assert_eq!(f.crc_errors(), 1);
+        let mut framer = Framer::new();
+        framer.buffer_mut().put_slice(&frame);
+        assert!(framer.try_next_frame().is_none());
+        assert_eq!(framer.crc_errors(), 1);
     }
 
     #[test]
@@ -731,17 +733,17 @@ mod tests {
         frame[V2_HEADER_LEN + 2] = 17;
         frame[V2_HEADER_LEN + 3] = 19;
 
-        let (s, c) = extract_targets(&frame, &header(4), Some(&ENTRY));
-        assert_eq!((s, c), (Some(17), Some(19)));
+        let (sys, comp) = extract_targets(&frame, &header(4), Some(&ENTRY));
+        assert_eq!((sys, comp), (Some(17), Some(19)));
 
-        let (s, c) = extract_targets(&frame, &header(3), Some(&ENTRY));
-        assert_eq!((s, c), (Some(17), None));
+        let (sys, comp) = extract_targets(&frame, &header(3), Some(&ENTRY));
+        assert_eq!((sys, comp), (Some(17), None));
 
-        let (s, c) = extract_targets(&frame, &header(2), Some(&ENTRY));
-        assert_eq!((s, c), (None, None));
+        let (sys, comp) = extract_targets(&frame, &header(2), Some(&ENTRY));
+        assert_eq!((sys, comp), (None, None));
 
-        let (s, c) = extract_targets(&frame, &header(4), None);
-        assert_eq!((s, c), (None, None));
+        let (sys, comp) = extract_targets(&frame, &header(4), None);
+        assert_eq!((sys, comp), (None, None));
     }
 }
 
@@ -758,16 +760,16 @@ mod property_tests {
         // frame, counted as resync, or held as a partial-header tail.
         #[test]
         fn no_panic_no_infinite_loop_on_garbage(input in proptest::collection::vec(any::<u8>(), 0..2048)) {
-            let mut f = Framer::new();
-            f.buffer_mut().put_slice(&input);
+            let mut framer = Framer::new();
+            framer.buffer_mut().put_slice(&input);
             let mut iterations: u64 = 0;
-            while let Some((_, bytes)) = f.try_next_frame() {
+            while let Some((_, bytes)) = framer.try_next_frame() {
                 // Each returned frame consumes its bytes from the buffer.
                 prop_assert!(bytes.len() >= 8); // smallest possible v1 frame
                 iterations += 1;
                 prop_assert!(iterations <= input.len() as u64 + 1);
             }
-            let remaining = f.buffer_mut().len();
+            let remaining = framer.buffer_mut().len();
             // Whatever remains is shorter than a complete frame at the current
             // scan head (otherwise the loop would have either accepted or
             // resync'd past it).
@@ -786,40 +788,40 @@ mod property_tests {
             // Real protocol bugs around STX-in-garbage are covered by the
             // no_panic_no_infinite_loop_on_garbage proptest above.
             let mut garbage = garbage;
-            for b in garbage.iter_mut() {
-                if *b == STX_V1 || *b == STX_V2 {
-                    *b = 0x00;
+            for byte in garbage.iter_mut() {
+                if *byte == STX_V1 || *byte == STX_V2 {
+                    *byte = 0x00;
                 }
             }
 
             let crc_extra = crate::mavlink::msgid_table::lookup(0).unwrap().crc_extra;
             let payload = {
-                let mut p = Vec::with_capacity(9);
-                p.extend_from_slice(&0u32.to_le_bytes());
-                p.extend_from_slice(&[2, 3, 0, 0, 3]);
-                p
+                let mut payload = Vec::with_capacity(9);
+                payload.extend_from_slice(&0u32.to_le_bytes());
+                payload.extend_from_slice(&[2, 3, 0, 0, 3]);
+                payload
             };
             let mut frame = vec![STX_V1, 9, 0, 1, 1, 0];
             frame.extend_from_slice(&payload);
             let mut crc = crate::mavlink::crc::Crc16::new();
             crc.update_slice(&frame[1..]);
             crc.update(crc_extra);
-            let c = crc.finalize();
-            frame.push((c & 0xFF) as u8);
-            frame.push((c >> 8) as u8);
+            let crc_value = crc.finalize();
+            frame.push((crc_value & 0xFF) as u8);
+            frame.push((crc_value >> 8) as u8);
 
             let mut input = garbage.clone();
             input.extend_from_slice(&frame);
 
-            let mut f = Framer::new();
-            f.buffer_mut().put_slice(&input);
+            let mut framer = Framer::new();
+            framer.buffer_mut().put_slice(&input);
 
             // Drain frames. We expect at least one to parse — the planted one.
             // Random garbage may also accidentally parse as an unknown-msgid
             // frame, so don't assert exact count.
             let mut found_heartbeat = false;
-            while let Some((h, _)) = f.try_next_frame() {
-                if h.msgid == 0 && h.version == Version::V1 {
+            while let Some((header, _)) = framer.try_next_frame() {
+                if header.msgid == 0 && header.version == Version::V1 {
                     found_heartbeat = true;
                 }
             }

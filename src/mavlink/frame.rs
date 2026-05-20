@@ -29,8 +29,8 @@ pub(crate) enum Stx {
 }
 
 impl Stx {
-    pub(crate) const fn from_byte(b: u8) -> Option<Self> {
-        match b {
+    pub(crate) const fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
             STX_V1 => Some(Stx::V1),
             STX_V2 => Some(Stx::V2),
             _ => None,

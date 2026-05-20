@@ -118,8 +118,8 @@ impl Cli {
 /// [`crate::config::Config::validate`] after the merge runs.
 pub fn parse_specs(raw: &[String]) -> Result<Vec<EndpointSpec>, Error> {
     let mut specs = Vec::with_capacity(raw.len());
-    for s in raw {
-        specs.push(EndpointSpec::parse(s)?);
+    for text in raw {
+        specs.push(EndpointSpec::parse(text)?);
     }
     Ok(specs)
 }
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(
             cli.config
                 .as_ref()
-                .map(|p| p.to_string_lossy().into_owned()),
+                .map(|path| path.to_string_lossy().into_owned()),
             Some("rmr.toml".to_string())
         );
     }

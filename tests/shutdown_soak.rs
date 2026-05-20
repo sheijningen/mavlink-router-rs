@@ -27,7 +27,7 @@ use rmr::config::{Config, LogFormat, LogLevel};
 use rmr::parsers::cli::parse_specs;
 
 fn config_with_endpoints(endpoints: Vec<String>) -> Config {
-    let cfg = Config {
+    let config = Config {
         log_level: LogLevel::Warn,
         log_format: LogFormat::Text,
         stats: false,
@@ -36,9 +36,10 @@ fn config_with_endpoints(endpoints: Vec<String>) -> Config {
         skip_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
     };
-    cfg.validate()
+    config
+        .validate()
         .expect("test config must pass cross-endpoint validation");
-    cfg
+    config
 }
 
 /// Pick a UDP address bound to an OS-chosen port, drop it, and return the
@@ -58,7 +59,7 @@ async fn shutdown_drains_every_endpoint_within_budget() {
     let listener = pick_free_udp_addr();
     let sender_target = pick_free_udp_addr();
 
-    let cfg = config_with_endpoints(vec![
+    let config = config_with_endpoints(vec![
         format!("udps:127.0.0.1:{}#listener", listener.port()),
         format!("udpc:127.0.0.1:{}#sender", sender_target.port()),
         // Port 1 is privileged; binding loopback to it as a client almost
@@ -69,7 +70,7 @@ async fn shutdown_drains_every_endpoint_within_budget() {
 
     let cancel = CancellationToken::new();
     let cancel_for_run = cancel.clone();
-    let handle = tokio::spawn(async move { rmr::run(cfg, cancel_for_run).await });
+    let handle = tokio::spawn(async move { rmr::run(config, cancel_for_run).await });
 
     // Let bind/dial loops settle so the cancel hits steady state, not
     // immediately-post-spawn pre-state.
@@ -101,7 +102,7 @@ async fn shutdown_returns_immediately_when_no_endpoints_are_connected() {
     // quickly because each task observes the cancel and exits its retry
     // loop. Pins the lower-bound behaviour: cancel-then-join should not
     // burn the full grace window when there's nothing to flush.
-    let cfg = config_with_endpoints(vec![
+    let config = config_with_endpoints(vec![
         "tcpc:127.0.0.1:1#a".to_string(),
         "tcpc:127.0.0.1:2#b".to_string(),
         "tcpc:127.0.0.1:3#c".to_string(),
@@ -109,7 +110,7 @@ async fn shutdown_returns_immediately_when_no_endpoints_are_connected() {
 
     let cancel = CancellationToken::new();
     let cancel_for_run = cancel.clone();
-    let handle = tokio::spawn(async move { rmr::run(cfg, cancel_for_run).await });
+    let handle = tokio::spawn(async move { rmr::run(config, cancel_for_run).await });
 
     tokio::time::sleep(Duration::from_millis(150)).await;
     let started = Instant::now();
@@ -136,14 +137,14 @@ async fn shutdown_drains_with_inflight_udp_traffic() {
     let probe = UdpSocket::bind("127.0.0.1:0").await.expect("probe bind");
     let peer_addr: SocketAddr = probe.local_addr().expect("probe local");
 
-    let cfg = config_with_endpoints(vec![
+    let config = config_with_endpoints(vec![
         format!("udps:127.0.0.1:{}#listener", listener_addr.port()),
         format!("udpc:127.0.0.1:{}#fanout", peer_addr.port()),
     ]);
 
     let cancel = CancellationToken::new();
     let cancel_for_run = cancel.clone();
-    let handle = tokio::spawn(async move { rmr::run(cfg, cancel_for_run).await });
+    let handle = tokio::spawn(async move { rmr::run(config, cancel_for_run).await });
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -257,24 +258,24 @@ fn binary_shutdown_emits_final_synthetic_stats_lines() {
 
     let mut out = Vec::new();
     let mut err = Vec::new();
-    if let Some(mut s) = child.stdout.take() {
-        let _ = s.read_to_end(&mut out);
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_end(&mut out);
     }
-    if let Some(mut s) = child.stderr.take() {
-        let _ = s.read_to_end(&mut err);
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = stderr.read_to_end(&mut err);
     }
     let stdout = String::from_utf8(out).expect("stdout utf8");
     let stderr = String::from_utf8(err).expect("stderr utf8");
 
     // Walk every JSON-Line, recording the most-recent (state) per endpoint.
     let mut last_state: HashMap<String, String> = HashMap::new();
-    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
-        let v: serde_json::Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("bad json on stdout: '{line}': {e}"));
-        let endpoint = v["endpoint"]
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let value: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|err| panic!("bad json on stdout: '{line}': {err}"));
+        let endpoint = value["endpoint"]
             .as_str()
             .unwrap_or_else(|| panic!("line missing endpoint field: {line}"));
-        let state = v["state"]
+        let state = value["state"]
             .as_str()
             .unwrap_or_else(|| panic!("line missing state field: {line}"));
         last_state.insert(endpoint.to_string(), state.to_string());

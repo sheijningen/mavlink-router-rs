@@ -33,7 +33,8 @@ pub enum SpecError {
     InvalidQueryValue { key: &'static str, reason: String },
 }
 
-fn fmt_suggestion(s: &Option<&'static str>) -> String {
-    s.map(|s| format!(" (did you mean '{s}'?)"))
+fn fmt_suggestion(suggestion: &Option<&'static str>) -> String {
+    suggestion
+        .map(|text| format!(" (did you mean '{text}'?)"))
         .unwrap_or_default()
 }

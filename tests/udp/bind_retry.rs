@@ -49,7 +49,7 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
     let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps".to_string());
     spec.reconnect_initial_ms = 50;
     spec.reconnect_max_ms = 250;
-    let mut h = spawn_udps_with_spec(&allocator, cancel.clone(), spec);
+    let mut harness = spawn_udps_with_spec(&allocator, cancel.clone(), spec);
 
     // While the probe holds the port, the listener stays in Reconnecting.
     // Poll for early task termination without an unconditional sleep — if
@@ -59,11 +59,11 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
     let probe_deadline = tokio::time::Instant::now() + Duration::from_millis(300);
     while tokio::time::Instant::now() < probe_deadline {
         assert!(
-            !h.task.is_finished(),
+            !harness.task.is_finished(),
             "udps task ended early — bind failure should have been retried, not propagated"
         );
         assert_eq!(
-            h.stats.load_state(),
+            harness.stats.load_state(),
             EndpointState::Reconnecting,
             "udps should still be retrying while the probe holds the port"
         );
@@ -76,7 +76,7 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
 
     timeout(Duration::from_secs(3), async {
         loop {
-            if h.stats.load_state() == EndpointState::Connected {
+            if harness.stats.load_state() == EndpointState::Connected {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -97,7 +97,7 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
         peer.send_to(&frame, listen_addr)
             .await
             .expect("peer send_to listener");
-        match timeout(Duration::from_millis(100), h.event_rx.recv()).await {
+        match timeout(Duration::from_millis(100), harness.event_rx.recv()).await {
             Ok(Some(EndpointEvent::PeerAdded { peer_addr, .. })) => break peer_addr,
             Ok(Some(other)) => panic!("expected PeerAdded, got {other:?}"),
             Ok(None) => panic!("event_rx closed before listener attached"),
@@ -111,11 +111,11 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
     };
     assert_eq!(added_addr, peer_addr);
 
-    let f = timeout(Duration::from_secs(2), h.frame_rx.recv())
+    let router_frame = timeout(Duration::from_secs(2), harness.frame_rx.recv())
         .await
         .expect("frame timeout")
         .expect("frame_rx closed");
-    assert_eq!(&f.frame[..], &frame[..]);
+    assert_eq!(&router_frame.frame[..], &frame[..]);
 
-    shutdown_all(&cancel, [h.task]).await;
+    shutdown_all(&cancel, [harness.task]).await;
 }

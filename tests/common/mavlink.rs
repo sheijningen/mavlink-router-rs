@@ -80,48 +80,48 @@ impl TestFrame {
     /// Start a v1 frame from a typed payload. The msgid and `crc_extra`
     /// come from the [`MavPayload`] impl; the payload is pre-serialised.
     pub fn v1_message<M: MavPayload>(msg: &M) -> Self {
-        let mut t = Self::v1(M::MSGID, M::CRC_EXTRA);
-        t.payload = msg.to_bytes();
-        t
+        let mut frame = Self::v1(M::MSGID, M::CRC_EXTRA);
+        frame.payload = msg.to_bytes();
+        frame
     }
 
     /// Start a v2 frame from a typed payload. See [`TestFrame::v1_message`].
     pub fn v2_message<M: MavPayload>(msg: &M) -> Self {
-        let mut t = Self::v2(M::MSGID, M::CRC_EXTRA);
-        t.payload = msg.to_bytes();
-        t
+        let mut frame = Self::v2(M::MSGID, M::CRC_EXTRA);
+        frame.payload = msg.to_bytes();
+        frame
     }
 
-    pub fn seq(mut self, n: u8) -> Self {
-        self.seq = n;
+    pub fn seq(mut self, seq: u8) -> Self {
+        self.seq = seq;
         self
     }
 
-    pub fn sysid(mut self, n: u8) -> Self {
-        self.sysid = n;
+    pub fn sysid(mut self, sysid: u8) -> Self {
+        self.sysid = sysid;
         self
     }
 
-    pub fn compid(mut self, n: u8) -> Self {
-        self.compid = n;
+    pub fn compid(mut self, compid: u8) -> Self {
+        self.compid = compid;
         self
     }
 
     /// Replace the payload bytes. Useful for the unknown-msgid path where
     /// the payload is arbitrary test data.
-    pub fn payload(mut self, p: impl Into<Vec<u8>>) -> Self {
-        self.payload = p.into();
+    pub fn payload(mut self, payload: impl Into<Vec<u8>>) -> Self {
+        self.payload = payload.into();
         self
     }
 
     /// Mark a v2 frame as signed and append the given signature trailer.
     /// Panics if called on a v1 frame — v1 has no signature trailer.
-    pub fn signed(mut self, sig: [u8; V2_SIGNATURE_LEN]) -> Self {
+    pub fn signed(mut self, signature: [u8; V2_SIGNATURE_LEN]) -> Self {
         assert!(
             matches!(self.version, FrameVersion::V2),
             "signing is v2-only"
         );
-        self.signature = Some(sig);
+        self.signature = Some(signature);
         self.incompat_flags |= V2_IFLAG_SIGNED;
         self
     }
@@ -216,8 +216,8 @@ impl TestFrame {
         frame.push((crc_value & 0xFF) as u8);
         frame.push((crc_value >> 8) as u8);
 
-        if let Some(sig) = self.signature {
-            frame.extend_from_slice(&sig);
+        if let Some(signature) = self.signature {
+            frame.extend_from_slice(&signature);
         }
 
         (frame, crc_lo)
@@ -242,14 +242,14 @@ impl MavPayload for Heartbeat {
     const CRC_EXTRA: u8 = 50;
 
     fn to_bytes(&self) -> Vec<u8> {
-        let mut p = Vec::with_capacity(9);
-        p.extend_from_slice(&self.custom_mode.to_le_bytes());
-        p.push(self.mav_type);
-        p.push(self.autopilot);
-        p.push(self.base_mode);
-        p.push(self.system_status);
-        p.push(self.mavlink_version);
-        p
+        let mut payload = Vec::with_capacity(9);
+        payload.extend_from_slice(&self.custom_mode.to_le_bytes());
+        payload.push(self.mav_type);
+        payload.push(self.autopilot);
+        payload.push(self.base_mode);
+        payload.push(self.system_status);
+        payload.push(self.mavlink_version);
+        payload
     }
 }
 
@@ -268,12 +268,12 @@ impl MavPayload for Ping {
     const CRC_EXTRA: u8 = 237;
 
     fn to_bytes(&self) -> Vec<u8> {
-        let mut p = Vec::with_capacity(14);
-        p.extend_from_slice(&self.time_usec.to_le_bytes());
-        p.extend_from_slice(&self.seq.to_le_bytes());
-        p.push(self.target_system);
-        p.push(self.target_component);
-        p
+        let mut payload = Vec::with_capacity(14);
+        payload.extend_from_slice(&self.time_usec.to_le_bytes());
+        payload.extend_from_slice(&self.seq.to_le_bytes());
+        payload.push(self.target_system);
+        payload.push(self.target_component);
+        payload
     }
 }
 
@@ -301,20 +301,20 @@ impl MavPayload for SysStatus {
     const CRC_EXTRA: u8 = 124;
 
     fn to_bytes(&self) -> Vec<u8> {
-        let mut p = Vec::with_capacity(31);
-        p.extend_from_slice(&self.onboard_control_sensors_present.to_le_bytes());
-        p.extend_from_slice(&self.onboard_control_sensors_enabled.to_le_bytes());
-        p.extend_from_slice(&self.onboard_control_sensors_health.to_le_bytes());
-        p.extend_from_slice(&self.load.to_le_bytes());
-        p.extend_from_slice(&self.voltage_battery.to_le_bytes());
-        p.extend_from_slice(&self.current_battery.to_le_bytes());
-        p.extend_from_slice(&self.drop_rate_comm.to_le_bytes());
-        p.extend_from_slice(&self.errors_comm.to_le_bytes());
-        p.extend_from_slice(&self.errors_count1.to_le_bytes());
-        p.extend_from_slice(&self.errors_count2.to_le_bytes());
-        p.extend_from_slice(&self.errors_count3.to_le_bytes());
-        p.extend_from_slice(&self.errors_count4.to_le_bytes());
-        p.push(self.battery_remaining as u8);
-        p
+        let mut payload = Vec::with_capacity(31);
+        payload.extend_from_slice(&self.onboard_control_sensors_present.to_le_bytes());
+        payload.extend_from_slice(&self.onboard_control_sensors_enabled.to_le_bytes());
+        payload.extend_from_slice(&self.onboard_control_sensors_health.to_le_bytes());
+        payload.extend_from_slice(&self.load.to_le_bytes());
+        payload.extend_from_slice(&self.voltage_battery.to_le_bytes());
+        payload.extend_from_slice(&self.current_battery.to_le_bytes());
+        payload.extend_from_slice(&self.drop_rate_comm.to_le_bytes());
+        payload.extend_from_slice(&self.errors_comm.to_le_bytes());
+        payload.extend_from_slice(&self.errors_count1.to_le_bytes());
+        payload.extend_from_slice(&self.errors_count2.to_le_bytes());
+        payload.extend_from_slice(&self.errors_count3.to_le_bytes());
+        payload.extend_from_slice(&self.errors_count4.to_le_bytes());
+        payload.push(self.battery_remaining as u8);
+        payload
     }
 }

@@ -76,9 +76,9 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
 
     warn_on_groups_without_dedup(&specs, dedup_ms);
 
-    let n_estimate = estimate_registry_size(&specs);
-    let event_q_cap = (n_estimate * 2).max(64);
-    let stats_q_cap = (n_estimate * 2).max(64);
+    let registry_estimate = estimate_registry_size(&specs);
+    let event_q_cap = (registry_estimate * 2).max(64);
+    let stats_q_cap = (registry_estimate * 2).max(64);
 
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(INGRESS_QUEUE_FRAMES);
     let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(event_q_cap);
@@ -162,11 +162,11 @@ fn log_merged_config(cfg: &Config) {
 /// arms.
 fn spec_identity(spec: &EndpointSpec) -> &IdentityFlags {
     match &spec.kind {
-        EndpointKind::Serial(e) => &e.identity,
-        EndpointKind::UdpServer(e) => &e.identity,
-        EndpointKind::UdpClient(e) => &e.identity,
-        EndpointKind::TcpServer(e) => &e.identity,
-        EndpointKind::TcpClient(e) => &e.identity,
+        EndpointKind::Serial(endpoint) => &endpoint.identity,
+        EndpointKind::UdpServer(endpoint) => &endpoint.identity,
+        EndpointKind::UdpClient(endpoint) => &endpoint.identity,
+        EndpointKind::TcpServer(endpoint) => &endpoint.identity,
+        EndpointKind::TcpClient(endpoint) => &endpoint.identity,
     }
 }
 
@@ -215,10 +215,10 @@ fn groups_needing_dedup_warning(specs: &[EndpointSpec], dedup_ms: u64) -> Vec<(A
     }
     let mut groups: Vec<(Arc<str>, usize)> = by_group
         .into_iter()
-        .filter(|(_, (w, _))| *w >= 2)
-        .map(|(n, (_, c))| (n, c))
+        .filter(|(_, (weight, _))| *weight >= 2)
+        .map(|(name, (_, count))| (name, count))
         .collect();
-    groups.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    groups.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     groups
 }
 
@@ -241,15 +241,15 @@ fn warn_on_groups_without_dedup(specs: &[EndpointSpec], dedup_ms: u64) {
 /// CLAUDE.md "Stats sink architecture": channel sizing formula
 /// N = top-level + sum(DEFAULT_PEER_CAPACITY for each udps:) + sum(tcps_peer_budget).
 fn estimate_registry_size(specs: &[EndpointSpec]) -> usize {
-    let mut n = specs.len();
-    for s in specs {
-        match &s.kind {
-            EndpointKind::UdpServer(_) => n = n.saturating_add(DEFAULT_PEER_CAPACITY),
-            EndpointKind::TcpServer(_) => n = n.saturating_add(DEFAULT_TCPS_PEER_BUDGET),
+    let mut count = specs.len();
+    for spec in specs {
+        match &spec.kind {
+            EndpointKind::UdpServer(_) => count = count.saturating_add(DEFAULT_PEER_CAPACITY),
+            EndpointKind::TcpServer(_) => count = count.saturating_add(DEFAULT_TCPS_PEER_BUDGET),
             _ => {}
         }
     }
-    n
+    count
 }
 
 fn spawn_router(tasks: &mut JoinSet<()>, wiring: RouterWiring) {
@@ -510,12 +510,15 @@ mod tests {
             EndpointSpec::parse("udps:0.0.0.0:1").unwrap(),
             EndpointSpec::parse("tcps:0.0.0.0:2").unwrap(),
         ];
-        let n = estimate_registry_size(&specs);
-        assert_eq!(n, 2 + DEFAULT_PEER_CAPACITY + DEFAULT_TCPS_PEER_BUDGET);
+        let count = estimate_registry_size(&specs);
+        assert_eq!(count, 2 + DEFAULT_PEER_CAPACITY + DEFAULT_TCPS_PEER_BUDGET);
     }
 
     fn group_names(groups: &[(Arc<str>, usize)]) -> Vec<(&str, usize)> {
-        groups.iter().map(|(n, c)| (n.as_ref(), *c)).collect()
+        groups
+            .iter()
+            .map(|(name, count)| (name.as_ref(), *count))
+            .collect()
     }
 
     #[test]

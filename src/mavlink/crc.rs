@@ -7,8 +7,8 @@
 const CRC_INIT: u16 = 0xFFFF;
 
 #[inline]
-fn crc16_update(crc: &mut u16, b: u8) {
-    let tmp = b ^ ((*crc & 0xFF) as u8);
+fn crc16_update(crc: &mut u16, byte: u8) {
+    let tmp = byte ^ ((*crc & 0xFF) as u8);
     let tmp = tmp ^ (tmp << 4);
     let tmp16 = tmp as u16;
     *crc = (*crc >> 8) ^ (tmp16 << 8) ^ (tmp16 << 3) ^ (tmp16 >> 4);
@@ -27,14 +27,14 @@ impl Crc16 {
     }
 
     #[inline]
-    pub fn update(&mut self, b: u8) {
-        crc16_update(&mut self.0, b);
+    pub fn update(&mut self, byte: u8) {
+        crc16_update(&mut self.0, byte);
     }
 
     #[inline]
     pub fn update_slice(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.update(b);
+        for &byte in bytes {
+            self.update(byte);
         }
     }
 
@@ -56,23 +56,23 @@ mod tests {
 
     #[test]
     fn streaming_matches_one_shot() {
-        let mut c = Crc16::new();
-        c.update_slice(b"123456789");
-        assert_eq!(c.finalize(), 0x6F91);
+        let mut crc = Crc16::new();
+        crc.update_slice(b"123456789");
+        assert_eq!(crc.finalize(), 0x6F91);
     }
 
     #[test]
     fn streaming_byte_by_byte() {
-        let mut c = Crc16::new();
-        for &b in b"123456789" {
-            c.update(b);
+        let mut crc = Crc16::new();
+        for &byte in b"123456789" {
+            crc.update(byte);
         }
-        assert_eq!(c.finalize(), 0x6F91);
+        assert_eq!(crc.finalize(), 0x6F91);
     }
 
     #[test]
     fn empty_returns_init() {
-        let c = Crc16::new();
-        assert_eq!(c.finalize(), 0xFFFF);
+        let crc = Crc16::new();
+        assert_eq!(crc.finalize(), 0xFFFF);
     }
 }

@@ -22,12 +22,12 @@ use tokio_util::sync::CancellationToken;
 /// window. `tokio::net::TcpListener::bind` does not expose `SO_REUSEADDR`
 /// directly, hence the manual `socket2` dance.
 fn bind_reusable_listener(addr: SocketAddr) -> TcpListener {
-    let s = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).expect("socket");
-    s.set_reuse_address(true).expect("set_reuse_address");
-    s.set_nonblocking(true).expect("nonblocking");
-    s.bind(&addr.into()).expect("bind");
-    s.listen(128).expect("listen");
-    TcpListener::from_std(s.into()).expect("from_std")
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).expect("socket");
+    socket.set_reuse_address(true).expect("set_reuse_address");
+    socket.set_nonblocking(true).expect("nonblocking");
+    socket.bind(&addr.into()).expect("bind");
+    socket.listen(128).expect("listen");
+    TcpListener::from_std(socket.into()).expect("from_std")
 }
 
 use common::mavlink::{Heartbeat, TestFrame};
@@ -35,7 +35,7 @@ use rmr::config::{Config, LogFormat, LogLevel};
 use rmr::parsers::cli::parse_specs;
 
 fn config_with_endpoints(endpoints: Vec<String>) -> Config {
-    let cfg = Config {
+    let config = Config {
         log_level: LogLevel::Warn,
         log_format: LogFormat::Text,
         stats: false,
@@ -44,9 +44,10 @@ fn config_with_endpoints(endpoints: Vec<String>) -> Config {
         skip_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
     };
-    cfg.validate()
+    config
+        .validate()
         .expect("test config must pass cross-endpoint validation");
-    cfg
+    config
 }
 
 fn pick_free_udp_addr() -> SocketAddr {
@@ -57,13 +58,13 @@ fn pick_free_udp_addr() -> SocketAddr {
 /// Read up to `cap` bytes from `stream` with a per-read timeout. Returns
 /// what was collected when either `cap` is reached or `dur` elapses without
 /// new bytes.
-async fn read_until_quiet(stream: &mut TcpStream, cap: usize, dur: Duration) -> Vec<u8> {
+async fn read_until_quiet(stream: &mut TcpStream, cap: usize, duration: Duration) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 512];
     while buf.len() < cap {
-        match timeout(dur, stream.read(&mut tmp)).await {
+        match timeout(duration, stream.read(&mut tmp)).await {
             Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
-            Ok(Ok(n)) => buf.extend_from_slice(&tmp[..n]),
+            Ok(Ok(bytes_read)) => buf.extend_from_slice(&tmp[..bytes_read]),
         }
     }
     buf
@@ -90,7 +91,7 @@ async fn tcpc_drains_queue_on_disconnect_then_streams_fresh_frames_after_reconne
     let server = bind_reusable_listener("127.0.0.1:0".parse().unwrap());
     let server_addr: SocketAddr = server.local_addr().expect("server addr");
 
-    let cfg = config_with_endpoints(vec![
+    let config = config_with_endpoints(vec![
         format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
         format!("tcpc:127.0.0.1:{}#downlink", server_addr.port()),
     ]);
@@ -98,7 +99,7 @@ async fn tcpc_drains_queue_on_disconnect_then_streams_fresh_frames_after_reconne
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run(cfg, cancel).await })
+        tokio::spawn(async move { rmr::run(config, cancel).await })
     };
 
     let peer_a = UdpSocket::bind("127.0.0.1:0").await.expect("peer_a bind");
@@ -122,21 +123,23 @@ async fn tcpc_drains_queue_on_disconnect_then_streams_fresh_frames_after_reconne
                 .build()
         })
         .collect();
-    for f in &pre {
-        peer_a.send_to(f, udps_addr).await.expect("pre send");
+    for frame in &pre {
+        peer_a.send_to(frame, udps_addr).await.expect("pre send");
     }
 
     let bytes_pre = read_until_quiet(
         &mut peer_c1,
-        pre.iter().map(|f| f.len()).sum(),
+        pre.iter().map(|frame| frame.len()).sum(),
         Duration::from_millis(500),
     )
     .await;
-    for f in &pre {
+    for frame in &pre {
         assert!(
-            bytes_pre.windows(f.len()).any(|w| w == &f[..]),
+            bytes_pre
+                .windows(frame.len())
+                .any(|window| window == &frame[..]),
             "peer_c1 missing a pre-batch frame (sysid={})",
-            f[5] // v2 sysid byte position
+            frame[5] // v2 sysid byte position
         );
     }
 
@@ -163,8 +166,8 @@ async fn tcpc_drains_queue_on_disconnect_then_streams_fresh_frames_after_reconne
                 .build()
         })
         .collect();
-    for f in &during {
-        peer_a.send_to(f, udps_addr).await.expect("during send");
+    for frame in &during {
+        peer_a.send_to(frame, udps_addr).await.expect("during send");
     }
 
     // Phase 3: rebind the listener on the same port and wait for rmr to
@@ -188,35 +191,39 @@ async fn tcpc_drains_queue_on_disconnect_then_streams_fresh_frames_after_reconne
                 .build()
         })
         .collect();
-    for f in &post {
-        peer_a.send_to(f, udps_addr).await.expect("post send");
+    for frame in &post {
+        peer_a.send_to(frame, udps_addr).await.expect("post send");
     }
 
     let bytes_post = read_until_quiet(
         &mut peer_c2,
-        post.iter().map(|f| f.len()).sum(),
+        post.iter().map(|frame| frame.len()).sum(),
         Duration::from_millis(800),
     )
     .await;
 
     // The post-reconnect stream must include every "post" frame.
-    for f in &post {
+    for frame in &post {
         assert!(
-            bytes_post.windows(f.len()).any(|w| w == &f[..]),
+            bytes_post
+                .windows(frame.len())
+                .any(|window| window == &frame[..]),
             "peer_c2 missing a post-batch frame (sysid={}); got {} bytes total: {:?}",
-            f[5],
+            frame[5],
             bytes_post.len(),
             bytes_post.iter().take(8).collect::<Vec<_>>(),
         );
     }
     // And must NOT include any "during" frame — that's the no-replay
     // guarantee. We also confirm "pre" frames don't reappear.
-    for f in during.iter().chain(pre.iter()) {
+    for frame in during.iter().chain(pre.iter()) {
         assert!(
-            !bytes_post.windows(f.len()).any(|w| w == &f[..]),
+            !bytes_post
+                .windows(frame.len())
+                .any(|window| window == &frame[..]),
             "peer_c2 received a stale frame after reconnect (sysid={}); \
              drain-and-discard contract violated",
-            f[5]
+            frame[5]
         );
     }
 
@@ -240,7 +247,7 @@ async fn tcpc_survives_repeated_flaps_under_sustained_ingress() {
     let server = TcpListener::bind("127.0.0.1:0").await.expect("server bind");
     let server_addr: SocketAddr = server.local_addr().expect("server addr");
 
-    let cfg = config_with_endpoints(vec![
+    let config = config_with_endpoints(vec![
         format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
         format!("tcpc:127.0.0.1:{}#downlink", server_addr.port()),
     ]);
@@ -248,7 +255,7 @@ async fn tcpc_survives_repeated_flaps_under_sustained_ingress() {
     let cancel = CancellationToken::new();
     let run_handle = {
         let cancel = cancel.clone();
-        tokio::spawn(async move { rmr::run(cfg, cancel).await })
+        tokio::spawn(async move { rmr::run(config, cancel).await })
     };
 
     let peer_a = UdpSocket::bind("127.0.0.1:0").await.expect("peer_a bind");
@@ -260,12 +267,12 @@ async fn tcpc_survives_repeated_flaps_under_sustained_ingress() {
             .unwrap_or_else(|_| panic!("accept timed out at cycle {cycle}"))
             .expect("accept");
         for seq in 0u8..3u8 {
-            let f = TestFrame::v2_message(&Heartbeat::default())
+            let frame = TestFrame::v2_message(&Heartbeat::default())
                 .sysid(cycle.wrapping_add(40))
                 .compid(1)
                 .seq(seq)
                 .build();
-            peer_a.send_to(&f, udps_addr).await.expect("send");
+            peer_a.send_to(&frame, udps_addr).await.expect("send");
         }
         // Let some frames arrive at the peer before dropping.
         let _ = read_until_quiet(&mut stream, 64, Duration::from_millis(200)).await;
@@ -279,15 +286,17 @@ async fn tcpc_survives_repeated_flaps_under_sustained_ingress() {
         .await
         .expect("final accept timed out")
         .expect("final accept");
-    let f = TestFrame::v2_message(&Heartbeat::default())
+    let frame = TestFrame::v2_message(&Heartbeat::default())
         .sysid(99)
         .compid(1)
         .seq(0)
         .build();
-    peer_a.send_to(&f, udps_addr).await.expect("final send");
-    let bytes = read_until_quiet(&mut final_stream, f.len(), Duration::from_millis(800)).await;
+    peer_a.send_to(&frame, udps_addr).await.expect("final send");
+    let bytes = read_until_quiet(&mut final_stream, frame.len(), Duration::from_millis(800)).await;
     assert!(
-        bytes.windows(f.len()).any(|w| w == &f[..]),
+        bytes
+            .windows(frame.len())
+            .any(|window| window == &frame[..]),
         "final reconnected stream did not deliver fresh frame ({} bytes received)",
         bytes.len()
     );
@@ -399,7 +408,7 @@ async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {
     // No sysid=99 byte at index 5 of any v2 frame should survive — the
     // simplest spot-check that none of the stale frames replayed.
     let stale_in_cycle1 = (0..cycle1.len().saturating_sub(6))
-        .filter(|i| cycle1[*i] == 0xFD && cycle1[i + 5] == 99)
+        .filter(|index| cycle1[*index] == 0xFD && cycle1[index + 5] == 99)
         .count();
     assert_eq!(
         stale_in_cycle1, 0,
@@ -420,7 +429,7 @@ async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {
     inject_burst(&injector, 10, 200..220).await;
     let cycle2 = read_until_quiet(&mut conn3, 1024, Duration::from_millis(500)).await;
     let stale_in_cycle2 = (0..cycle2.len().saturating_sub(6))
-        .filter(|i| cycle2[*i] == 0xFD && cycle2[i + 5] == 99)
+        .filter(|index| cycle2[*index] == 0xFD && cycle2[index + 5] == 99)
         .count();
     assert_eq!(
         stale_in_cycle2, 0,
@@ -463,11 +472,11 @@ async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {
 
     let mut out = Vec::new();
     let mut err = Vec::new();
-    if let Some(mut s) = child.stdout.take() {
-        let _ = s.read_to_end(&mut out);
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_end(&mut out);
     }
-    if let Some(mut s) = child.stderr.take() {
-        let _ = s.read_to_end(&mut err);
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = stderr.read_to_end(&mut err);
     }
     let stdout = String::from_utf8(out).expect("stdout utf8");
     let stderr = String::from_utf8(err).expect("stderr utf8");
@@ -479,17 +488,17 @@ async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {
     // (writer-side). A floor of 20 leaves comfortable headroom against
     // scheduling jitter while still proving the counter moved.
     let mut max_dropped_client: u64 = 0;
-    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if v["endpoint"].as_str() != Some("client") {
+        if value["endpoint"].as_str() != Some("client") {
             continue;
         }
-        if let Some(n) = v["dropped_tx"].as_u64()
-            && n > max_dropped_client
+        if let Some(count) = value["dropped_tx"].as_u64()
+            && count > max_dropped_client
         {
-            max_dropped_client = n;
+            max_dropped_client = count;
         }
     }
     assert!(

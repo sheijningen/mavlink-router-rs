@@ -173,16 +173,19 @@ fn merge_endpoints(
     toml_endpoints: Vec<EndpointSpec>,
     cli_endpoints: Vec<EndpointSpec>,
 ) -> (Vec<EndpointSpec>, Vec<String>) {
-    let cli_names: HashSet<&str> = cli_endpoints.iter().map(|e| e.name.as_str()).collect();
+    let cli_names: HashSet<&str> = cli_endpoints
+        .iter()
+        .map(|endpoint| endpoint.name.as_str())
+        .collect();
     let mut overridden_names: Vec<String> = Vec::new();
     let mut endpoints: Vec<EndpointSpec> =
         Vec::with_capacity(toml_endpoints.len() + cli_endpoints.len());
-    for ep in toml_endpoints {
-        if cli_names.contains(ep.name.as_str()) {
-            overridden_names.push(ep.name.clone());
+    for endpoint in toml_endpoints {
+        if cli_names.contains(endpoint.name.as_str()) {
+            overridden_names.push(endpoint.name.clone());
             continue;
         }
-        endpoints.push(ep);
+        endpoints.push(endpoint);
     }
     endpoints.extend(cli_endpoints);
     (endpoints, overridden_names)
@@ -193,9 +196,9 @@ fn merge_endpoints(
 /// `Config::merge` (per-source check before cross-source override pass).
 fn check_unique_names(endpoints: &[EndpointSpec]) -> Result<(), Error> {
     let mut seen = HashSet::<&str>::new();
-    for ep in endpoints {
-        if !seen.insert(ep.name.as_str()) {
-            return Err(Error::DuplicateName(ep.name.clone()));
+    for endpoint in endpoints {
+        if !seen.insert(endpoint.name.as_str()) {
+            return Err(Error::DuplicateName(endpoint.name.clone()));
         }
     }
     Ok(())
@@ -205,50 +208,53 @@ fn check_unique_names(endpoints: &[EndpointSpec]) -> Result<(), Error> {
 mod tests {
     use super::*;
 
-    fn ep(spec: &str) -> EndpointSpec {
+    fn endpoint(spec: &str) -> EndpointSpec {
         EndpointSpec::parse(spec).expect("test fixture must parse")
     }
 
     #[test]
     fn defaults_match_documented_defaults() {
-        let c = Config::default();
-        assert_eq!(c.log_level, LogLevel::Info);
-        assert_eq!(c.log_format, LogFormat::Text);
-        assert!(!c.stats);
-        assert_eq!(c.stats_interval_secs, 5);
-        assert_eq!(c.dedup_ms, 0);
-        assert!(!c.skip_config_log);
-        assert!(c.endpoints.is_empty());
+        let config = Config::default();
+        assert_eq!(config.log_level, LogLevel::Info);
+        assert_eq!(config.log_format, LogFormat::Text);
+        assert!(!config.stats);
+        assert_eq!(config.stats_interval_secs, 5);
+        assert_eq!(config.dedup_ms, 0);
+        assert!(!config.skip_config_log);
+        assert!(config.endpoints.is_empty());
     }
 
     #[test]
     fn validate_passes_on_unique_names() {
-        let c = Config {
-            endpoints: vec![ep("udps:0.0.0.0:1#a"), ep("udps:0.0.0.0:2#b")],
+        let config = Config {
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a"), endpoint("udps:0.0.0.0:2#b")],
             ..Config::default()
         };
-        c.validate().expect("unique names must pass");
+        config.validate().expect("unique names must pass");
     }
 
     #[test]
     fn validate_detects_duplicate_explicit_names() {
-        let c = Config {
-            endpoints: vec![ep("udps:0.0.0.0:1#foo"), ep("udps:0.0.0.0:2#foo")],
+        let config = Config {
+            endpoints: vec![
+                endpoint("udps:0.0.0.0:1#foo"),
+                endpoint("udps:0.0.0.0:2#foo"),
+            ],
             ..Config::default()
         };
-        match c.validate() {
-            Err(Error::DuplicateName(n)) => assert_eq!(n, "foo"),
+        match config.validate() {
+            Err(Error::DuplicateName(name)) => assert_eq!(name, "foo"),
             other => panic!("expected DuplicateName, got {other:?}"),
         }
     }
 
     #[test]
     fn validate_detects_duplicate_auto_names() {
-        let c = Config {
-            endpoints: vec![ep("udps:0.0.0.0:1"), ep("udps:0.0.0.0:1")],
+        let config = Config {
+            endpoints: vec![endpoint("udps:0.0.0.0:1"), endpoint("udps:0.0.0.0:1")],
             ..Config::default()
         };
-        assert!(matches!(c.validate(), Err(Error::DuplicateName(_))));
+        assert!(matches!(config.validate(), Err(Error::DuplicateName(_))));
     }
 
     // -- merge: globals --
@@ -271,7 +277,7 @@ mod tests {
             stats_interval_secs: Some(15),
             dedup_ms: Some(250),
             skip_config_log: Some(true),
-            endpoints: vec![ep("udps:0.0.0.0:1#a")],
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
         };
         let outcome = Config::merge(toml, cli).expect("merge must succeed");
         let cfg = outcome.config;
@@ -296,7 +302,7 @@ mod tests {
             endpoints: vec![],
         });
         let cli = CliConfig {
-            endpoints: vec![ep("udps:0.0.0.0:1#a")],
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
             ..CliConfig::default()
         };
         let cfg = Config::merge(toml, cli).expect("merge must succeed").config;
@@ -311,7 +317,7 @@ mod tests {
     #[test]
     fn merge_globals_defaults_when_neither_source_sets_them() {
         let cli = CliConfig {
-            endpoints: vec![ep("udps:0.0.0.0:1#a")],
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
             ..CliConfig::default()
         };
         let cfg = Config::merge(None, cli).expect("merge must succeed").config;
@@ -333,7 +339,7 @@ mod tests {
             ..TomlConfig::default()
         });
         let cli = CliConfig {
-            endpoints: vec![ep("udps:0.0.0.0:1#a")],
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
             ..CliConfig::default()
         };
         let cfg = Config::merge(toml, cli).expect("merge must succeed").config;
@@ -345,7 +351,10 @@ mod tests {
     #[test]
     fn merge_toml_only_endpoints_pass_through() {
         let toml = Some(TomlConfig {
-            endpoints: vec![ep("udps:0.0.0.0:1#a"), ep("tcpc:gcs.local:5760#b")],
+            endpoints: vec![
+                endpoint("udps:0.0.0.0:1#a"),
+                endpoint("tcpc:gcs.local:5760#b"),
+            ],
             ..TomlConfig::default()
         });
         let cli = CliConfig::default();
@@ -360,7 +369,10 @@ mod tests {
     #[test]
     fn merge_cli_only_endpoints_pass_through() {
         let cli = CliConfig {
-            endpoints: vec![ep("udps:0.0.0.0:1#a"), ep("tcpc:gcs.local:5760#b")],
+            endpoints: vec![
+                endpoint("udps:0.0.0.0:1#a"),
+                endpoint("tcpc:gcs.local:5760#b"),
+            ],
             ..CliConfig::default()
         };
         let outcome = Config::merge(None, cli).expect("merge must succeed");
@@ -378,11 +390,11 @@ mod tests {
         // wholesale — none of the TOML's identity/scheme knobs survive — and
         // the colliding name is reported in `overridden_names`.
         let toml = Some(TomlConfig {
-            endpoints: vec![ep("udps:0.0.0.0:14550#bus?sniffer=true&group=uplink")],
+            endpoints: vec![endpoint("udps:0.0.0.0:14550#bus?sniffer=true&group=uplink")],
             ..TomlConfig::default()
         });
         let cli = CliConfig {
-            endpoints: vec![ep("tcpc:gcs.local:5760#bus")],
+            endpoints: vec![endpoint("tcpc:gcs.local:5760#bus")],
             ..CliConfig::default()
         };
         let outcome = Config::merge(toml, cli).expect("merge must succeed");
@@ -408,14 +420,17 @@ mod tests {
         // typed it.
         let toml = Some(TomlConfig {
             endpoints: vec![
-                ep("udps:0.0.0.0:1#keep1"),
-                ep("udps:0.0.0.0:2#override-me"),
-                ep("udps:0.0.0.0:3#keep2"),
+                endpoint("udps:0.0.0.0:1#keep1"),
+                endpoint("udps:0.0.0.0:2#override-me"),
+                endpoint("udps:0.0.0.0:3#keep2"),
             ],
             ..TomlConfig::default()
         });
         let cli = CliConfig {
-            endpoints: vec![ep("tcpc:host:1#override-me"), ep("tcpc:host:2#extra")],
+            endpoints: vec![
+                endpoint("tcpc:host:1#override-me"),
+                endpoint("tcpc:host:2#extra"),
+            ],
             ..CliConfig::default()
         };
         let outcome = Config::merge(toml, cli).expect("merge must succeed");
@@ -424,7 +439,7 @@ mod tests {
             .config
             .endpoints
             .iter()
-            .map(|e| e.name.as_str())
+            .map(|endpoint| endpoint.name.as_str())
             .collect();
         assert_eq!(names, vec!["keep1", "keep2", "override-me", "extra"]);
     }
@@ -433,14 +448,14 @@ mod tests {
     fn merge_multiple_overrides_reported_in_order() {
         let toml = Some(TomlConfig {
             endpoints: vec![
-                ep("udps:0.0.0.0:1#a"),
-                ep("udps:0.0.0.0:2#b"),
-                ep("udps:0.0.0.0:3#c"),
+                endpoint("udps:0.0.0.0:1#a"),
+                endpoint("udps:0.0.0.0:2#b"),
+                endpoint("udps:0.0.0.0:3#c"),
             ],
             ..TomlConfig::default()
         });
         let cli = CliConfig {
-            endpoints: vec![ep("tcpc:h:1#a"), ep("tcpc:h:2#c")],
+            endpoints: vec![endpoint("tcpc:h:1#a"), endpoint("tcpc:h:2#c")],
             ..CliConfig::default()
         };
         let outcome = Config::merge(toml, cli).expect("merge must succeed");
@@ -452,11 +467,14 @@ mod tests {
     #[test]
     fn merge_duplicate_name_within_cli_is_fatal() {
         let cli = CliConfig {
-            endpoints: vec![ep("udps:0.0.0.0:1#foo"), ep("udps:0.0.0.0:2#foo")],
+            endpoints: vec![
+                endpoint("udps:0.0.0.0:1#foo"),
+                endpoint("udps:0.0.0.0:2#foo"),
+            ],
             ..CliConfig::default()
         };
         match Config::merge(None, cli) {
-            Err(Error::DuplicateName(n)) => assert_eq!(n, "foo"),
+            Err(Error::DuplicateName(name)) => assert_eq!(name, "foo"),
             other => panic!("expected DuplicateName, got {other:?}"),
         }
     }
@@ -464,12 +482,15 @@ mod tests {
     #[test]
     fn merge_duplicate_name_within_toml_is_fatal() {
         let toml = Some(TomlConfig {
-            endpoints: vec![ep("udps:0.0.0.0:1#foo"), ep("udps:0.0.0.0:2#foo")],
+            endpoints: vec![
+                endpoint("udps:0.0.0.0:1#foo"),
+                endpoint("udps:0.0.0.0:2#foo"),
+            ],
             ..TomlConfig::default()
         });
         let cli = CliConfig::default();
         match Config::merge(toml, cli) {
-            Err(Error::DuplicateName(n)) => assert_eq!(n, "foo"),
+            Err(Error::DuplicateName(name)) => assert_eq!(name, "foo"),
             other => panic!("expected DuplicateName, got {other:?}"),
         }
     }
@@ -482,15 +503,18 @@ mod tests {
         // operator's typo must surface as DuplicateName, not as a benign
         // override report.
         let toml = Some(TomlConfig {
-            endpoints: vec![ep("udps:0.0.0.0:1#foo"), ep("udps:0.0.0.0:2#foo")],
+            endpoints: vec![
+                endpoint("udps:0.0.0.0:1#foo"),
+                endpoint("udps:0.0.0.0:2#foo"),
+            ],
             ..TomlConfig::default()
         });
         let cli = CliConfig {
-            endpoints: vec![ep("tcpc:h:1#foo")],
+            endpoints: vec![endpoint("tcpc:h:1#foo")],
             ..CliConfig::default()
         };
         match Config::merge(toml, cli) {
-            Err(Error::DuplicateName(n)) => assert_eq!(n, "foo"),
+            Err(Error::DuplicateName(name)) => assert_eq!(name, "foo"),
             other => panic!("expected DuplicateName, got {other:?}"),
         }
     }
@@ -501,15 +525,15 @@ mod tests {
         // TOML's `#foo` must NOT be reported as overridden — the operator's
         // CLI invocation is itself malformed.
         let toml = Some(TomlConfig {
-            endpoints: vec![ep("udps:0.0.0.0:1#foo")],
+            endpoints: vec![endpoint("udps:0.0.0.0:1#foo")],
             ..TomlConfig::default()
         });
         let cli = CliConfig {
-            endpoints: vec![ep("tcpc:h:1#foo"), ep("tcpc:h:2#foo")],
+            endpoints: vec![endpoint("tcpc:h:1#foo"), endpoint("tcpc:h:2#foo")],
             ..CliConfig::default()
         };
         match Config::merge(toml, cli) {
-            Err(Error::DuplicateName(n)) => assert_eq!(n, "foo"),
+            Err(Error::DuplicateName(name)) => assert_eq!(name, "foo"),
             other => panic!("expected DuplicateName, got {other:?}"),
         }
     }
@@ -517,11 +541,11 @@ mod tests {
     #[test]
     fn merge_no_overrides_when_no_collisions() {
         let toml = Some(TomlConfig {
-            endpoints: vec![ep("udps:0.0.0.0:1#a")],
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
             ..TomlConfig::default()
         });
         let cli = CliConfig {
-            endpoints: vec![ep("tcpc:h:1#b")],
+            endpoints: vec![endpoint("tcpc:h:1#b")],
             ..CliConfig::default()
         };
         let outcome = Config::merge(toml, cli).expect("merge must succeed");

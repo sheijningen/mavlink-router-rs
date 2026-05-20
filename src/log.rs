@@ -10,8 +10,8 @@ use tracing::Level;
 use crate::config::{LogFormat, LogLevel};
 
 impl From<LogLevel> for Level {
-    fn from(l: LogLevel) -> Self {
-        match l {
+    fn from(level: LogLevel) -> Self {
+        match level {
             LogLevel::Trace => Level::TRACE,
             LogLevel::Debug => Level::DEBUG,
             LogLevel::Info => Level::INFO,

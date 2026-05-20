@@ -128,7 +128,7 @@ async fn group_members_share_learn_set_so_sibling_is_loop_blocked() {
         Ok(Ok((n, _))) => panic!(
             "group sibling unexpectedly received a frame ({n} bytes) — shared learn-set did not loop-block"
         ),
-        Ok(Err(e)) => panic!("sibling recv errored: {e}"),
+        Ok(Err(err)) => panic!("sibling recv errored: {err}"),
     }
 
     cancel.cancel();
@@ -214,7 +214,7 @@ async fn group_members_do_not_share_out_filters() {
         Ok(Ok((n, _))) => {
             panic!("strict received a blocked PING ({n} bytes) — out-filter leaked across group")
         }
-        Ok(Err(e)) => panic!("strict recv errored: {e}"),
+        Ok(Err(err)) => panic!("strict recv errored: {err}"),
     }
 
     cancel.cancel();

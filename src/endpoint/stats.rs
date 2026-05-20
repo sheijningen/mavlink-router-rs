@@ -42,8 +42,8 @@ impl EndpointState {
     }
 
     #[inline]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
             0 => Some(Self::Reconnecting),
             1 => Some(Self::Connected),
             2 => Some(Self::Idle),
@@ -180,23 +180,23 @@ mod tests {
 
     #[test]
     fn add_rx_tx_updates_pairs() {
-        let s = EndpointStats::default();
-        s.add_rx_frame(12);
-        s.add_rx_frame(20);
-        s.add_tx_frame(7);
-        assert_eq!(s.rx_frames.load(Ordering::Relaxed), 2);
-        assert_eq!(s.rx_bytes.load(Ordering::Relaxed), 32);
-        assert_eq!(s.tx_frames.load(Ordering::Relaxed), 1);
-        assert_eq!(s.tx_bytes.load(Ordering::Relaxed), 7);
+        let stats = EndpointStats::default();
+        stats.add_rx_frame(12);
+        stats.add_rx_frame(20);
+        stats.add_tx_frame(7);
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 2);
+        assert_eq!(stats.rx_bytes.load(Ordering::Relaxed), 32);
+        assert_eq!(stats.tx_frames.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.tx_bytes.load(Ordering::Relaxed), 7);
     }
 
     #[test]
     fn default_is_zero_and_reconnecting() {
-        let s = EndpointStats::default();
-        assert_eq!(s.rx_frames.load(Ordering::Relaxed), 0);
-        assert_eq!(s.dropped_tx.load(Ordering::Relaxed), 0);
-        assert_eq!(s.resync_bytes.load(Ordering::Relaxed), 0);
-        assert_eq!(s.load_state(), EndpointState::Reconnecting);
+        let stats = EndpointStats::default();
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.dropped_tx.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.resync_bytes.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.load_state(), EndpointState::Reconnecting);
     }
 
     #[test]
@@ -213,23 +213,23 @@ mod tests {
 
     #[test]
     fn new_with_connected_lands_in_connected() {
-        let s = EndpointStats::new(EndpointState::Connected);
-        assert_eq!(s.load_state(), EndpointState::Connected);
+        let stats = EndpointStats::new(EndpointState::Connected);
+        assert_eq!(stats.load_state(), EndpointState::Connected);
         // counters still zero
-        assert_eq!(s.rx_frames.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 0);
     }
 
     #[test]
     fn store_load_each_variant_roundtrips() {
-        let s = EndpointStats::default();
+        let stats = EndpointStats::default();
         for state in [
             EndpointState::Connected,
             EndpointState::Reconnecting,
             EndpointState::Idle,
             EndpointState::Down,
         ] {
-            s.store_state(state);
-            assert_eq!(s.load_state(), state);
+            stats.store_state(state);
+            assert_eq!(stats.load_state(), state);
         }
     }
 
@@ -244,11 +244,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "out-of-range u8")]
     fn load_state_panics_on_out_of_range_raw_value() {
-        let s = EndpointStats::default();
+        let stats = EndpointStats::default();
         // Bypass store_state to simulate a hypothetical bug; load_state must
         // panic rather than silently returning a junk variant.
-        s.state.store(99, Ordering::Relaxed);
-        let _ = s.load_state();
+        stats.state.store(99, Ordering::Relaxed);
+        let _ = stats.load_state();
     }
 
     #[test]

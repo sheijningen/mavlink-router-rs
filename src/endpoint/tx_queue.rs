@@ -21,9 +21,9 @@ pub struct TxQueue {
 
 impl TxQueue {
     pub fn new(capacity: usize, stats: Arc<EndpointStats>) -> Self {
-        let cap = capacity.max(1);
+        let clamped = capacity.max(1);
         Self {
-            inner: Arc::new(ArrayQueue::new(cap)),
+            inner: Arc::new(ArrayQueue::new(clamped)),
             notify: Arc::new(Notify::new()),
             stats,
         }
@@ -50,8 +50,8 @@ impl TxQueue {
     /// pop-or-notify-wait loop in every endpoint module.
     pub async fn pop_or_wait(&self) -> Bytes {
         loop {
-            if let Some(b) = self.inner.pop() {
-                return b;
+            if let Some(frame) = self.inner.pop() {
+                return frame;
             }
             self.notify.notified().await;
         }
@@ -61,14 +61,14 @@ impl TxQueue {
     /// `dropped_tx`. Called by the writer before reconnecting so a fresh link
     /// never carries telemetry that aged out during the outage.
     pub fn drain_and_discard(&self) -> usize {
-        let mut n: u64 = 0;
+        let mut count: u64 = 0;
         while self.inner.pop().is_some() {
-            n += 1;
+            count += 1;
         }
-        if n > 0 {
-            self.stats.dropped_tx.fetch_add(n, Ordering::Relaxed);
+        if count > 0 {
+            self.stats.dropped_tx.fetch_add(count, Ordering::Relaxed);
         }
-        n as usize
+        count as usize
     }
 
     pub fn len(&self) -> usize {
@@ -85,68 +85,68 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn make(cap: usize) -> (TxQueue, Arc<EndpointStats>) {
+    fn make_queue(capacity: usize) -> (TxQueue, Arc<EndpointStats>) {
         let stats = Arc::new(EndpointStats::default());
-        (TxQueue::new(cap, stats.clone()), stats)
+        (TxQueue::new(capacity, stats.clone()), stats)
     }
 
     #[test]
     fn push_under_capacity_no_evict() {
-        let (q, stats) = make(4);
-        assert!(!q.push(Bytes::from_static(b"a")));
-        assert!(!q.push(Bytes::from_static(b"b")));
-        assert_eq!(q.len(), 2);
+        let (queue, stats) = make_queue(4);
+        assert!(!queue.push(Bytes::from_static(b"a")));
+        assert!(!queue.push(Bytes::from_static(b"b")));
+        assert_eq!(queue.len(), 2);
         assert_eq!(stats.dropped_tx.load(Ordering::Relaxed), 0);
     }
 
     #[test]
     fn push_over_capacity_evicts_head() {
-        let (q, stats) = make(2);
-        q.push(Bytes::from_static(b"a"));
-        q.push(Bytes::from_static(b"b"));
-        let displaced = q.push(Bytes::from_static(b"c"));
+        let (queue, stats) = make_queue(2);
+        queue.push(Bytes::from_static(b"a"));
+        queue.push(Bytes::from_static(b"b"));
+        let displaced = queue.push(Bytes::from_static(b"c"));
         assert!(displaced);
         assert_eq!(stats.dropped_tx.load(Ordering::Relaxed), 1);
-        assert_eq!(q.pop().as_deref(), Some(b"b" as &[u8]));
-        assert_eq!(q.pop().as_deref(), Some(b"c" as &[u8]));
-        assert!(q.pop().is_none());
+        assert_eq!(queue.pop().as_deref(), Some(b"b" as &[u8]));
+        assert_eq!(queue.pop().as_deref(), Some(b"c" as &[u8]));
+        assert!(queue.pop().is_none());
     }
 
     #[test]
     fn drain_and_discard_counts() {
-        let (q, stats) = make(4);
-        q.push(Bytes::from_static(b"a"));
-        q.push(Bytes::from_static(b"b"));
-        q.push(Bytes::from_static(b"c"));
-        let drained = q.drain_and_discard();
+        let (queue, stats) = make_queue(4);
+        queue.push(Bytes::from_static(b"a"));
+        queue.push(Bytes::from_static(b"b"));
+        queue.push(Bytes::from_static(b"c"));
+        let drained = queue.drain_and_discard();
         assert_eq!(drained, 3);
-        assert!(q.is_empty());
+        assert!(queue.is_empty());
         assert_eq!(stats.dropped_tx.load(Ordering::Relaxed), 3);
     }
 
     #[test]
     fn drain_empty_increments_nothing() {
-        let (q, stats) = make(4);
-        assert_eq!(q.drain_and_discard(), 0);
+        let (queue, stats) = make_queue(4);
+        assert_eq!(queue.drain_and_discard(), 0);
         assert_eq!(stats.dropped_tx.load(Ordering::Relaxed), 0);
     }
 
     #[test]
     fn new_clamps_zero_capacity_to_one() {
         let stats = Arc::new(EndpointStats::default());
-        let q = TxQueue::new(0, stats);
-        assert!(q.inner.capacity() >= 1);
+        let queue = TxQueue::new(0, stats);
+        assert!(queue.inner.capacity() >= 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn pop_or_wait_wakes_on_push() {
-        let (q, _) = make(2);
+        let (queue, _) = make_queue(2);
         let waiter = {
-            let q = q.clone();
-            tokio::spawn(async move { q.pop_or_wait().await })
+            let queue = queue.clone();
+            tokio::spawn(async move { queue.pop_or_wait().await })
         };
         tokio::time::sleep(Duration::from_millis(5)).await;
-        q.push(Bytes::from_static(b"x"));
+        queue.push(Bytes::from_static(b"x"));
         let popped = tokio::time::timeout(Duration::from_secs(1), waiter)
             .await
             .expect("waiter timed out")
@@ -159,21 +159,21 @@ mod tests {
         // Drop a registered Notify waiter, then verify a fresh waiter still
         // wakes on the next push. Guards against a regression where the
         // aborted Notified future would mishandle its permit slot.
-        let (q, _) = make(2);
+        let (queue, _) = make_queue(2);
         let aborted = {
-            let q = q.clone();
-            tokio::spawn(async move { q.pop_or_wait().await })
+            let queue = queue.clone();
+            tokio::spawn(async move { queue.pop_or_wait().await })
         };
         tokio::time::sleep(Duration::from_millis(5)).await;
         aborted.abort();
         let _ = aborted.await;
 
         let new_waiter = {
-            let q = q.clone();
-            tokio::spawn(async move { q.pop_or_wait().await })
+            let queue = queue.clone();
+            tokio::spawn(async move { queue.pop_or_wait().await })
         };
         tokio::time::sleep(Duration::from_millis(5)).await;
-        q.push(Bytes::from_static(b"x"));
+        queue.push(Bytes::from_static(b"x"));
         let popped = tokio::time::timeout(Duration::from_secs(1), new_waiter)
             .await
             .expect("new waiter timed out — abort may have left Notify in a bad state")

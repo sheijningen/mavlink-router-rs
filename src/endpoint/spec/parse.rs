@@ -42,47 +42,63 @@ pub fn parse_kind(
 ) -> Result<EndpointKind, SpecError> {
     match scheme {
         Scheme::Serial => parse_serial_body(body).and_then(|(path, baud)| {
-            let mut ep = SerialEndpoint {
+            let mut endpoint = SerialEndpoint {
                 path,
                 baud,
                 ..SerialEndpoint::default()
             };
-            apply_pairs(&mut SerialApplier(&mut ep), Scheme::Serial, pairs)?;
-            Ok(EndpointKind::Serial(ep))
+            apply_pairs(&mut SerialApplier(&mut endpoint), Scheme::Serial, pairs)?;
+            Ok(EndpointKind::Serial(endpoint))
         }),
         Scheme::UdpServer => parse_listen_addr(body, Scheme::UdpServer).and_then(|bind_addr| {
-            let mut ep = UdpServerEndpoint {
+            let mut endpoint = UdpServerEndpoint {
                 bind_addr,
                 ..UdpServerEndpoint::default()
             };
-            apply_pairs(&mut UdpServerApplier(&mut ep), Scheme::UdpServer, pairs)?;
-            Ok(EndpointKind::UdpServer(ep))
+            apply_pairs(
+                &mut UdpServerApplier(&mut endpoint),
+                Scheme::UdpServer,
+                pairs,
+            )?;
+            Ok(EndpointKind::UdpServer(endpoint))
         }),
         Scheme::UdpClient => parse_host_port(body, Scheme::UdpClient).and_then(|(host, port)| {
-            let mut ep = UdpClientEndpoint {
+            let mut endpoint = UdpClientEndpoint {
                 host,
                 port,
                 ..UdpClientEndpoint::default()
             };
-            apply_pairs(&mut UdpClientApplier(&mut ep), Scheme::UdpClient, pairs)?;
-            Ok(EndpointKind::UdpClient(ep))
+            apply_pairs(
+                &mut UdpClientApplier(&mut endpoint),
+                Scheme::UdpClient,
+                pairs,
+            )?;
+            Ok(EndpointKind::UdpClient(endpoint))
         }),
         Scheme::TcpServer => parse_listen_addr(body, Scheme::TcpServer).and_then(|bind_addr| {
-            let mut ep = TcpServerEndpoint {
+            let mut endpoint = TcpServerEndpoint {
                 bind_addr,
                 ..TcpServerEndpoint::default()
             };
-            apply_pairs(&mut TcpServerApplier(&mut ep), Scheme::TcpServer, pairs)?;
-            Ok(EndpointKind::TcpServer(ep))
+            apply_pairs(
+                &mut TcpServerApplier(&mut endpoint),
+                Scheme::TcpServer,
+                pairs,
+            )?;
+            Ok(EndpointKind::TcpServer(endpoint))
         }),
         Scheme::TcpClient => parse_host_port(body, Scheme::TcpClient).and_then(|(host, port)| {
-            let mut ep = TcpClientEndpoint {
+            let mut endpoint = TcpClientEndpoint {
                 host,
                 port,
                 ..TcpClientEndpoint::default()
             };
-            apply_pairs(&mut TcpClientApplier(&mut ep), Scheme::TcpClient, pairs)?;
-            Ok(EndpointKind::TcpClient(ep))
+            apply_pairs(
+                &mut TcpClientApplier(&mut endpoint),
+                Scheme::TcpClient,
+                pairs,
+            )?;
+            Ok(EndpointKind::TcpClient(endpoint))
         }),
     }
 }
@@ -98,9 +114,9 @@ pub(crate) fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> 
     let last_colon = body.rfind(':');
     let last_comma = body.rfind(',');
     let pos = match (last_colon, last_comma) {
-        (Some(c), Some(m)) => Some(c.max(m)),
-        (Some(c), None) => Some(c),
-        (None, Some(m)) => Some(m),
+        (Some(colon), Some(comma)) => Some(colon.max(comma)),
+        (Some(colon), None) => Some(colon),
+        (None, Some(comma)) => Some(comma),
         (None, None) => None,
     };
     let Some(pos) = pos else {
@@ -140,14 +156,14 @@ pub(crate) fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> 
 /// targets are not resolved at runtime, only dial targets are).
 pub(crate) fn parse_listen_addr(body: &str, scheme: Scheme) -> Result<SocketAddr, SpecError> {
     let (host, port) = parse_host_port(body, scheme)?;
-    let ip: IpAddr = host.parse().map_err(|_| SpecError::MalformedBody {
+    let ip_addr: IpAddr = host.parse().map_err(|_| SpecError::MalformedBody {
         scheme,
         body: body.to_string(),
         reason: format!(
             "listen host '{host}' must be an IP literal (e.g. '0.0.0.0', '[::]', '[::1]'); hostnames are not resolved for {scheme}: endpoints"
         ),
     })?;
-    Ok(SocketAddr::new(ip, port))
+    Ok(SocketAddr::new(ip_addr, port))
 }
 
 pub(crate) fn parse_host_port(body: &str, scheme: Scheme) -> Result<(String, u16), SpecError> {
@@ -201,42 +217,56 @@ pub(crate) fn parse_host_port(body: &str, scheme: Scheme) -> Result<(String, u16
     Ok((host, port))
 }
 
-pub fn validate_name(s: &str) -> Result<(), SpecError> {
-    if s.is_empty() || s.len() > 64 {
-        return Err(SpecError::InvalidName(s.to_string()));
+pub fn validate_name(name: &str) -> Result<(), SpecError> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(SpecError::InvalidName(name.to_string()));
     }
-    if !s
+    if !name
         .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
     {
-        return Err(SpecError::InvalidName(s.to_string()));
+        return Err(SpecError::InvalidName(name.to_string()));
     }
     Ok(())
 }
 
 pub fn default_name(kind: &EndpointKind) -> String {
     match kind {
-        EndpointKind::Serial(e) => format!("serial-{}-{}", sanitize_for_name(&e.path), e.baud),
-        EndpointKind::UdpServer(e) => format!(
+        EndpointKind::Serial(endpoint) => {
+            format!(
+                "serial-{}-{}",
+                sanitize_for_name(&endpoint.path),
+                endpoint.baud
+            )
+        }
+        EndpointKind::UdpServer(endpoint) => format!(
             "udps-{}-{}",
-            sanitize_for_name(&e.bind_addr.ip().to_string()),
-            e.bind_addr.port()
+            sanitize_for_name(&endpoint.bind_addr.ip().to_string()),
+            endpoint.bind_addr.port()
         ),
-        EndpointKind::UdpClient(e) => format!("udpc-{}-{}", sanitize_for_name(&e.host), e.port),
-        EndpointKind::TcpServer(e) => format!(
+        EndpointKind::UdpClient(endpoint) => format!(
+            "udpc-{}-{}",
+            sanitize_for_name(&endpoint.host),
+            endpoint.port
+        ),
+        EndpointKind::TcpServer(endpoint) => format!(
             "tcps-{}-{}",
-            sanitize_for_name(&e.bind_addr.ip().to_string()),
-            e.bind_addr.port()
+            sanitize_for_name(&endpoint.bind_addr.ip().to_string()),
+            endpoint.bind_addr.port()
         ),
-        EndpointKind::TcpClient(e) => format!("tcpc-{}-{}", sanitize_for_name(&e.host), e.port),
+        EndpointKind::TcpClient(endpoint) => format!(
+            "tcpc-{}-{}",
+            sanitize_for_name(&endpoint.host),
+            endpoint.port
+        ),
     }
 }
 
-pub fn sanitize_for_name(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
+pub fn sanitize_for_name(text: &str) -> String {
+    text.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
             } else {
                 '_'
             }
@@ -253,7 +283,8 @@ mod tests {
     use rstest::rstest;
 
     fn parse_ok(input: &str) -> EndpointSpec {
-        EndpointSpec::parse(input).unwrap_or_else(|e| panic!("expected ok for {input:?}, got {e}"))
+        EndpointSpec::parse(input)
+            .unwrap_or_else(|err| panic!("expected ok for {input:?}, got {err}"))
     }
 
     fn parse_err(input: &str) -> SpecError {
@@ -262,21 +293,21 @@ mod tests {
 
     fn as_serial(spec: &EndpointSpec) -> &SerialEndpoint {
         match &spec.kind {
-            EndpointKind::Serial(e) => e,
+            EndpointKind::Serial(endpoint) => endpoint,
             other => panic!("expected serial, got {other:?}"),
         }
     }
 
     fn as_udps(spec: &EndpointSpec) -> &UdpServerEndpoint {
         match &spec.kind {
-            EndpointKind::UdpServer(e) => e,
+            EndpointKind::UdpServer(endpoint) => endpoint,
             other => panic!("expected udps, got {other:?}"),
         }
     }
 
     fn as_tcpc(spec: &EndpointSpec) -> &TcpClientEndpoint {
         match &spec.kind {
-            EndpointKind::TcpClient(e) => e,
+            EndpointKind::TcpClient(endpoint) => endpoint,
             other => panic!("expected tcpc, got {other:?}"),
         }
     }
@@ -301,16 +332,16 @@ mod tests {
         57600
     )]
     fn serial_body_parses(#[case] input: &str, #[case] path: &str, #[case] baud: u32) {
-        let s = parse_ok(input);
-        let e = as_serial(&s);
-        assert_eq!(e.path, path);
-        assert_eq!(e.baud, baud);
+        let spec = parse_ok(input);
+        let endpoint = as_serial(&spec);
+        assert_eq!(endpoint.path, path);
+        assert_eq!(endpoint.baud, baud);
     }
 
     #[test]
     fn serial_with_explicit_name() {
-        let s = parse_ok("serial:/dev/ttyUSB0:921600#vehicle");
-        assert_eq!(s.name, "vehicle");
+        let spec = parse_ok("serial:/dev/ttyUSB0:921600#vehicle");
+        assert_eq!(spec.name, "vehicle");
     }
 
     /// `parse_serial_body` rejection matrix: missing separator, non-numeric
@@ -349,15 +380,15 @@ mod tests {
         #[case] expected_addr: &str,
         #[case] expected_name: Option<&str>,
     ) {
-        let s = parse_ok(input);
-        let bind = match &s.kind {
-            EndpointKind::UdpServer(e) => e.bind_addr,
-            EndpointKind::TcpServer(e) => e.bind_addr,
+        let spec = parse_ok(input);
+        let bind = match &spec.kind {
+            EndpointKind::UdpServer(endpoint) => endpoint.bind_addr,
+            EndpointKind::TcpServer(endpoint) => endpoint.bind_addr,
             other => panic!("expected listen-side endpoint, got {other:?}"),
         };
         assert_eq!(bind.to_string(), expected_addr);
-        if let Some(n) = expected_name {
-            assert_eq!(s.name, n);
+        if let Some(name) = expected_name {
+            assert_eq!(spec.name, name);
         }
     }
 
@@ -374,10 +405,10 @@ mod tests {
         #[case] expected_host: &str,
         #[case] expected_port: u16,
     ) {
-        let s = parse_ok(input);
-        let (host, port) = match &s.kind {
-            EndpointKind::UdpClient(e) => (e.host.as_str(), e.port),
-            EndpointKind::TcpClient(e) => (e.host.as_str(), e.port),
+        let spec = parse_ok(input);
+        let (host, port) = match &spec.kind {
+            EndpointKind::UdpClient(endpoint) => (endpoint.host.as_str(), endpoint.port),
+            EndpointKind::TcpClient(endpoint) => (endpoint.host.as_str(), endpoint.port),
             other => panic!("expected dial-side endpoint, got {other:?}"),
         };
         assert_eq!(host, expected_host);
@@ -386,11 +417,11 @@ mod tests {
 
     #[test]
     fn tcpc_hostname_explicit_name() {
-        let s = parse_ok("tcpc:companion.local:5760#vehicle");
-        let e = as_tcpc(&s);
-        assert_eq!(e.host, "companion.local");
-        assert_eq!(e.port, 5760);
-        assert_eq!(s.name, "vehicle");
+        let spec = parse_ok("tcpc:companion.local:5760#vehicle");
+        let endpoint = as_tcpc(&spec);
+        assert_eq!(endpoint.host, "companion.local");
+        assert_eq!(endpoint.port, 5760);
+        assert_eq!(spec.name, "vehicle");
     }
 
     /// `host:port` rejection matrix. The first 7 cases assert
@@ -431,16 +462,16 @@ mod tests {
 
     #[test]
     fn name_max_64_ok() {
-        let n = "a".repeat(64);
-        let s = parse_ok(&format!("udps:0.0.0.0:1#{n}"));
-        assert_eq!(s.name, n);
+        let name = "a".repeat(64);
+        let spec = parse_ok(&format!("udps:0.0.0.0:1#{name}"));
+        assert_eq!(spec.name, name);
     }
 
     #[test]
     fn name_too_long_fails() {
-        let n = "a".repeat(65);
+        let name = "a".repeat(65);
         assert!(matches!(
-            parse_err(&format!("udps:0.0.0.0:1#{n}")),
+            parse_err(&format!("udps:0.0.0.0:1#{name}")),
             SpecError::InvalidName(_)
         ));
     }
@@ -471,8 +502,8 @@ mod tests {
 
     #[test]
     fn name_with_underscore_hyphen_digit_ok() {
-        let s = parse_ok("udps:0.0.0.0:1#abc_DEF-123");
-        assert_eq!(s.name, "abc_DEF-123");
+        let spec = parse_ok("udps:0.0.0.0:1#abc_DEF-123");
+        assert_eq!(spec.name, "abc_DEF-123");
     }
 
     #[test]
@@ -486,9 +517,9 @@ mod tests {
             "tcpc:gcs.local:5760",
             "udpc:companion.local:14550",
         ] {
-            let s = parse_ok(input);
-            validate_name(&s.name)
-                .unwrap_or_else(|e| panic!("auto-name {:?} fails name regex: {e}", s.name));
+            let spec = parse_ok(input);
+            validate_name(&spec.name)
+                .unwrap_or_else(|err| panic!("auto-name {:?} fails name regex: {err}", spec.name));
         }
     }
 
@@ -534,10 +565,10 @@ mod tests {
 
     #[test]
     fn fragment_before_query_order_locked() {
-        let s = parse_ok("udps:0.0.0.0:1#name?group=g");
-        assert_eq!(s.name, "name");
-        let e = as_udps(&s);
-        assert_eq!(e.identity.group.as_deref(), Some("g"));
+        let spec = parse_ok("udps:0.0.0.0:1#name?group=g");
+        assert_eq!(spec.name, "name");
+        let endpoint = as_udps(&spec);
+        assert_eq!(endpoint.identity.group.as_deref(), Some("g"));
     }
 
     #[test]

@@ -198,11 +198,11 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) {
             }
             res = socket.recv_from(&mut buf) => {
                 match res {
-                    Ok((n, src)) => {
-                        handle_packet(&buf[..n], src, &mut peers, &mut writer_tasks, &ctx).await;
+                    Ok((bytes_read, src)) => {
+                        handle_packet(&buf[..bytes_read], src, &mut peers, &mut writer_tasks, &ctx).await;
                     }
-                    Err(e) => {
-                        warn!(error = %e, "udps recv_from error");
+                    Err(err) => {
+                        warn!(error = %err, "udps recv_from error");
                     }
                 }
             }
@@ -402,9 +402,9 @@ async fn run_peer_writer(
             }
             frame = queue.pop_or_wait() => {
                 match socket.send_to(&frame, peer_addr).await {
-                    Ok(n) => stats.add_tx_frame(n),
-                    Err(e) => {
-                        warn!(error = %e, peer = %peer_addr, "udps send_to failed; dropping frame");
+                    Ok(bytes_sent) => stats.add_tx_frame(bytes_sent),
+                    Err(err) => {
+                        warn!(error = %err, peer = %peer_addr, "udps send_to failed; dropping frame");
                     }
                 }
             }
@@ -460,8 +460,8 @@ mod tests {
         }
     }
 
-    fn addr(p: u16) -> SocketAddr {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, p as u8)), p)
+    fn addr(port: u16) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, port as u8)), port)
     }
 
     #[tokio::test]

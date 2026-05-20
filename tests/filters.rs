@@ -100,7 +100,7 @@ async fn out_filter_blocks_destination_msgid_at_wire() {
             "blocked PING reached dst (got {n} bytes; first={:?})",
             &buf[..n.min(8)],
         ),
-        Ok(Err(e)) => panic!("dst recv errored: {e}"),
+        Ok(Err(err)) => panic!("dst recv errored: {err}"),
     }
 
     cancel.cancel();

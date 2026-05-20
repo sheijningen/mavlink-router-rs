@@ -58,77 +58,78 @@ mod tests {
 
     type Graph = HashMap<&'static str, Vec<&'static str>>;
 
-    fn loader_from(g: Graph) -> impl FnMut(&&'static str) -> Result<Vec<&'static str>, String> {
-        move |k: &&'static str| {
-            g.get(*k)
+    fn loader_from(graph: Graph) -> impl FnMut(&&'static str) -> Result<Vec<&'static str>, String> {
+        move |key: &&'static str| {
+            graph
+                .get(*key)
                 .cloned()
-                .ok_or_else(|| format!("not in graph: {k}"))
+                .ok_or_else(|| format!("not in graph: {key}"))
         }
     }
 
     #[test]
     fn leaf_only() {
-        let g: Graph = HashMap::from([("a", vec![])]);
-        assert!(walk_includes("a", loader_from(g)).is_ok());
+        let graph: Graph = HashMap::from([("a", vec![])]);
+        assert!(walk_includes("a", loader_from(graph)).is_ok());
     }
 
     #[test]
     fn linear_chain() {
-        let g: Graph = HashMap::from([("a", vec!["b"]), ("b", vec!["c"]), ("c", vec![])]);
-        assert!(walk_includes("a", loader_from(g)).is_ok());
+        let graph: Graph = HashMap::from([("a", vec!["b"]), ("b", vec!["c"]), ("c", vec![])]);
+        assert!(walk_includes("a", loader_from(graph)).is_ok());
     }
 
     #[test]
     fn self_include_is_cycle() {
-        let g: Graph = HashMap::from([("a", vec!["a"])]);
-        let err = walk_includes("a", loader_from(g)).unwrap_err();
-        assert!(matches!(err, WalkError::Cycle(k) if k == "a"));
+        let graph: Graph = HashMap::from([("a", vec!["a"])]);
+        let err = walk_includes("a", loader_from(graph)).unwrap_err();
+        assert!(matches!(err, WalkError::Cycle(key) if key == "a"));
     }
 
     #[test]
     fn two_node_cycle() {
-        let g: Graph = HashMap::from([("a", vec!["b"]), ("b", vec!["a"])]);
-        let err = walk_includes("a", loader_from(g)).unwrap_err();
+        let graph: Graph = HashMap::from([("a", vec!["b"]), ("b", vec!["a"])]);
+        let err = walk_includes("a", loader_from(graph)).unwrap_err();
         assert!(matches!(err, WalkError::Cycle(_)));
     }
 
     #[test]
     fn longer_cycle() {
-        let g: Graph = HashMap::from([("a", vec!["b"]), ("b", vec!["c"]), ("c", vec!["a"])]);
-        let err = walk_includes("a", loader_from(g)).unwrap_err();
+        let graph: Graph = HashMap::from([("a", vec!["b"]), ("b", vec!["c"]), ("c", vec!["a"])]);
+        let err = walk_includes("a", loader_from(graph)).unwrap_err();
         assert!(matches!(err, WalkError::Cycle(_)));
     }
 
     #[test]
     fn diamond_visits_each_node_once() {
-        let g: Graph = HashMap::from([
+        let graph: Graph = HashMap::from([
             ("a", vec!["b", "c"]),
             ("b", vec!["d"]),
             ("c", vec!["d"]),
             ("d", vec![]),
         ]);
         let visited: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
-        let result = walk_includes("a", |k: &&'static str| {
-            visited.borrow_mut().push(*k);
-            g.get(*k).cloned().ok_or_else(String::new)
+        let result = walk_includes("a", |key: &&'static str| {
+            visited.borrow_mut().push(*key);
+            graph.get(*key).cloned().ok_or_else(String::new)
         });
         assert!(result.is_ok());
-        let mut v = visited.borrow().clone();
-        v.sort();
-        assert_eq!(v, vec!["a", "b", "c", "d"]);
+        let mut visited_keys = visited.borrow().clone();
+        visited_keys.sort();
+        assert_eq!(visited_keys, vec!["a", "b", "c", "d"]);
     }
 
     #[test]
     fn cycle_below_diamond_is_still_detected() {
         // a → {b, c}; b → d → e; c → d; e → d (cycle through diamond bottom)
-        let g: Graph = HashMap::from([
+        let graph: Graph = HashMap::from([
             ("a", vec!["b", "c"]),
             ("b", vec!["d"]),
             ("c", vec!["d"]),
             ("d", vec!["e"]),
             ("e", vec!["d"]),
         ]);
-        let err = walk_includes("a", loader_from(g)).unwrap_err();
+        let err = walk_includes("a", loader_from(graph)).unwrap_err();
         assert!(matches!(err, WalkError::Cycle(_)));
     }
 

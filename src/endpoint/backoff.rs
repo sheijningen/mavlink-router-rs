@@ -48,12 +48,12 @@ where
             return BindOutcome::Cancelled;
         }
         match bind_fn() {
-            Ok(t) => {
+            Ok(bound) => {
                 backoff.reset();
-                return BindOutcome::Bound(t);
+                return BindOutcome::Bound(bound);
             }
-            Err(e) => {
-                warn!(error = %e, addr = %addr, "{label} bind failed; retrying after backoff");
+            Err(err) => {
+                warn!(error = %err, addr = %addr, "{label} bind failed; retrying after backoff");
                 if !wait_or_cancel(cancel, backoff.next_delay()).await {
                     return BindOutcome::Cancelled;
                 }
@@ -84,8 +84,8 @@ impl Backoff {
         let base_ms = self.current.as_millis() as u64;
         let jitter_range = base_ms / 5; // 20%
         let span = jitter_range * 2 + 1;
-        let r = (self.rng.next() % span) as i64 - jitter_range as i64;
-        let jittered_ms = (base_ms as i64 + r).max(1) as u64;
+        let jitter = (self.rng.next() % span) as i64 - jitter_range as i64;
+        let jittered_ms = (base_ms as i64 + jitter).max(1) as u64;
         let delay = Duration::from_millis(jittered_ms);
         self.current = (self.current.saturating_mul(2)).min(self.max);
         delay
@@ -101,18 +101,18 @@ impl Xorshift {
     fn seeded_from_clock() -> Self {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
+            .map(|duration| duration.as_nanos() as u64)
             .unwrap_or(0xdead_beef_cafe_babe);
         Self(nanos | 1)
     }
 
     fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
+        let mut state = self.0;
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        self.0 = state;
+        state
     }
 }
 
@@ -122,21 +122,21 @@ mod tests {
 
     #[test]
     fn initial_step_matches_initial_ms() {
-        let b = Backoff::new(250, 30_000);
-        assert_eq!(b.current, Duration::from_millis(250));
+        let backoff = Backoff::new(250, 30_000);
+        assert_eq!(backoff.current, Duration::from_millis(250));
     }
 
     #[test]
     fn next_delay_within_jitter_band() {
         // Force a large enough base that the jitter band is non-degenerate.
-        let mut b = Backoff::new(1000, 30_000);
+        let mut backoff = Backoff::new(1000, 30_000);
         for _ in 0..32 {
-            let d = b.next_delay();
+            let delay = backoff.next_delay();
             // Reset back so we always test the same base.
-            b.reset();
+            backoff.reset();
             assert!(
-                d >= Duration::from_millis(800) && d <= Duration::from_millis(1200),
-                "delay {d:?} outside ±20% band of 1000ms"
+                delay >= Duration::from_millis(800) && delay <= Duration::from_millis(1200),
+                "delay {delay:?} outside ±20% band of 1000ms"
             );
         }
     }
@@ -146,68 +146,68 @@ mod tests {
         // The initial-step jitter test re-resets between calls; this one
         // exercises the doubling and cap-saturation arithmetic by sampling
         // the band on a doubled base and on the saturated cap.
-        let mut b = Backoff::new(1000, 4000);
-        let _ = b.next_delay(); // current advances to 2000ms
-        assert_eq!(b.current, Duration::from_millis(2000));
+        let mut backoff = Backoff::new(1000, 4000);
+        let _ = backoff.next_delay(); // current advances to 2000ms
+        assert_eq!(backoff.current, Duration::from_millis(2000));
         for _ in 0..32 {
-            let held = b.current;
-            let d = b.next_delay();
+            let held = backoff.current;
+            let delay = backoff.next_delay();
             assert!(
-                d >= Duration::from_millis(1600) && d <= Duration::from_millis(2400),
-                "delay {d:?} outside ±20% of 2000ms"
+                delay >= Duration::from_millis(1600) && delay <= Duration::from_millis(2400),
+                "delay {delay:?} outside ±20% of 2000ms"
             );
-            b.current = held;
+            backoff.current = held;
         }
         // Walk forward until saturation, then sample at the cap.
-        while b.current < Duration::from_millis(4000) {
-            let _ = b.next_delay();
+        while backoff.current < Duration::from_millis(4000) {
+            let _ = backoff.next_delay();
         }
-        assert_eq!(b.current, Duration::from_millis(4000));
+        assert_eq!(backoff.current, Duration::from_millis(4000));
         for _ in 0..32 {
-            let held = b.current;
-            let d = b.next_delay();
+            let held = backoff.current;
+            let delay = backoff.next_delay();
             assert!(
-                d >= Duration::from_millis(3200) && d <= Duration::from_millis(4800),
-                "delay {d:?} outside ±20% of 4000ms cap"
+                delay >= Duration::from_millis(3200) && delay <= Duration::from_millis(4800),
+                "delay {delay:?} outside ±20% of 4000ms cap"
             );
-            b.current = held;
+            backoff.current = held;
         }
     }
 
     #[test]
     fn next_delay_doubles_and_caps() {
-        let mut b = Backoff::new(100, 800);
-        let _ = b.next_delay(); // base 100 → current advances to 200
-        assert_eq!(b.current, Duration::from_millis(200));
-        let _ = b.next_delay(); // → 400
-        assert_eq!(b.current, Duration::from_millis(400));
-        let _ = b.next_delay(); // → 800 (max)
-        assert_eq!(b.current, Duration::from_millis(800));
-        let _ = b.next_delay(); // → still 800
-        assert_eq!(b.current, Duration::from_millis(800));
+        let mut backoff = Backoff::new(100, 800);
+        let _ = backoff.next_delay(); // base 100 → current advances to 200
+        assert_eq!(backoff.current, Duration::from_millis(200));
+        let _ = backoff.next_delay(); // → 400
+        assert_eq!(backoff.current, Duration::from_millis(400));
+        let _ = backoff.next_delay(); // → 800 (max)
+        assert_eq!(backoff.current, Duration::from_millis(800));
+        let _ = backoff.next_delay(); // → still 800
+        assert_eq!(backoff.current, Duration::from_millis(800));
     }
 
     #[test]
     fn reset_returns_to_initial() {
-        let mut b = Backoff::new(100, 800);
+        let mut backoff = Backoff::new(100, 800);
         for _ in 0..10 {
-            let _ = b.next_delay();
+            let _ = backoff.next_delay();
         }
-        assert_eq!(b.current, Duration::from_millis(800));
-        b.reset();
-        assert_eq!(b.current, Duration::from_millis(100));
+        assert_eq!(backoff.current, Duration::from_millis(800));
+        backoff.reset();
+        assert_eq!(backoff.current, Duration::from_millis(100));
     }
 
     #[test]
     fn max_below_initial_is_clamped_to_initial() {
-        let b = Backoff::new(500, 100);
-        assert_eq!(b.current, Duration::from_millis(500));
+        let backoff = Backoff::new(500, 100);
+        assert_eq!(backoff.current, Duration::from_millis(500));
     }
 
     #[test]
     fn zero_initial_is_floored() {
-        let b = Backoff::new(0, 30_000);
-        assert_eq!(b.current, Duration::from_millis(1));
+        let backoff = Backoff::new(0, 30_000);
+        assert_eq!(backoff.current, Duration::from_millis(1));
     }
 
     #[test]
@@ -216,11 +216,11 @@ mod tests {
         let mut seen_distinct = 0;
         let mut last = 0u64;
         for _ in 0..16 {
-            let n = rng.next();
-            assert_ne!(n, 0, "xorshift must never return 0 from non-zero state");
-            if n != last {
+            let value = rng.next();
+            assert_ne!(value, 0, "xorshift must never return 0 from non-zero state");
+            if value != last {
                 seen_distinct += 1;
-                last = n;
+                last = value;
             }
         }
         assert!(seen_distinct > 4, "rng seems degenerate");

@@ -37,26 +37,26 @@ fn known_keys_for(scheme: Scheme) -> &'static [&'static str] {
 /// Tokenise an `&key=value` query string into ordered pairs, rejecting empty
 /// keys and duplicates. Pairs preserve insertion order so the applier can
 /// report the first offending key in error messages.
-pub fn parse_query_pairs(s: &str) -> Result<Vec<(String, String)>, SpecError> {
+pub fn parse_query_pairs(text: &str) -> Result<Vec<(String, String)>, SpecError> {
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
-    if s.is_empty() {
+    if text.is_empty() {
         return Ok(out);
     }
-    for pair in s.split('&') {
+    for pair in text.split('&') {
         if pair.is_empty() {
             continue;
         }
-        let (k, v) = pair.split_once('=').ok_or_else(|| {
+        let (key, value) = pair.split_once('=').ok_or_else(|| {
             SpecError::MalformedQuery(format!("expected '<key>=<value>' (got '{pair}')"))
         })?;
-        if k.is_empty() {
+        if key.is_empty() {
             return Err(SpecError::MalformedQuery(format!("empty key in '{pair}'")));
         }
-        if !seen.insert(k.to_string()) {
-            return Err(SpecError::DuplicateQueryKey(k.to_string()));
+        if !seen.insert(key.to_string()) {
+            return Err(SpecError::DuplicateQueryKey(key.to_string()));
         }
-        out.push((k.to_string(), v.to_string()));
+        out.push((key.to_string(), value.to_string()));
     }
     Ok(out)
 }
@@ -69,9 +69,9 @@ impl CommonQuery {
     pub fn apply(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
         match key {
             "tx_queue_frames" => {
-                let n = parse_usize(value, "tx_queue_frames")?;
+                let count = parse_usize(value, "tx_queue_frames")?;
                 self.tx_queue_frames = Some(check_usize_range(
-                    n,
+                    count,
                     "tx_queue_frames",
                     MIN_TX_QUEUE_FRAMES,
                     MAX_TX_QUEUE_FRAMES,
@@ -115,13 +115,13 @@ impl QueryApplier for SerialApplier<'_> {
     }
 }
 
-fn parse_flow_control(v: &str) -> Result<SerialFlowControl, SpecError> {
-    match v {
+fn parse_flow_control(value: &str) -> Result<SerialFlowControl, SpecError> {
+    match value {
         "none" => Ok(SerialFlowControl::None),
         "rtscts" => Ok(SerialFlowControl::RtsCts),
         _ => Err(SpecError::InvalidQueryValue {
             key: "flow_control",
-            reason: format!("expected 'none' or 'rtscts', got '{v}'"),
+            reason: format!("expected 'none' or 'rtscts', got '{value}'"),
         }),
     }
 }
@@ -131,9 +131,9 @@ impl QueryApplier for UdpServerApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
         match key {
             "idle_secs" => {
-                let n = parse_u64(value, "idle_secs")?;
+                let secs = parse_u64(value, "idle_secs")?;
                 self.0.idle_secs = Some(check_u64_range(
-                    n,
+                    secs,
                     "idle_secs",
                     MIN_IDLE_SECS,
                     MAX_IDLE_SECS,
@@ -149,9 +149,9 @@ pub struct UdpClientApplier<'a>(pub &'a mut UdpClientEndpoint);
 impl QueryApplier for UdpClientApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
         if key == "latch_idle_secs" {
-            let n = parse_u64(value, "latch_idle_secs")?;
+            let secs = parse_u64(value, "latch_idle_secs")?;
             self.0.latch_idle_secs = Some(check_u64_range(
-                n,
+                secs,
                 "latch_idle_secs",
                 MIN_LATCH_IDLE_SECS,
                 MAX_LATCH_IDLE_SECS,
@@ -183,13 +183,13 @@ pub fn apply_pairs(
     scheme: Scheme,
     pairs: &[(String, String)],
 ) -> Result<(), SpecError> {
-    for (k, v) in pairs {
-        let handled = applier.set(k, v)?;
+    for (key, value) in pairs {
+        let handled = applier.set(key, value)?;
         if !handled {
             return Err(SpecError::UnknownQueryKey {
                 scheme,
-                key: k.clone(),
-                suggestion: suggest_query_key(scheme, k),
+                key: key.clone(),
+                suggestion: suggest_query_key(scheme, key),
             });
         }
     }
@@ -203,49 +203,49 @@ pub(crate) fn suggest_query_key(scheme: Scheme, unknown: &str) -> Option<&'stati
         .chain(IdentityFlags::KEYS.iter())
         .chain(Filters::KEYS.iter())
         .chain(extras.iter())
-        .map(|k| (*k, levenshtein(unknown, k)))
-        .filter(|(_, d)| *d <= 3)
-        .min_by_key(|(_, d)| *d)
-        .map(|(k, _)| k)
+        .map(|key| (*key, levenshtein(unknown, key)))
+        .filter(|(_, distance)| *distance <= 3)
+        .min_by_key(|(_, distance)| *distance)
+        .map(|(key, _)| key)
 }
 
-pub fn levenshtein(a: &str, b: &str) -> usize {
-    let m = a.chars().count();
-    let n = b.chars().count();
-    if m == 0 {
-        return n;
+pub fn levenshtein(left: &str, right: &str) -> usize {
+    let left_len = left.chars().count();
+    let right_len = right.chars().count();
+    if left_len == 0 {
+        return right_len;
     }
-    if n == 0 {
-        return m;
+    if right_len == 0 {
+        return left_len;
     }
-    let b_chars: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr: Vec<usize> = vec![0; n + 1];
-    for (i, ca) in a.chars().enumerate() {
-        curr[0] = i + 1;
-        for (j, &cb) in b_chars.iter().enumerate() {
-            let cost = usize::from(ca != cb);
-            let del = prev[j + 1] + 1;
-            let ins = curr[j] + 1;
-            let sub = prev[j] + cost;
-            curr[j + 1] = del.min(ins).min(sub);
+    let right_chars: Vec<char> = right.chars().collect();
+    let mut prev: Vec<usize> = (0..=right_len).collect();
+    let mut curr: Vec<usize> = vec![0; right_len + 1];
+    for (row, left_char) in left.chars().enumerate() {
+        curr[0] = row + 1;
+        for (col, &right_char) in right_chars.iter().enumerate() {
+            let cost = usize::from(left_char != right_char);
+            let del = prev[col + 1] + 1;
+            let ins = curr[col] + 1;
+            let sub = prev[col] + cost;
+            curr[col + 1] = del.min(ins).min(sub);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
-    prev[n]
+    prev[right_len]
 }
 
-pub(crate) fn parse_u64(v: &str, key: &'static str) -> Result<u64, SpecError> {
-    v.parse().map_err(|_| SpecError::InvalidQueryValue {
+pub(crate) fn parse_u64(value: &str, key: &'static str) -> Result<u64, SpecError> {
+    value.parse().map_err(|_| SpecError::InvalidQueryValue {
         key,
-        reason: format!("expected a non-negative integer, got '{v}'"),
+        reason: format!("expected a non-negative integer, got '{value}'"),
     })
 }
 
-pub(crate) fn parse_usize(v: &str, key: &'static str) -> Result<usize, SpecError> {
-    v.parse().map_err(|_| SpecError::InvalidQueryValue {
+pub(crate) fn parse_usize(value: &str, key: &'static str) -> Result<usize, SpecError> {
+    value.parse().map_err(|_| SpecError::InvalidQueryValue {
         key,
-        reason: format!("expected a non-negative integer, got '{v}'"),
+        reason: format!("expected a non-negative integer, got '{value}'"),
     })
 }
 
@@ -260,7 +260,8 @@ mod tests {
     };
 
     fn parse_ok(input: &str) -> EndpointSpec {
-        EndpointSpec::parse(input).unwrap_or_else(|e| panic!("expected ok for {input:?}, got {e}"))
+        EndpointSpec::parse(input)
+            .unwrap_or_else(|err| panic!("expected ok for {input:?}, got {err}"))
     }
 
     fn parse_err(input: &str) -> SpecError {
@@ -269,21 +270,21 @@ mod tests {
 
     fn as_serial(spec: &EndpointSpec) -> &SerialEndpoint {
         match &spec.kind {
-            EndpointKind::Serial(e) => e,
+            EndpointKind::Serial(endpoint) => endpoint,
             other => panic!("expected serial, got {other:?}"),
         }
     }
 
     fn as_udps(spec: &EndpointSpec) -> &UdpServerEndpoint {
         match &spec.kind {
-            EndpointKind::UdpServer(e) => e,
+            EndpointKind::UdpServer(endpoint) => endpoint,
             other => panic!("expected udps, got {other:?}"),
         }
     }
 
     fn as_tcpc(spec: &EndpointSpec) -> &TcpClientEndpoint {
         match &spec.kind {
-            EndpointKind::TcpClient(e) => e,
+            EndpointKind::TcpClient(endpoint) => endpoint,
             other => panic!("expected tcpc, got {other:?}"),
         }
     }
@@ -292,22 +293,22 @@ mod tests {
 
     #[test]
     fn udps_with_sniffer_query() {
-        let s = parse_ok("udps:0.0.0.0:14551#tap?sniffer=true");
-        let e = as_udps(&s);
-        assert_eq!(s.name, "tap");
-        assert!(e.identity.sniffer);
+        let spec = parse_ok("udps:0.0.0.0:14551#tap?sniffer=true");
+        let endpoint = as_udps(&spec);
+        assert_eq!(spec.name, "tap");
+        assert!(endpoint.identity.sniffer);
     }
 
     #[test]
     fn sniffer_false_explicit() {
-        let e = as_udps(&parse_ok("udps:0.0.0.0:1?sniffer=false")).clone();
-        assert!(!e.identity.sniffer);
+        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1?sniffer=false")).clone();
+        assert!(!endpoint.identity.sniffer);
     }
 
     #[test]
     fn sniffer_default_is_false() {
-        let e = as_udps(&parse_ok("udps:0.0.0.0:1")).clone();
-        assert!(!e.identity.sniffer);
+        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1")).clone();
+        assert!(!endpoint.identity.sniffer);
     }
 
     #[test]
@@ -331,15 +332,18 @@ mod tests {
     /// operator sees the valid range) and the offending `got_value`.
     fn assert_bounds_err(input: &str, key: &str, min: u64, max: u64, got_value: u64) {
         match parse_err(input) {
-            SpecError::InvalidQueryValue { key: k, reason: r } => {
-                assert_eq!(k, key, "wrong key in error for {input}");
+            SpecError::InvalidQueryValue {
+                key: actual_key,
+                reason,
+            } => {
+                assert_eq!(actual_key, key, "wrong key in error for {input}");
                 assert!(
-                    r.contains(&format!("{min}..={max}")),
-                    "expected '{min}..={max}' in reason; got: {r}"
+                    reason.contains(&format!("{min}..={max}")),
+                    "expected '{min}..={max}' in reason; got: {reason}"
                 );
                 assert!(
-                    r.contains(&format!("got {got_value}")),
-                    "expected 'got {got_value}' in reason; got: {r}"
+                    reason.contains(&format!("got {got_value}")),
+                    "expected 'got {got_value}' in reason; got: {reason}"
                 );
             }
             other => panic!("expected InvalidQueryValue for {input}, got {other:?}"),
@@ -416,10 +420,10 @@ mod tests {
 
     #[test]
     fn msgid_filter_list_typed() {
-        let s = parse_ok("tcpc:gcs.local:5760?block_msgid_in=33,100-150,32");
-        let e = as_tcpc(&s);
+        let spec = parse_ok("tcpc:gcs.local:5760?block_msgid_in=33,100-150,32");
+        let endpoint = as_tcpc(&spec);
         assert_eq!(
-            e.identity.filters.block_msgid_in,
+            endpoint.identity.filters.block_msgid_in,
             vec![
                 MsgIdRange::single(33),
                 MsgIdRange { lo: 100, hi: 150 },
@@ -430,11 +434,11 @@ mod tests {
 
     #[test]
     fn msgid_filter_list_with_whitespace() {
-        let s = parse_ok("tcpc:gcs.local:5760?allow_msgid_out=1, 2 , 3-5");
-        let e = as_tcpc(&s);
-        assert_eq!(e.identity.filters.allow_msgid_out.len(), 3);
+        let spec = parse_ok("tcpc:gcs.local:5760?allow_msgid_out=1, 2 , 3-5");
+        let endpoint = as_tcpc(&spec);
+        assert_eq!(endpoint.identity.filters.allow_msgid_out.len(), 3);
         assert_eq!(
-            e.identity.filters.allow_msgid_out[2],
+            endpoint.identity.filters.allow_msgid_out[2],
             MsgIdRange { lo: 3, hi: 5 }
         );
     }
@@ -475,10 +479,10 @@ mod tests {
 
     #[test]
     fn src_sys_filter_typed_as_u8() {
-        let s = parse_ok("tcpc:gcs.local:5760?allow_src_sys_out=1,5-10,200");
-        let e = as_tcpc(&s);
+        let spec = parse_ok("tcpc:gcs.local:5760?allow_src_sys_out=1,5-10,200");
+        let endpoint = as_tcpc(&spec);
         assert_eq!(
-            e.identity.filters.allow_src_sys_out,
+            endpoint.identity.filters.allow_src_sys_out,
             vec![
                 U8Range::single(1),
                 U8Range { lo: 5, hi: 10 },
@@ -499,27 +503,27 @@ mod tests {
 
     #[test]
     fn serial_flow_control_default_none() {
-        let e = as_serial(&parse_ok("serial:/dev/foo:9600")).clone();
+        let endpoint = as_serial(&parse_ok("serial:/dev/foo:9600")).clone();
         assert_eq!(
-            e.flow_control,
+            endpoint.flow_control,
             crate::endpoint::spec::SerialFlowControl::None
         );
     }
 
     #[test]
     fn serial_flow_control_rtscts() {
-        let e = as_serial(&parse_ok("serial:/dev/foo:9600?flow_control=rtscts")).clone();
+        let endpoint = as_serial(&parse_ok("serial:/dev/foo:9600?flow_control=rtscts")).clone();
         assert_eq!(
-            e.flow_control,
+            endpoint.flow_control,
             crate::endpoint::spec::SerialFlowControl::RtsCts
         );
     }
 
     #[test]
     fn serial_flow_control_explicit_none() {
-        let e = as_serial(&parse_ok("serial:/dev/foo:9600?flow_control=none")).clone();
+        let endpoint = as_serial(&parse_ok("serial:/dev/foo:9600?flow_control=none")).clone();
         assert_eq!(
-            e.flow_control,
+            endpoint.flow_control,
             crate::endpoint::spec::SerialFlowControl::None
         );
     }
@@ -545,16 +549,16 @@ mod tests {
 
     #[test]
     fn idle_secs_typed_on_udps() {
-        let e = as_udps(&parse_ok("udps:0.0.0.0:14550?idle_secs=30")).clone();
-        assert_eq!(e.idle_secs, Some(30));
+        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:14550?idle_secs=30")).clone();
+        assert_eq!(endpoint.idle_secs, Some(30));
     }
 
     #[test]
     fn tcpc_with_group() {
-        let s = parse_ok("tcpc:companion.local:5760#vehicle?group=uplink");
-        let e = as_tcpc(&s);
-        assert_eq!(e.identity.group.as_deref(), Some("uplink"));
-        assert_eq!(s.name, "vehicle");
+        let spec = parse_ok("tcpc:companion.local:5760#vehicle?group=uplink");
+        let endpoint = as_tcpc(&spec);
+        assert_eq!(endpoint.identity.group.as_deref(), Some("uplink"));
+        assert_eq!(spec.name, "vehicle");
     }
 
     // -- scheme-specific knobs are rejected on the wrong scheme --
@@ -662,98 +666,98 @@ mod tests {
 
     #[test]
     fn empty_query_after_question_mark_ok() {
-        let s = parse_ok("udps:0.0.0.0:1?");
-        let e = as_udps(&s);
-        assert!(e.identity.group.is_none());
-        assert!(!e.identity.sniffer);
+        let spec = parse_ok("udps:0.0.0.0:1?");
+        let endpoint = as_udps(&spec);
+        assert!(endpoint.identity.group.is_none());
+        assert!(!endpoint.identity.sniffer);
     }
 
     #[test]
     fn trailing_ampersand_tolerated() {
-        let e = as_udps(&parse_ok("udps:0.0.0.0:1?sniffer=true&")).clone();
-        assert!(e.identity.sniffer);
+        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1?sniffer=true&")).clone();
+        assert!(endpoint.identity.sniffer);
     }
 
     #[test]
     fn empty_value_for_group_ok() {
-        let e = as_udps(&parse_ok("udps:0.0.0.0:1?group=")).clone();
-        assert_eq!(e.identity.group.as_deref(), Some(""));
+        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1?group=")).clone();
+        assert_eq!(endpoint.identity.group.as_deref(), Some(""));
     }
 
     #[test]
     fn value_with_embedded_equals_kept_intact() {
-        let e = as_udps(&parse_ok("udps:0.0.0.0:1?group=a=b")).clone();
-        assert_eq!(e.identity.group.as_deref(), Some("a=b"));
+        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1?group=a=b")).clone();
+        assert_eq!(endpoint.identity.group.as_deref(), Some("a=b"));
     }
 
     // -- comprehensive coverage --
 
     #[test]
     fn all_filter_keys_accepted_on_tcpc() {
-        let q = "allow_msgid_in=1&block_msgid_in=2&allow_msgid_out=3&block_msgid_out=4\
+        let query = "allow_msgid_in=1&block_msgid_in=2&allow_msgid_out=3&block_msgid_out=4\
                  &allow_src_sys_in=5&block_src_sys_in=6&allow_src_sys_out=7&block_src_sys_out=8\
                  &allow_src_comp_in=9&block_src_comp_in=10&allow_src_comp_out=11&block_src_comp_out=12";
-        let e = as_tcpc(&parse_ok(&format!("tcpc:x:1?{q}"))).clone();
+        let endpoint = as_tcpc(&parse_ok(&format!("tcpc:x:1?{query}"))).clone();
         assert_eq!(
-            e.identity.filters.allow_msgid_in,
+            endpoint.identity.filters.allow_msgid_in,
             vec![MsgIdRange::single(1)]
         );
         assert_eq!(
-            e.identity.filters.block_msgid_in,
+            endpoint.identity.filters.block_msgid_in,
             vec![MsgIdRange::single(2)]
         );
         assert_eq!(
-            e.identity.filters.allow_msgid_out,
+            endpoint.identity.filters.allow_msgid_out,
             vec![MsgIdRange::single(3)]
         );
         assert_eq!(
-            e.identity.filters.block_msgid_out,
+            endpoint.identity.filters.block_msgid_out,
             vec![MsgIdRange::single(4)]
         );
         assert_eq!(
-            e.identity.filters.allow_src_sys_in,
+            endpoint.identity.filters.allow_src_sys_in,
             vec![U8Range::single(5)]
         );
         assert_eq!(
-            e.identity.filters.block_src_sys_in,
+            endpoint.identity.filters.block_src_sys_in,
             vec![U8Range::single(6)]
         );
         assert_eq!(
-            e.identity.filters.allow_src_sys_out,
+            endpoint.identity.filters.allow_src_sys_out,
             vec![U8Range::single(7)]
         );
         assert_eq!(
-            e.identity.filters.block_src_sys_out,
+            endpoint.identity.filters.block_src_sys_out,
             vec![U8Range::single(8)]
         );
         assert_eq!(
-            e.identity.filters.allow_src_comp_in,
+            endpoint.identity.filters.allow_src_comp_in,
             vec![U8Range::single(9)]
         );
         assert_eq!(
-            e.identity.filters.block_src_comp_in,
+            endpoint.identity.filters.block_src_comp_in,
             vec![U8Range::single(10)]
         );
         assert_eq!(
-            e.identity.filters.allow_src_comp_out,
+            endpoint.identity.filters.allow_src_comp_out,
             vec![U8Range::single(11)]
         );
         assert_eq!(
-            e.identity.filters.block_src_comp_out,
+            endpoint.identity.filters.block_src_comp_out,
             vec![U8Range::single(12)]
         );
     }
 
     #[test]
     fn no_query_leaves_identity_at_default() {
-        let e = as_udps(&parse_ok("udps:0.0.0.0:1")).clone();
-        assert_eq!(e.identity, IdentityFlags::default());
+        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1")).clone();
+        assert_eq!(endpoint.identity, IdentityFlags::default());
     }
 
     #[test]
     fn plumbing_keys_typed() {
-        let e = as_tcpc(&parse_ok("tcpc:x:1?tx_queue_frames=128")).clone();
-        assert_eq!(e.common.tx_queue_frames, Some(128));
+        let endpoint = as_tcpc(&parse_ok("tcpc:x:1?tx_queue_frames=128")).clone();
+        assert_eq!(endpoint.common.tx_queue_frames, Some(128));
     }
 
     // -- helpers / invariants --
@@ -774,8 +778,13 @@ mod tests {
         copy.sort();
         copy.dedup();
         assert_eq!(copy.len(), COMMON_KEYS.len(), "duplicates present");
-        for w in COMMON_KEYS.windows(2) {
-            assert!(w[0] < w[1], "not sorted: {} >= {}", w[0], w[1]);
+        for window in COMMON_KEYS.windows(2) {
+            assert!(
+                window[0] < window[1],
+                "not sorted: {} >= {}",
+                window[0],
+                window[1]
+            );
         }
     }
 
@@ -785,8 +794,13 @@ mod tests {
         copy.sort();
         copy.dedup();
         assert_eq!(copy.len(), IdentityFlags::KEYS.len(), "duplicates present");
-        for w in IdentityFlags::KEYS.windows(2) {
-            assert!(w[0] < w[1], "not sorted: {} >= {}", w[0], w[1]);
+        for window in IdentityFlags::KEYS.windows(2) {
+            assert!(
+                window[0] < window[1],
+                "not sorted: {} >= {}",
+                window[0],
+                window[1]
+            );
         }
     }
 
@@ -796,8 +810,13 @@ mod tests {
         copy.sort();
         copy.dedup();
         assert_eq!(copy.len(), Filters::KEYS.len(), "duplicates present");
-        for w in Filters::KEYS.windows(2) {
-            assert!(w[0] < w[1], "not sorted: {} >= {}", w[0], w[1]);
+        for window in Filters::KEYS.windows(2) {
+            assert!(
+                window[0] < window[1],
+                "not sorted: {} >= {}",
+                window[0],
+                window[1]
+            );
         }
     }
 }

@@ -66,16 +66,20 @@ impl UdpClientSpec {
     /// `name` because the parser doesn't allocate IDs. The TxQueue's depth
     /// (`tx_queue_frames`) is consumed by the spawner before the spec is
     /// built — it sizes the queue and never appears here.
-    pub fn from_endpoint(ep: UdpClientEndpoint, endpoint_id: EndpointId, name: String) -> Self {
+    pub fn from_endpoint(
+        endpoint: UdpClientEndpoint,
+        endpoint_id: EndpointId,
+        name: String,
+    ) -> Self {
         Self {
-            host: ep.host,
-            port: ep.port,
+            host: endpoint.host,
+            port: endpoint.port,
             endpoint_id,
             name,
-            latch_idle_secs: ep.latch_idle_secs.unwrap_or(DEFAULT_LATCH_IDLE_SECS),
+            latch_idle_secs: endpoint.latch_idle_secs.unwrap_or(DEFAULT_LATCH_IDLE_SECS),
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
-            identity: ep.identity,
+            identity: endpoint.identity,
         }
     }
 }
@@ -154,7 +158,11 @@ fn classify_inbound(dest: &Destination, src_ip: IpAddr) -> InboundDecision {
         }
         return InboundDecision::Reject;
     }
-    if dest.resolved_ips.iter().any(|&ip| canonical_ip(ip) == src) {
+    if dest
+        .resolved_ips
+        .iter()
+        .any(|&ip_addr| canonical_ip(ip_addr) == src)
+    {
         InboundDecision::AcceptAndLatch
     } else {
         InboundDecision::Reject
@@ -166,7 +174,7 @@ fn classify_inbound(dest: &Destination, src_ip: IpAddr) -> InboundDecision {
 /// An empty input — meaning DNS has not yet succeeded — defaults to `[::]:0`
 /// so we can adapt to whichever family resolves first.
 fn pick_local_bind(resolved_ips: &[IpAddr]) -> SocketAddr {
-    if resolved_ips.is_empty() || resolved_ips.iter().any(|ip| ip.is_ipv6()) {
+    if resolved_ips.is_empty() || resolved_ips.iter().any(|ip_addr| ip_addr.is_ipv6()) {
         SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
     } else {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
@@ -177,14 +185,14 @@ async fn resolve_host(host: &str, port: u16) -> Vec<IpAddr> {
     let target = format!("{host}:{port}");
     match lookup_host(target.as_str()).await {
         Ok(addrs) => {
-            let ips: Vec<IpAddr> = addrs.map(|sa| sa.ip()).collect();
+            let ips: Vec<IpAddr> = addrs.map(|addr| addr.ip()).collect();
             if ips.is_empty() {
                 warn!(%host, "udpc DNS resolution returned no addresses");
             }
             ips
         }
-        Err(e) => {
-            warn!(error = %e, %host, "udpc DNS resolution failed");
+        Err(err) => {
+            warn!(error = %err, %host, "udpc DNS resolution failed");
             Vec::new()
         }
     }
@@ -234,7 +242,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
     })
     .await
     {
-        BindOutcome::Bound(s) => s,
+        BindOutcome::Bound(socket) => socket,
         BindOutcome::Cancelled => return,
     };
     // Local bind succeeded. udpc has no transport-up/down event in the
@@ -267,9 +275,9 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
             }
             res = socket.recv_from(&mut buf) => {
                 match res {
-                    Ok((n, src)) => {
+                    Ok((count, src)) => {
                         handle_inbound(
-                            &buf[..n],
+                            &buf[..count],
                             src,
                             &mut dest,
                             &mut framer,
@@ -282,8 +290,8 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
                         )
                         .await;
                     }
-                    Err(e) => {
-                        warn!(error = %e, "udpc recv_from error");
+                    Err(err) => {
+                        warn!(error = %err, "udpc recv_from error");
                     }
                 }
             }
@@ -370,14 +378,14 @@ async fn send_frame(
         return;
     };
     match socket.send_to(&frame, target).await {
-        Ok(n) => {
-            stats.add_tx_frame(n);
+        Ok(bytes_sent) => {
+            stats.add_tx_frame(bytes_sent);
             // Idempotent recovery write: cheap relaxed AtomicU8 store, and
             // saves tracking "were we Reconnecting?" on the hot path.
             stats.store_state(EndpointState::Connected);
         }
-        Err(e) => {
-            warn!(error = %e, %target, "udpc send_to failed; re-resolving for next burst");
+        Err(err) => {
+            warn!(error = %err, %target, "udpc send_to failed; re-resolving for next burst");
             let fresh = resolve_host(&dest.host, dest.port).await;
             if !fresh.is_empty() {
                 dest.resolved_ips = fresh;
@@ -421,14 +429,14 @@ mod tests {
         }
     }
 
-    fn v4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    fn v4(octet_a: u8, octet_b: u8, octet_c: u8, octet_d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(octet_a, octet_b, octet_c, octet_d))
     }
 
     #[test]
     fn spec_defaults_when_endpoint_unset() {
-        let ep = UdpClientEndpoint::default();
-        let spec = UdpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
+        let endpoint = UdpClientEndpoint::default();
+        let spec = UdpClientSpec::from_endpoint(endpoint, EndpointId(0), "n".into());
         assert_eq!(spec.latch_idle_secs, DEFAULT_LATCH_IDLE_SECS);
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
@@ -436,11 +444,11 @@ mod tests {
 
     #[test]
     fn spec_overrides_from_endpoint() {
-        let ep = UdpClientEndpoint {
+        let endpoint = UdpClientEndpoint {
             latch_idle_secs: Some(5),
             ..UdpClientEndpoint::default()
         };
-        let spec = UdpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
+        let spec = UdpClientSpec::from_endpoint(endpoint, EndpointId(0), "n".into());
         assert_eq!(spec.latch_idle_secs, 5);
     }
 
@@ -750,9 +758,9 @@ mod tests {
         let mut crc = Crc16::new();
         crc.update_slice(&bytes[1..]);
         crc.update(50);
-        let c = crc.finalize();
-        bytes.push((c & 0xFF) as u8);
-        bytes.push((c >> 8) as u8);
+        let crc_value = crc.finalize();
+        bytes.push((crc_value & 0xFF) as u8);
+        bytes.push((crc_value >> 8) as u8);
 
         let mut dest = make_dest(&[v4(127, 0, 0, 1)], 14550);
         let mut framer = Framer::with_capacity(1024);

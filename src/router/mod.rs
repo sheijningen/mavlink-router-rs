@@ -150,11 +150,11 @@ pub async fn run(wiring: RouterWiring) {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
-            Some(ev) = event_rx.recv() => {
-                handle_event(&mut routing, &mut groups, ev, &stats_event_tx).await;
+            Some(event) = event_rx.recv() => {
+                handle_event(&mut routing, &mut groups, event, &stats_event_tx).await;
             }
-            Some(fr) = frame_rx.recv() => {
-                handle_frame(&mut routing, &mut groups, &mut dedup, fr);
+            Some(frame) = frame_rx.recv() => {
+                handle_frame(&mut routing, &mut groups, &mut dedup, frame);
             }
             else => break,
         }
@@ -165,8 +165,8 @@ pub async fn run(wiring: RouterWiring) {
     // in-flight `PeerRemoved`s so the stats task's mirror sees the right
     // final-state for every sub-endpoint that was torn down during the
     // drain window.
-    while let Ok(ev) = event_rx.try_recv() {
-        handle_event(&mut routing, &mut groups, ev, &stats_event_tx).await;
+    while let Ok(event) = event_rx.try_recv() {
+        handle_event(&mut routing, &mut groups, event, &stats_event_tx).await;
     }
 
     shutdown_sweep(&mut routing, &stats_event_tx).await;
@@ -175,23 +175,23 @@ pub async fn run(wiring: RouterWiring) {
 async fn handle_event(
     routing: &mut HashMap<EndpointId, RegisteredEndpoint>,
     groups: &mut GroupRegistry,
-    ev: EndpointEvent,
+    event: EndpointEvent,
     stats_event_tx: &mpsc::Sender<StatsEvent>,
 ) {
-    match ev {
+    match event {
         EndpointEvent::EndpointAdded {
             id,
             name,
             stats,
             routable,
         } => {
-            let routable_state = routable.map(|r| {
-                if let Some(group) = &r.identity.group {
+            let routable_state = routable.map(|payload| {
+                if let Some(group) = &payload.identity.group {
                     groups.join(group.clone(), LEARN_CAPACITY);
                 }
                 RoutableState {
-                    tx_queue: r.tx_queue,
-                    identity: r.identity,
+                    tx_queue: payload.tx_queue,
+                    identity: payload.identity,
                     learn: LearnTable::new(LEARN_CAPACITY),
                 }
             });
@@ -252,8 +252,8 @@ async fn handle_event(
                 | PeerRemovalReason::ListenerShutdown => EndpointState::Down,
             };
             if let Some(entry) = routing.remove(&child_id) {
-                if let Some(rs) = &entry.routable
-                    && let Some(group) = &rs.identity.group
+                if let Some(routable_state) = &entry.routable
+                    && let Some(group) = &routable_state.identity.group
                 {
                     groups.leave(group);
                 }
@@ -271,13 +271,13 @@ fn handle_frame(
     routing: &mut HashMap<EndpointId, RegisteredEndpoint>,
     groups: &mut GroupRegistry,
     dedup: &mut DedupWindow,
-    fr: RouterFrame,
+    router_frame: RouterFrame,
 ) {
     let RouterFrame {
         endpoint_id: src_id,
         frame,
         header,
-    } = fr;
+    } = router_frame;
     let now = Instant::now();
 
     // Peek at the source endpoint's identity and stats so we can release
@@ -291,11 +291,11 @@ fn handle_frame(
             debug!(%src_id, "router: frame from unknown endpoint; dropped");
             return;
         };
-        let Some(rs) = &src_ep.routable else {
+        let Some(routable_state) = &src_ep.routable else {
             debug!(%src_id, "router: frame from non-routable endpoint; dropped");
             return;
         };
-        (src_ep.stats.clone(), rs.identity.group.clone())
+        (src_ep.stats.clone(), routable_state.identity.group.clone())
     };
 
     // Dedup runs BEFORE learn and per-destination dispatch (CLAUDE.md
@@ -316,20 +316,20 @@ fn handle_frame(
     // the current group size.
     let new_len = match &src_group {
         Some(name) => {
-            let Some(g) = groups.get_mut(name) else {
+            let Some(group) = groups.get_mut(name) else {
                 debug!(%src_id, ?name, "router: source group missing; dropped");
                 return;
             };
-            g.learn.touch(header.source, now);
-            g.learn.len()
+            group.learn.touch(header.source, now);
+            group.learn.len()
         }
         None => {
-            let src_rs = routing
+            let src_routable = routing
                 .get_mut(&src_id)
-                .and_then(|ep| ep.routable.as_mut())
+                .and_then(|endpoint| endpoint.routable.as_mut())
                 .expect("source routable just observed above");
-            src_rs.learn.touch(header.source, now);
-            src_rs.learn.len()
+            src_routable.learn.touch(header.source, now);
+            src_routable.learn.len()
         }
     };
     src_stats
@@ -343,27 +343,27 @@ fn handle_frame(
         // Parent listeners (`routable == None`) are skipped here at one
         // branch per registry slot — the type-level distinction lives on
         // `RegisteredEndpoint.routable` rather than in a separate map.
-        let Some(dest_rs) = &dest_ep.routable else {
+        let Some(dest_routable) = &dest_ep.routable else {
             continue;
         };
-        let dest_learn = match &dest_rs.identity.group {
+        let dest_learn = match &dest_routable.identity.group {
             Some(name) => {
                 // Single-task ownership: groups.leave is only called from
                 // handle_event, which is mutually exclusive with this
                 // iteration over routing. A registered group member always
                 // has its entry present.
-                let g = groups.get(name);
-                debug_assert!(g.is_some(), "group entry vanished mid-dispatch");
-                match g {
-                    Some(g) => &g.learn,
+                let group = groups.get(name);
+                debug_assert!(group.is_some(), "group entry vanished mid-dispatch");
+                match group {
+                    Some(group) => &group.learn,
                     None => continue,
                 }
             }
-            None => &dest_rs.learn,
+            None => &dest_routable.learn,
         };
-        match decide_for_dest(&header, dest_learn, &dest_rs.identity) {
+        match decide_for_dest(&header, dest_learn, &dest_routable.identity) {
             Decision::Admit => {
-                dest_rs.tx_queue.push(frame.clone());
+                dest_routable.tx_queue.push(frame.clone());
             }
             Decision::OutFilterBlocked => {
                 // Only out-filter rejections are credited to a counter —
@@ -551,11 +551,11 @@ mod tests {
             .send(endpoint_added(&fx, "top"))
             .await
             .expect("send");
-        let ev = tokio::time::timeout(Duration::from_secs(1), stats_rx.recv())
+        let event = tokio::time::timeout(Duration::from_secs(1), stats_rx.recv())
             .await
             .expect("stats event")
             .expect("channel");
-        match ev {
+        match event {
             StatsEvent::Register { id, name, .. } => {
                 assert_eq!(id, fx.id);
                 assert_eq!(name, "top");
@@ -730,11 +730,11 @@ mod tests {
             })
             .await
             .expect("removed");
-        let ev = tokio::time::timeout(Duration::from_secs(1), stats_rx.recv())
+        let event = tokio::time::timeout(Duration::from_secs(1), stats_rx.recv())
             .await
             .expect("finalize event")
             .expect("channel");
-        match ev {
+        match event {
             StatsEvent::Finalize { id } => assert_eq!(id, child.id),
             other => panic!("expected Finalize, got {other:?}"),
         }
@@ -795,11 +795,14 @@ mod tests {
         let cancel = wiring.cancel.clone();
         let task = tokio::spawn(run(wiring));
         let alloc = EndpointIdAllocator::new();
-        let a = make_endpoint(&alloc, true);
-        let b = make_endpoint(&alloc, true);
+        let first = make_endpoint(&alloc, true);
+        let second = make_endpoint(&alloc, true);
 
-        event_tx.send(endpoint_added(&a, "a")).await.expect("a");
-        event_tx.send(endpoint_added(&b, "b")).await.expect("b");
+        event_tx.send(endpoint_added(&first, "a")).await.expect("a");
+        event_tx
+            .send(endpoint_added(&second, "b"))
+            .await
+            .expect("b");
         let _ = stats_rx.recv().await; // a register
         let _ = stats_rx.recv().await; // b register
 
@@ -810,19 +813,19 @@ mod tests {
             .expect("router join");
 
         let mut finalized = Vec::new();
-        while let Ok(Some(ev)) =
+        while let Ok(Some(event)) =
             tokio::time::timeout(Duration::from_millis(100), stats_rx.recv()).await
         {
-            if let StatsEvent::Finalize { id } = ev {
+            if let StatsEvent::Finalize { id } = event {
                 finalized.push(id);
             }
         }
         finalized.sort();
-        let mut expected = vec![a.id, b.id];
+        let mut expected = vec![first.id, second.id];
         expected.sort();
         assert_eq!(finalized, expected);
-        assert_eq!(a.stats.load_state(), EndpointState::Down);
-        assert_eq!(b.stats.load_state(), EndpointState::Down);
+        assert_eq!(first.stats.load_state(), EndpointState::Down);
+        assert_eq!(second.stats.load_state(), EndpointState::Down);
     }
 
     #[tokio::test]
@@ -1292,8 +1295,8 @@ mod tests {
         let cancel = wiring.cancel.clone();
         let task = tokio::spawn(run(wiring));
         let alloc = EndpointIdAllocator::new();
-        let a = make_endpoint(&alloc, true);
-        let b = make_endpoint(&alloc, true);
+        let first = make_endpoint(&alloc, true);
+        let second = make_endpoint(&alloc, true);
 
         let in_group = IdentityFlags {
             group: Some(Arc::<str>::from("shared")),
@@ -1301,27 +1304,27 @@ mod tests {
         };
 
         event_tx
-            .send(endpoint_added_with_identity(&a, "a", in_group.clone()))
+            .send(endpoint_added_with_identity(&first, "a", in_group.clone()))
             .await
             .expect("a");
         event_tx
-            .send(endpoint_added_with_identity(&b, "b", in_group))
+            .send(endpoint_added_with_identity(&second, "b", in_group))
             .await
             .expect("b");
         tokio::task::yield_now().await;
 
-        // Fill `a`'s tx_queue past capacity (8) to force at least one
+        // Fill `first`'s tx_queue past capacity (8) to force at least one
         // drop. We push 16; each push beyond cap evicts the oldest and
-        // bumps `a.stats.dropped_tx`. `b.stats.dropped_tx` stays zero.
+        // bumps `first.stats.dropped_tx`. `second.stats.dropped_tx` stays zero.
         for _ in 0..16 {
-            a.tx_queue.push(Bytes::from_static(b"x"));
+            first.tx_queue.push(Bytes::from_static(b"x"));
         }
         assert!(
-            a.stats.dropped_tx.load(Ordering::Relaxed) >= 1,
+            first.stats.dropped_tx.load(Ordering::Relaxed) >= 1,
             "a should have dropped at least one frame"
         );
         assert_eq!(
-            b.stats.dropped_tx.load(Ordering::Relaxed),
+            second.stats.dropped_tx.load(Ordering::Relaxed),
             0,
             "b's dropped_tx must not move when a's queue overflows"
         );

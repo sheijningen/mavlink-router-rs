@@ -104,7 +104,7 @@ async fn dedup_suppresses_second_copy_from_redundant_uplinks() {
         Ok(Ok((n, _))) => {
             panic!("dedup did not suppress second copy: gcs received another {n} bytes")
         }
-        Ok(Err(e)) => panic!("gcs recv errored: {e}"),
+        Ok(Err(err)) => panic!("gcs recv errored: {err}"),
     }
 
     cancel.cancel();

@@ -35,7 +35,7 @@ async fn udpc_latches_onto_ephemeral_reply_port() {
         .expect("bind configured peer");
     let configured_addr = configured.local_addr().expect("local_addr");
 
-    let mut h = spawn_udpc(
+    let mut harness = spawn_udpc(
         &allocator,
         cancel.clone(),
         configured_addr,
@@ -47,7 +47,8 @@ async fn udpc_latches_onto_ephemeral_reply_port() {
     // configured destination. The configured socket's recv_from learns
     // udpc's source port (which we couldn't otherwise discover).
     let frame_out = common::build_v2_heartbeat(1);
-    let src_of_udpc = udpc_send_and_capture_source(&h.tx_queue, &configured, &frame_out).await;
+    let src_of_udpc =
+        udpc_send_and_capture_source(&harness.tx_queue, &configured, &frame_out).await;
 
     // Now act as a GCS that replied from a different ephemeral port. Bind a
     // *new* socket on 127.0.0.1:0 and send to udpc — udpc's classify_inbound
@@ -66,7 +67,7 @@ async fn udpc_latches_onto_ephemeral_reply_port() {
         .expect("ephemeral send_to udpc");
 
     // The inbound frame should reach udpc's frame_rx.
-    let routed = timeout(Duration::from_secs(2), h.frame_rx.recv())
+    let routed = timeout(Duration::from_secs(2), harness.frame_rx.recv())
         .await
         .expect("frame_rx timeout")
         .expect("frame_rx closed");
@@ -75,17 +76,17 @@ async fn udpc_latches_onto_ephemeral_reply_port() {
     // Push another outbound frame; udpc should send to the latched
     // ephemeral_addr, not the configured one.
     let frame_out2 = common::build_v2_heartbeat(3);
-    h.tx_queue.push(frame_out2.clone().into());
+    harness.tx_queue.push(frame_out2.clone().into());
 
     let mut buf = [0u8; 256];
-    let (n, src) = timeout(Duration::from_secs(2), ephemeral.recv_from(&mut buf))
+    let (bytes_read, src) = timeout(Duration::from_secs(2), ephemeral.recv_from(&mut buf))
         .await
         .expect("ephemeral recv timeout")
         .expect("ephemeral recv_from");
     assert_eq!(src, src_of_udpc);
-    assert_eq!(&buf[..n], &frame_out2[..]);
+    assert_eq!(&buf[..bytes_read], &frame_out2[..]);
 
-    shutdown_all(&cancel, [h.task]).await;
+    shutdown_all(&cancel, [harness.task]).await;
 }
 
 #[tokio::test]
@@ -104,28 +105,31 @@ async fn udpc_reverts_to_configured_after_latch_idle() {
         ..UdpClientEndpoint::default()
     };
 
-    let mut h = spawn_udpc(&allocator, cancel.clone(), configured_addr, endpoint, "gcs");
+    let mut harness = spawn_udpc(&allocator, cancel.clone(), configured_addr, endpoint, "gcs");
 
     // Step 1: send first outbound, learn udpc's source.
-    let f0 = common::build_v2_heartbeat(0);
-    let src_of_udpc = udpc_send_and_capture_source(&h.tx_queue, &configured, &f0).await;
+    let frame0 = common::build_v2_heartbeat(0);
+    let src_of_udpc = udpc_send_and_capture_source(&harness.tx_queue, &configured, &frame0).await;
 
     // Step 2: latch via ephemeral source.
     let ephemeral = UdpSocket::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral");
-    let f_in = common::build_v2_heartbeat(1);
-    ephemeral.send_to(&f_in, src_of_udpc).await.expect("send");
-    let _ = timeout(Duration::from_secs(2), h.frame_rx.recv())
+    let frame_in = common::build_v2_heartbeat(1);
+    ephemeral
+        .send_to(&frame_in, src_of_udpc)
+        .await
+        .expect("send");
+    let _ = timeout(Duration::from_secs(2), harness.frame_rx.recv())
         .await
         .expect("frame_rx timeout")
         .expect("frame_rx closed");
 
     // Confirm latch by sending one outbound — should reach `ephemeral`.
-    let f_latched = common::build_v2_heartbeat(2);
-    h.tx_queue.push(f_latched.into());
+    let frame_latched = common::build_v2_heartbeat(2);
+    harness.tx_queue.push(frame_latched.into());
     let mut buf = [0u8; 256];
-    let (_n, src) = timeout(Duration::from_secs(2), ephemeral.recv_from(&mut buf))
+    let (_bytes_read, src) = timeout(Duration::from_secs(2), ephemeral.recv_from(&mut buf))
         .await
         .expect("ephemeral recv timeout (during latch)")
         .expect("ephemeral recv_from");
@@ -136,22 +140,22 @@ async fn udpc_reverts_to_configured_after_latch_idle() {
 
     // Step 4: push another outbound. Should now go to *configured*, not
     // ephemeral. (The revert tick has fired and the latch cleared.)
-    let f_post = common::build_v2_heartbeat(3);
-    h.tx_queue.push(f_post.clone().into());
+    let frame_post = common::build_v2_heartbeat(3);
+    harness.tx_queue.push(frame_post.clone().into());
 
-    let (n, src) = timeout(Duration::from_secs(2), configured.recv_from(&mut buf))
+    let (bytes_read, src) = timeout(Duration::from_secs(2), configured.recv_from(&mut buf))
         .await
         .expect("configured recv timeout (post-revert)")
         .expect("configured recv_from");
     assert_eq!(src, src_of_udpc);
-    assert_eq!(&buf[..n], &f_post[..]);
+    assert_eq!(&buf[..bytes_read], &frame_post[..]);
 
     // And `ephemeral` should NOT have received it.
-    let res = timeout(Duration::from_millis(200), ephemeral.recv_from(&mut buf)).await;
+    let result = timeout(Duration::from_millis(200), ephemeral.recv_from(&mut buf)).await;
     assert!(
-        res.is_err(),
-        "ephemeral should not receive after revert, got {res:?}"
+        result.is_err(),
+        "ephemeral should not receive after revert, got {result:?}"
     );
 
-    shutdown_all(&cancel, [h.task]).await;
+    shutdown_all(&cancel, [harness.task]).await;
 }

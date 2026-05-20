@@ -26,7 +26,7 @@ async fn tcpc_reconnects_after_server_disconnect() {
         .expect("bind test server");
     let listen_addr = listener.local_addr().expect("local_addr");
 
-    let mut h = spawn_tcpc_with(
+    let mut harness = spawn_tcpc_with(
         &allocator,
         cancel.clone(),
         listen_addr,
@@ -48,11 +48,11 @@ async fn tcpc_reconnects_after_server_disconnect() {
         .await
         .expect("server write 1");
 
-    let f1 = timeout(Duration::from_secs(2), h.frame_rx.recv())
+    let router_frame1 = timeout(Duration::from_secs(2), harness.frame_rx.recv())
         .await
         .expect("client frame 1 timeout")
         .expect("frame_rx closed");
-    assert_eq!(&f1.frame[..], &frame1[..]);
+    assert_eq!(&router_frame1.frame[..], &frame1[..]);
 
     drop(server_stream);
 
@@ -66,13 +66,13 @@ async fn tcpc_reconnects_after_server_disconnect() {
         .write_all(&frame2)
         .await
         .expect("server write 2");
-    let f2 = timeout(Duration::from_secs(2), h.frame_rx.recv())
+    let router_frame2 = timeout(Duration::from_secs(2), harness.frame_rx.recv())
         .await
         .expect("client frame 2 timeout")
         .expect("frame_rx closed");
-    assert_eq!(&f2.frame[..], &frame2[..]);
+    assert_eq!(&router_frame2.frame[..], &frame2[..]);
 
-    shutdown_all(&cancel, [h.task]).await;
+    shutdown_all(&cancel, [harness.task]).await;
 }
 
 /// Stale frames queued during the outage must be drained-and-discarded on
@@ -87,7 +87,7 @@ async fn tcpc_drains_queue_on_reconnect() {
         .expect("bind test server");
     let listen_addr = listener.local_addr().expect("local_addr");
 
-    let h = spawn_tcpc_with(
+    let harness = spawn_tcpc_with(
         &allocator,
         cancel.clone(),
         listen_addr,
@@ -108,14 +108,14 @@ async fn tcpc_drains_queue_on_reconnect() {
     // Push frames while tcpc is in its backoff sleep so the next connect
     // observes a non-empty queue to drain.
     let stale = common::build_v2_heartbeat(42);
-    let pre_drop = h
+    let pre_drop = harness
         .stats
         .dropped_tx
         .load(std::sync::atomic::Ordering::Relaxed);
     for _ in 0..3 {
-        h.tx_queue.push(bytes::Bytes::copy_from_slice(&stale));
+        harness.tx_queue.push(bytes::Bytes::copy_from_slice(&stale));
     }
-    assert_eq!(h.tx_queue.len(), 3, "stale frames should be queued");
+    assert_eq!(harness.tx_queue.len(), 3, "stale frames should be queued");
 
     let (mut server_stream2, _peer2) = timeout(Duration::from_secs(3), listener.accept())
         .await
@@ -124,7 +124,7 @@ async fn tcpc_drains_queue_on_reconnect() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let post_drop = h
+    let post_drop = harness
         .stats
         .dropped_tx
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -135,19 +135,19 @@ async fn tcpc_drains_queue_on_reconnect() {
 
     // Silence on the new socket is the assertion: no stale bytes replayed.
     let mut buf = [0u8; 64];
-    let res = timeout(
+    let result = timeout(
         Duration::from_millis(200),
         tokio::io::AsyncReadExt::read(&mut server_stream2, &mut buf),
     )
     .await;
-    match res {
+    match result {
         Err(_) | Ok(Ok(0)) => {}
-        Ok(Ok(n)) => panic!(
-            "server received {n} stale bytes after reconnect: {:?}",
-            &buf[..n]
+        Ok(Ok(bytes_read)) => panic!(
+            "server received {bytes_read} stale bytes after reconnect: {:?}",
+            &buf[..bytes_read]
         ),
-        Ok(Err(e)) => panic!("server read errored: {e}"),
+        Ok(Err(err)) => panic!("server read errored: {err}"),
     }
 
-    shutdown_all(&cancel, [h.task]).await;
+    shutdown_all(&cancel, [harness.task]).await;
 }

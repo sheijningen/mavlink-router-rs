@@ -44,9 +44,9 @@ impl TomlConfig {
     /// Read and parse a TOML file from disk. Wraps [`TomlConfig::parse_str`]
     /// with a typed I/O error that names the offending path.
     pub fn from_path(path: &Path) -> Result<Self, Error> {
-        let raw = std::fs::read_to_string(path).map_err(|e| Error::ConfigIo {
+        let raw = std::fs::read_to_string(path).map_err(|err| Error::ConfigIo {
             path: path.display().to_string(),
-            source: e,
+            source: err,
         })?;
         Self::parse_str(&raw)
     }
@@ -63,8 +63,8 @@ impl TomlConfig {
     /// `std::str::FromStr` trait method; `FromStr` doesn't fit because the
     /// returned [`Error`] is wider than what the trait's idiomatic
     /// `FromStr::Err` shape allows.
-    pub fn parse_str(s: &str) -> Result<Self, Error> {
-        let file: TomlFile = toml::from_str(s).map_err(Error::ConfigParse)?;
+    pub fn parse_str(text: &str) -> Result<Self, Error> {
+        let file: TomlFile = toml::from_str(text).map_err(Error::ConfigParse)?;
         file.into_toml_config()
     }
 }
@@ -239,23 +239,23 @@ impl TomlEndpoint {
 
     fn collect_pairs(&self) -> Vec<(String, String)> {
         let mut pairs = Vec::new();
-        if let Some(v) = self.tx_queue_frames {
-            pairs.push(("tx_queue_frames".to_string(), v.to_string()));
+        if let Some(value) = self.tx_queue_frames {
+            pairs.push(("tx_queue_frames".to_string(), value.to_string()));
         }
-        if let Some(v) = self.flow_control.as_ref() {
-            pairs.push(("flow_control".to_string(), v.clone()));
+        if let Some(value) = self.flow_control.as_ref() {
+            pairs.push(("flow_control".to_string(), value.clone()));
         }
-        if let Some(v) = self.idle_secs {
-            pairs.push(("idle_secs".to_string(), v.to_string()));
+        if let Some(value) = self.idle_secs {
+            pairs.push(("idle_secs".to_string(), value.to_string()));
         }
-        if let Some(v) = self.latch_idle_secs {
-            pairs.push(("latch_idle_secs".to_string(), v.to_string()));
+        if let Some(value) = self.latch_idle_secs {
+            pairs.push(("latch_idle_secs".to_string(), value.to_string()));
         }
-        if let Some(v) = self.sniffer {
-            pairs.push(("sniffer".to_string(), v.to_string()));
+        if let Some(value) = self.sniffer {
+            pairs.push(("sniffer".to_string(), value.to_string()));
         }
-        if let Some(v) = self.group.as_ref() {
-            pairs.push(("group".to_string(), v.clone()));
+        if let Some(value) = self.group.as_ref() {
+            pairs.push(("group".to_string(), value.clone()));
         }
         push_str_pair(&mut pairs, "allow_msgid_in", self.allow_msgid_in.as_deref());
         push_str_pair(&mut pairs, "block_msgid_in", self.block_msgid_in.as_deref());
@@ -314,8 +314,8 @@ impl TomlEndpoint {
 }
 
 fn push_str_pair(pairs: &mut Vec<(String, String)>, key: &str, val: Option<&str>) {
-    if let Some(v) = val {
-        pairs.push((key.to_string(), v.to_string()));
+    if let Some(value) = val {
+        pairs.push((key.to_string(), value.to_string()));
     }
 }
 
@@ -357,14 +357,14 @@ mod tests {
 
     #[test]
     fn globals_only() {
-        let s = r#"
+        let text = r#"
 log_level = "debug"
 log_format = "json"
 stats = true
 stats_interval_secs = 10
 dedup_ms = 200
 "#;
-        let cfg = TomlConfig::parse_str(s).expect("globals-only TOML must parse");
+        let cfg = TomlConfig::parse_str(text).expect("globals-only TOML must parse");
         assert_eq!(cfg.log_level, Some(LogLevel::Debug));
         assert_eq!(cfg.log_format, Some(LogFormat::Json));
         assert_eq!(cfg.stats, Some(true));
@@ -374,7 +374,7 @@ dedup_ms = 200
 
     #[test]
     fn serial_endpoint() {
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "serial"
 path = "/dev/ttyUSB0"
@@ -383,12 +383,12 @@ flow_control = "rtscts"
 name = "fc"
 tx_queue_frames = 512
 "#;
-        let cfg = TomlConfig::parse_str(s).expect("must parse");
+        let cfg = TomlConfig::parse_str(text).expect("must parse");
         assert_eq!(cfg.endpoints.len(), 1);
         let spec = &cfg.endpoints[0];
         assert_eq!(spec.name, "fc");
         let ep = match &spec.kind {
-            EndpointKind::Serial(e) => e,
+            EndpointKind::Serial(endpoint) => endpoint,
             other => panic!("expected serial, got {other:?}"),
         };
         assert_eq!(ep.path, "/dev/ttyUSB0");
@@ -402,7 +402,7 @@ tx_queue_frames = 512
 
     #[test]
     fn udps_endpoint_with_filters() {
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "udps"
 bind = "0.0.0.0:14550"
@@ -413,11 +413,11 @@ group = "uplink"
 block_msgid_in = "33,100-150"
 allow_src_sys_out = "1,5-10"
 "#;
-        let cfg = TomlConfig::parse_str(s).expect("must parse");
+        let cfg = TomlConfig::parse_str(text).expect("must parse");
         let spec = &cfg.endpoints[0];
         assert_eq!(spec.name, "bus");
         let ep = match &spec.kind {
-            EndpointKind::UdpServer(e) => e,
+            EndpointKind::UdpServer(endpoint) => endpoint,
             other => panic!("expected udps, got {other:?}"),
         };
         assert_eq!(ep.bind_addr.to_string(), "0.0.0.0:14550");
@@ -430,16 +430,16 @@ allow_src_sys_out = "1,5-10"
 
     #[test]
     fn udpc_ipv6_host_brackets_synthesized_body() {
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "udpc"
 host = "::1"
 port = 14550
 latch_idle_secs = 15
 "#;
-        let cfg = TomlConfig::parse_str(s).expect("must parse");
+        let cfg = TomlConfig::parse_str(text).expect("must parse");
         let ep = match &cfg.endpoints[0].kind {
-            EndpointKind::UdpClient(e) => e,
+            EndpointKind::UdpClient(endpoint) => endpoint,
             other => panic!("expected udpc, got {other:?}"),
         };
         assert_eq!(ep.host, "::1");
@@ -449,16 +449,16 @@ latch_idle_secs = 15
 
     #[test]
     fn tcpc_hostname() {
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "tcpc"
 host = "gcs.local"
 port = 5760
 name = "vehicle"
 "#;
-        let cfg = TomlConfig::parse_str(s).expect("must parse");
+        let cfg = TomlConfig::parse_str(text).expect("must parse");
         let ep = match &cfg.endpoints[0].kind {
-            EndpointKind::TcpClient(e) => e,
+            EndpointKind::TcpClient(endpoint) => endpoint,
             other => panic!("expected tcpc, got {other:?}"),
         };
         assert_eq!(ep.host, "gcs.local");
@@ -468,14 +468,14 @@ name = "vehicle"
 
     #[test]
     fn tcps_endpoint() {
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "tcps"
 bind = "[::]:5760"
 "#;
-        let cfg = TomlConfig::parse_str(s).expect("must parse");
+        let cfg = TomlConfig::parse_str(text).expect("must parse");
         let ep = match &cfg.endpoints[0].kind {
-            EndpointKind::TcpServer(e) => e,
+            EndpointKind::TcpServer(endpoint) => endpoint,
             other => panic!("expected tcps, got {other:?}"),
         };
         assert_eq!(ep.bind_addr.to_string(), "[::]:5760");
@@ -491,13 +491,13 @@ bind = "[::]:5760"
 
     #[test]
     fn unknown_endpoint_field_rejected() {
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "udps"
 bind = "0.0.0.0:14550"
 totally_made_up = 1
 "#;
-        match TomlConfig::parse_str(s) {
+        match TomlConfig::parse_str(text) {
             Err(Error::ConfigParse(_)) => {}
             other => panic!("expected ConfigParse, got {other:?}"),
         }
@@ -530,8 +530,8 @@ totally_made_up = 1
         #[case] wrong_field: &str,
         #[case] toml_value: &str,
     ) {
-        let s = format!("[[endpoints]]\ntype = \"{type_name}\"\n{wrong_field} = {toml_value}\n");
-        match TomlConfig::parse_str(&s) {
+        let text = format!("[[endpoints]]\ntype = \"{type_name}\"\n{wrong_field} = {toml_value}\n");
+        match TomlConfig::parse_str(&text) {
             Err(Error::ConfigSchema { index, reason }) => {
                 assert_eq!(index, 0);
                 assert!(
@@ -568,8 +568,8 @@ totally_made_up = 1
         #[case] other_fields: &str,
         #[case] missing_field: &str,
     ) {
-        let s = format!("[[endpoints]]\ntype = \"{type_name}\"\n{other_fields}\n");
-        match TomlConfig::parse_str(&s) {
+        let text = format!("[[endpoints]]\ntype = \"{type_name}\"\n{other_fields}\n");
+        match TomlConfig::parse_str(&text) {
             Err(Error::ConfigSchema { index, reason }) => {
                 assert_eq!(index, 0);
                 assert!(
@@ -585,11 +585,11 @@ totally_made_up = 1
 
     #[test]
     fn unknown_endpoint_type_rejected() {
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "carrier_pigeon"
 "#;
-        match TomlConfig::parse_str(s) {
+        match TomlConfig::parse_str(text) {
             Err(Error::ConfigSchema { reason, .. }) => {
                 assert!(reason.contains("unknown endpoint type"), "reason: {reason}");
             }
@@ -603,14 +603,14 @@ type = "carrier_pigeon"
         // parse-time error." Our serde schema types filter fields as
         // Option<String>, so an inline array fails at the toml-deserialize
         // layer.
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "tcpc"
 host = "gcs.local"
 port = 5760
 block_msgid_in = [33, 100, 150]
 "#;
-        match TomlConfig::parse_str(s) {
+        match TomlConfig::parse_str(text) {
             Err(Error::ConfigParse(_)) => {}
             other => panic!("expected ConfigParse, got {other:?}"),
         }
@@ -621,14 +621,14 @@ block_msgid_in = [33, 100, 150]
         // Invalid range (lo > hi) is caught by the existing filter parser,
         // which we reuse via EndpointSpec::build — so an out-of-shape filter
         // surfaces as a SpecError, not a ConfigSchema.
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "tcpc"
 host = "gcs.local"
 port = 5760
 block_msgid_in = "10-5"
 "#;
-        match TomlConfig::parse_str(s) {
+        match TomlConfig::parse_str(text) {
             Err(Error::Spec(_)) => {}
             other => panic!("expected Spec, got {other:?}"),
         }
@@ -636,12 +636,12 @@ block_msgid_in = "10-5"
 
     #[test]
     fn auto_names_when_omitted() {
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "udps"
 bind = "0.0.0.0:14550"
 "#;
-        let cfg = TomlConfig::parse_str(s).expect("must parse");
+        let cfg = TomlConfig::parse_str(text).expect("must parse");
         assert_eq!(cfg.endpoints[0].name, "udps-0_0_0_0-14550");
     }
 
@@ -679,13 +679,13 @@ port = 5760
         // CLAUDE.md "`#name` validation": names outside [A-Za-z0-9_-]{1,64}
         // are fatal. TOML routes through `EndpointSpec::build` which calls
         // `validate_name`, so we should see a SpecError from there.
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "udps"
 bind = "0.0.0.0:14550"
 name = "has spaces"
 "#;
-        match TomlConfig::parse_str(s) {
+        match TomlConfig::parse_str(text) {
             Err(Error::Spec(_)) => {}
             other => panic!("expected Spec (invalid name), got {other:?}"),
         }
@@ -696,15 +696,15 @@ name = "has spaces"
         // Real-world `/dev/serial/by-id/...` symlinks can carry `:` in the
         // path. The body parser uses `rfind(':')` so the last colon (before
         // the baud) wins, leaving the path intact.
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "serial"
 path = "/dev/serial/by-id/usb-FTDI:port0"
 baud = 57600
 "#;
-        let cfg = TomlConfig::parse_str(s).expect("must parse");
+        let cfg = TomlConfig::parse_str(text).expect("must parse");
         let ep = match &cfg.endpoints[0].kind {
-            EndpointKind::Serial(e) => e,
+            EndpointKind::Serial(endpoint) => endpoint,
             other => panic!("expected serial, got {other:?}"),
         };
         assert_eq!(ep.path, "/dev/serial/by-id/usb-FTDI:port0");
@@ -716,15 +716,15 @@ baud = 57600
         // The unknown-field error text is part of the contract: operators
         // grep it to find their typo. Pin that the offending key appears in
         // the message at least once.
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "udps"
 bind = "0.0.0.0:14550"
 totally_made_up = 1
 "#;
-        match TomlConfig::parse_str(s) {
-            Err(Error::ConfigParse(e)) => {
-                let msg = e.to_string();
+        match TomlConfig::parse_str(text) {
+            Err(Error::ConfigParse(err)) => {
+                let msg = err.to_string();
                 assert!(
                     msg.contains("totally_made_up"),
                     "error message must name the offending field; got: {msg}"
@@ -741,7 +741,7 @@ totally_made_up = 1
         // `EndpointKind`, and the resulting `Vec<EndpointSpec>` must preserve
         // declaration order (the spawner relies on it for stable
         // `EndpointId` allocation and stats ordering).
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "serial"
 path = "/dev/ttyUSB0"
@@ -770,20 +770,20 @@ host = "gcs.local"
 port = 5760
 name = "vehicle"
 "#;
-        let cfg = TomlConfig::parse_str(s).expect("must parse");
+        let cfg = TomlConfig::parse_str(text).expect("must parse");
         assert_eq!(cfg.endpoints.len(), 5);
         let observed: Vec<(&str, &str)> = cfg
             .endpoints
             .iter()
-            .map(|e| {
-                let kind = match &e.kind {
+            .map(|spec| {
+                let kind = match &spec.kind {
                     EndpointKind::Serial(_) => "serial",
                     EndpointKind::UdpServer(_) => "udps",
                     EndpointKind::UdpClient(_) => "udpc",
                     EndpointKind::TcpServer(_) => "tcps",
                     EndpointKind::TcpClient(_) => "tcpc",
                 };
-                (e.name.as_str(), kind)
+                (spec.name.as_str(), kind)
             })
             .collect();
         assert_eq!(
@@ -806,15 +806,15 @@ name = "vehicle"
         // lenient TOML reader (or a swap to `toml-edit`) can't silently
         // accept "last write wins" semantics and let an operator's
         // copy-paste typo route to an unintended bind address.
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "udps"
 bind = "0.0.0.0:14550"
 bind = "0.0.0.0:14551"
 "#;
-        match TomlConfig::parse_str(s) {
-            Err(Error::ConfigParse(e)) => {
-                let msg = e.to_string();
+        match TomlConfig::parse_str(text) {
+            Err(Error::ConfigParse(err)) => {
+                let msg = err.to_string();
                 assert!(
                     msg.contains("duplicate key"),
                     "error must mention the duplicate-key cause; got: {msg}"
@@ -828,20 +828,20 @@ bind = "0.0.0.0:14551"
         }
     }
 
-    fn filter_axis_count(f: &Filters, axis: &str) -> usize {
+    fn filter_axis_count(filters: &Filters, axis: &str) -> usize {
         match axis {
-            "allow_msgid_in" => f.allow_msgid_in.len(),
-            "block_msgid_in" => f.block_msgid_in.len(),
-            "allow_msgid_out" => f.allow_msgid_out.len(),
-            "block_msgid_out" => f.block_msgid_out.len(),
-            "allow_src_sys_in" => f.allow_src_sys_in.len(),
-            "block_src_sys_in" => f.block_src_sys_in.len(),
-            "allow_src_sys_out" => f.allow_src_sys_out.len(),
-            "block_src_sys_out" => f.block_src_sys_out.len(),
-            "allow_src_comp_in" => f.allow_src_comp_in.len(),
-            "block_src_comp_in" => f.block_src_comp_in.len(),
-            "allow_src_comp_out" => f.allow_src_comp_out.len(),
-            "block_src_comp_out" => f.block_src_comp_out.len(),
+            "allow_msgid_in" => filters.allow_msgid_in.len(),
+            "block_msgid_in" => filters.block_msgid_in.len(),
+            "allow_msgid_out" => filters.allow_msgid_out.len(),
+            "block_msgid_out" => filters.block_msgid_out.len(),
+            "allow_src_sys_in" => filters.allow_src_sys_in.len(),
+            "block_src_sys_in" => filters.block_src_sys_in.len(),
+            "allow_src_sys_out" => filters.allow_src_sys_out.len(),
+            "block_src_sys_out" => filters.block_src_sys_out.len(),
+            "allow_src_comp_in" => filters.allow_src_comp_in.len(),
+            "block_src_comp_in" => filters.block_src_comp_in.len(),
+            "allow_src_comp_out" => filters.allow_src_comp_out.len(),
+            "block_src_comp_out" => filters.block_src_comp_out.len(),
             other => panic!("unknown filter axis: {other}"),
         }
     }
@@ -869,12 +869,12 @@ bind = "0.0.0.0:14551"
     #[case("allow_src_comp_out")]
     #[case("block_src_comp_out")]
     fn each_filter_knob_round_trips(#[case] axis: &str) {
-        let s = format!(
+        let text = format!(
             "[[endpoints]]\ntype = \"tcpc\"\nhost = \"h\"\nport = 1\n{axis} = \"1,5-10\"\n"
         );
-        let cfg = TomlConfig::parse_str(&s).expect("must parse");
+        let cfg = TomlConfig::parse_str(&text).expect("must parse");
         let ep = match &cfg.endpoints[0].kind {
-            EndpointKind::TcpClient(e) => e,
+            EndpointKind::TcpClient(endpoint) => endpoint,
             other => panic!("expected tcpc, got {other:?}"),
         };
         assert_eq!(
@@ -900,15 +900,15 @@ bind = "0.0.0.0:14551"
         // matching `sniffer = true` test, swapping the bool inside
         // `collect_pairs` (or `IdentityFlags::apply`) would only break one
         // value and pass the existing assertions.
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "udps"
 bind = "0.0.0.0:14550"
 sniffer = true
 "#;
-        let cfg = TomlConfig::parse_str(s).expect("must parse");
+        let cfg = TomlConfig::parse_str(text).expect("must parse");
         let ep = match &cfg.endpoints[0].kind {
-            EndpointKind::UdpServer(e) => e,
+            EndpointKind::UdpServer(endpoint) => endpoint,
             other => panic!("expected udps, got {other:?}"),
         };
         assert!(ep.identity.sniffer);
@@ -920,12 +920,12 @@ sniffer = true
         // `into_spec`): a serial entry carrying `bind` but lacking `path`
         // must surface the wrong-field-for-scheme error, not the
         // downstream missing-path error.
-        let s = r#"
+        let text = r#"
 [[endpoints]]
 type = "serial"
 bind = "0.0.0.0:14550"
 "#;
-        match TomlConfig::parse_str(s) {
+        match TomlConfig::parse_str(text) {
             Err(Error::ConfigSchema { reason, .. }) => {
                 assert!(reason.contains("'bind'"), "reason: {reason}");
                 assert!(reason.contains("'serial'"), "reason: {reason}");

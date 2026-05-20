@@ -46,12 +46,12 @@ fn main() {
     let mut entries: HashMap<u32, MsgEntryGen> = HashMap::new();
 
     for dialect in DIALECTS {
-        let p = xml_dir.join(dialect);
-        let root = fs::canonicalize(&p)
-            .unwrap_or_else(|e| panic!("dialect XML not found: {} ({})", p.display(), e));
+        let path = xml_dir.join(dialect);
+        let root = fs::canonicalize(&path)
+            .unwrap_or_else(|err| panic!("dialect XML not found: {} ({})", path.display(), err));
         let walk = walk_includes(root, |canon: &PathBuf| -> Result<Vec<PathBuf>, String> {
             println!("cargo:rerun-if-changed={}", canon.display());
-            let content = fs::read_to_string(canon).map_err(|e| e.to_string())?;
+            let content = fs::read_to_string(canon).map_err(|err| err.to_string())?;
             let (includes, messages) = parse_xml(&content);
             for msg in messages {
                 ingest_message(canon, msg, &mut entries);
@@ -62,14 +62,14 @@ fn main() {
                 .map(|inc| {
                     let raw = dir.join(&inc);
                     fs::canonicalize(&raw)
-                        .map_err(|e| format!("canonicalize include {}: {}", raw.display(), e))
+                        .map_err(|err| format!("canonicalize include {}: {}", raw.display(), err))
                 })
                 .collect()
         });
         match walk {
             Ok(()) => {}
-            Err(WalkError::Cycle(p)) => {
-                panic!("cycle in <include> resolution at {}", p.display());
+            Err(WalkError::Cycle(path)) => {
+                panic!("cycle in <include> resolution at {}", path.display());
             }
             Err(WalkError::LoadFailed { key, reason }) => {
                 panic!("failed to load {}: {}", key.display(), reason);
@@ -89,8 +89,8 @@ fn main() {
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set by cargo");
     let out_path = PathBuf::from(&out_dir).join("generated_msgid_table.rs");
-    let mut out = std::io::BufWriter::new(fs::File::create(&out_path).unwrap_or_else(|e| {
-        panic!("create {}: {}", out_path.display(), e);
+    let mut out = std::io::BufWriter::new(fs::File::create(&out_path).unwrap_or_else(|err| {
+        panic!("create {}: {}", out_path.display(), err);
     }));
 
     writeln!(
@@ -99,14 +99,14 @@ fn main() {
     )
     .unwrap();
     writeln!(out, "pub(crate) const SORTED: &[(u32, MsgEntry)] = &[").unwrap();
-    for (id, e) in &sorted {
+    for (id, entry) in &sorted {
         writeln!(
             out,
             "    ({id}, MsgEntry {{ crc_extra: {crc}, target_sys_offset: {ts:?}, target_comp_offset: {tc:?} }}),",
             id = id,
-            crc = e.crc_extra,
-            ts = e.target_sys_offset,
-            tc = e.target_comp_offset,
+            crc = entry.crc_extra,
+            ts = entry.target_sys_offset,
+            tc = entry.target_comp_offset,
         )
         .unwrap();
     }
@@ -118,11 +118,11 @@ fn ingest_message(canon: &Path, msg: ParsedMessage, entries: &mut HashMap<u32, M
         let crc_fields: Vec<CrcExtraField<'_>> = msg
             .fields
             .iter()
-            .map(|f| CrcExtraField {
-                name: &f.name,
-                type_name: &f.type_name,
-                array_length: f.array_length,
-                is_extension: f.is_extension,
+            .map(|field| CrcExtraField {
+                name: &field.name,
+                type_name: &field.type_name,
+                array_length: field.array_length,
+                is_extension: field.is_extension,
             })
             .collect();
         crc_extra_for_message(&msg.name, &crc_fields)
@@ -136,7 +136,7 @@ fn ingest_message(canon: &Path, msg: ParsedMessage, entries: &mut HashMap<u32, M
         target_comp_offset,
         entries,
     )
-    .unwrap_or_else(|e| panic!("{e} (in {})", canon.display()));
+    .unwrap_or_else(|err| panic!("{err} (in {})", canon.display()));
 }
 
 fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
@@ -152,14 +152,14 @@ fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) => {
-                let tag = std::str::from_utf8(e.name().as_ref())
+            Ok(Event::Start(event)) => {
+                let tag = std::str::from_utf8(event.name().as_ref())
                     .expect("tag name not utf8")
                     .to_string();
                 match tag.as_str() {
                     "include" => in_include = true,
                     "message" => {
-                        let (id, name) = parse_msg_attrs(&e);
+                        let (id, name) = parse_msg_attrs(&event);
                         current_msg = Some(ParsedMessage {
                             id,
                             name,
@@ -174,7 +174,7 @@ fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
                     }
                     "field" => {
                         if let Some(msg) = current_msg.as_mut() {
-                            let (type_name, field_name) = parse_field_attrs(&e);
+                            let (type_name, field_name) = parse_field_attrs(&event);
                             let (elem, len) = parse_array_suffix(&type_name)
                                 .unwrap_or_else(|err| panic!("{err}"));
                             msg.fields.push(ParsedField {
@@ -188,8 +188,8 @@ fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
                     _ => {}
                 }
             }
-            Ok(Event::Empty(e)) => {
-                let tag = std::str::from_utf8(e.name().as_ref())
+            Ok(Event::Empty(event)) => {
+                let tag = std::str::from_utf8(event.name().as_ref())
                     .expect("tag name not utf8")
                     .to_string();
                 match tag.as_str() {
@@ -200,7 +200,7 @@ fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
                     }
                     "field" => {
                         if let Some(msg) = current_msg.as_mut() {
-                            let (type_name, field_name) = parse_field_attrs(&e);
+                            let (type_name, field_name) = parse_field_attrs(&event);
                             let (elem, len) = parse_array_suffix(&type_name)
                                 .unwrap_or_else(|err| panic!("{err}"));
                             msg.fields.push(ParsedField {
@@ -214,16 +214,16 @@ fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
                     _ => {}
                 }
             }
-            Ok(Event::Text(e)) => {
+            Ok(Event::Text(event)) => {
                 if in_include {
-                    let text = e.unescape().expect("text unescape").trim().to_string();
+                    let text = event.unescape().expect("text unescape").trim().to_string();
                     if !text.is_empty() {
                         includes.push(text);
                     }
                 }
             }
-            Ok(Event::End(e)) => {
-                let tag = std::str::from_utf8(e.name().as_ref())
+            Ok(Event::End(event)) => {
+                let tag = std::str::from_utf8(event.name().as_ref())
                     .expect("tag name not utf8")
                     .to_string();
                 match tag.as_str() {
@@ -237,7 +237,7 @@ fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
                 }
             }
             Ok(Event::Eof) => break,
-            Err(e) => panic!("XML parse error: {e}"),
+            Err(err) => panic!("XML parse error: {err}"),
             _ => {}
         }
     }
@@ -245,10 +245,10 @@ fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
     (includes, messages)
 }
 
-fn parse_msg_attrs(e: &BytesStart<'_>) -> (u32, String) {
+fn parse_msg_attrs(event: &BytesStart<'_>) -> (u32, String) {
     let mut id = 0u32;
     let mut name = String::new();
-    for attr_res in e.attributes() {
+    for attr_res in event.attributes() {
         let attr = attr_res.expect("attribute parse failed");
         let key = std::str::from_utf8(attr.key.as_ref()).expect("attr key utf8");
         let val = attr.unescape_value().expect("attr value unescape");
@@ -257,7 +257,7 @@ fn parse_msg_attrs(e: &BytesStart<'_>) -> (u32, String) {
                 id = val
                     .trim()
                     .parse()
-                    .unwrap_or_else(|e| panic!("bad message id '{val}': {e}"));
+                    .unwrap_or_else(|err| panic!("bad message id '{val}': {err}"));
             }
             "name" => name = val.into_owned(),
             _ => {}
@@ -266,10 +266,10 @@ fn parse_msg_attrs(e: &BytesStart<'_>) -> (u32, String) {
     (id, name)
 }
 
-fn parse_field_attrs(e: &BytesStart<'_>) -> (String, String) {
+fn parse_field_attrs(event: &BytesStart<'_>) -> (String, String) {
     let mut type_name = String::new();
     let mut field_name = String::new();
-    for attr_res in e.attributes() {
+    for attr_res in event.attributes() {
         let attr = attr_res.expect("attribute parse failed");
         let key = std::str::from_utf8(attr.key.as_ref()).expect("attr key utf8");
         let val = attr.unescape_value().expect("attr value unescape");
@@ -283,38 +283,38 @@ fn parse_field_attrs(e: &BytesStart<'_>) -> (String, String) {
 }
 
 fn compute_offsets(fields: &[ParsedField]) -> (Option<u8>, Option<u8>) {
-    let mut base: Vec<&ParsedField> = fields.iter().filter(|f| !f.is_extension).collect();
-    base.sort_by(|a, b| type_size(&b.type_name).cmp(&type_size(&a.type_name)));
+    let mut base: Vec<&ParsedField> = fields.iter().filter(|field| !field.is_extension).collect();
+    base.sort_by(|left, right| type_size(&right.type_name).cmp(&type_size(&left.type_name)));
 
     let mut off: u16 = 0;
     let mut tsys = None;
     let mut tcomp = None;
-    for f in &base {
-        if f.array_length == 0 && f.type_name == "uint8_t" {
+    for field in &base {
+        if field.array_length == 0 && field.type_name == "uint8_t" {
             // MAVLink wire payload length is u8 (max 255), so any valid target
             // field offset fits in u8. Panic on a malformed dialect that places
             // it past byte 255 rather than silently truncating.
             let target_off = u8::try_from(off).unwrap_or_else(|_| {
                 panic!(
                     "target field '{}' at offset {} exceeds u8 — payload too large",
-                    f.name, off
+                    field.name, off
                 )
             });
-            if f.name == "target_system" {
+            if field.name == "target_system" {
                 tsys = Some(target_off);
-            } else if f.name == "target_component" {
+            } else if field.name == "target_component" {
                 tcomp = Some(target_off);
             }
         }
-        let elem = type_size(&f.type_name) as u16;
-        let n = if f.array_length == 0 {
+        let elem = type_size(&field.type_name) as u16;
+        let elem_count = if field.array_length == 0 {
             1u16
         } else {
-            f.array_length as u16
+            field.array_length as u16
         };
         off = off
-            .checked_add(elem * n)
-            .unwrap_or_else(|| panic!("payload overflow for field '{}'", f.name));
+            .checked_add(elem * elem_count)
+            .unwrap_or_else(|| panic!("payload overflow for field '{}'", field.name));
     }
     (tsys, tcomp)
 }

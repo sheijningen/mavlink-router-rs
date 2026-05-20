@@ -75,9 +75,9 @@ pub async fn spawn_udps_with_endpoint(
     endpoint.bind_addr = pick_free_udp_addr();
     let parent_id = allocator.alloc();
     let spec = UdpServerSpec::from_endpoint(endpoint, parent_id, name.to_string());
-    let h = spawn_udps_with_spec(allocator, cancel, spec);
-    wait_for_state(&h.stats, EndpointState::Connected, "udps bind").await;
-    h
+    let harness = spawn_udps_with_spec(allocator, cancel, spec);
+    wait_for_state(&harness.stats, EndpointState::Connected, "udps bind").await;
+    harness
 }
 
 /// Spawn a `udps:` listener with a fully-constructed `UdpServerSpec`. The
@@ -189,14 +189,14 @@ pub async fn udpc_send_and_capture_source(
 ) -> SocketAddr {
     tx_queue.push(bytes::Bytes::copy_from_slice(frame));
     let mut buf = [0u8; 256];
-    let (n, src) = timeout(Duration::from_secs(2), configured.recv_from(&mut buf))
+    let (bytes_read, src_addr) = timeout(Duration::from_secs(2), configured.recv_from(&mut buf))
         .await
         .expect("configured recv timeout")
         .expect("configured recv_from");
     assert_eq!(
-        &buf[..n],
+        &buf[..bytes_read],
         frame,
         "udpc frame bytes mismatch at configured peer"
     );
-    src
+    src_addr
 }

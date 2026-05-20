@@ -62,13 +62,13 @@ impl IdentityFlags {
     }
 }
 
-pub(crate) fn parse_bool(v: &str, key: &'static str) -> Result<bool, SpecError> {
-    match v {
+pub(crate) fn parse_bool(value: &str, key: &'static str) -> Result<bool, SpecError> {
+    match value {
         "true" => Ok(true),
         "false" => Ok(false),
         _ => Err(SpecError::InvalidQueryValue {
             key,
-            reason: format!("expected 'true' or 'false', got '{v}'"),
+            reason: format!("expected 'true' or 'false', got '{value}'"),
         }),
     }
 }
@@ -80,39 +80,39 @@ mod tests {
 
     #[test]
     fn default_is_allow_all_no_sniffer_no_group() {
-        let f = IdentityFlags::default();
-        assert_eq!(f.filters, Filters::default());
-        assert!(!f.sniffer);
-        assert!(f.group.is_none());
+        let identity = IdentityFlags::default();
+        assert_eq!(identity.filters, Filters::default());
+        assert!(!identity.sniffer);
+        assert!(identity.group.is_none());
     }
 
     #[test]
     fn apply_returns_false_on_unknown_key() {
-        let mut f = IdentityFlags::default();
-        assert!(!f.apply("tx_queue_frames", "8").unwrap());
-        assert_eq!(f, IdentityFlags::default());
+        let mut identity = IdentityFlags::default();
+        assert!(!identity.apply("tx_queue_frames", "8").unwrap());
+        assert_eq!(identity, IdentityFlags::default());
     }
 
     #[test]
     fn apply_sniffer() {
-        let mut f = IdentityFlags::default();
-        assert!(f.apply("sniffer", "true").unwrap());
-        assert!(f.sniffer);
-        assert!(f.apply("sniffer", "false").unwrap());
-        assert!(!f.sniffer);
-        assert!(f.apply("sniffer", "yes").is_err());
+        let mut identity = IdentityFlags::default();
+        assert!(identity.apply("sniffer", "true").unwrap());
+        assert!(identity.sniffer);
+        assert!(identity.apply("sniffer", "false").unwrap());
+        assert!(!identity.sniffer);
+        assert!(identity.apply("sniffer", "yes").is_err());
     }
 
     #[test]
     fn apply_group_stores_arc_str() {
-        let mut f = IdentityFlags::default();
-        assert!(f.apply("group", "uplink").unwrap());
-        assert_eq!(f.group.as_deref(), Some("uplink"));
-        let cloned = f.clone();
-        let (Some(a), Some(b)) = (f.group.as_ref(), cloned.group.as_ref()) else {
+        let mut identity = IdentityFlags::default();
+        assert!(identity.apply("group", "uplink").unwrap());
+        assert_eq!(identity.group.as_deref(), Some("uplink"));
+        let cloned = identity.clone();
+        let (Some(original), Some(copy)) = (identity.group.as_ref(), cloned.group.as_ref()) else {
             panic!("group should be Some after clone");
         };
-        assert!(Arc::ptr_eq(a, b));
+        assert!(Arc::ptr_eq(original, copy));
     }
 
     #[test]
@@ -120,14 +120,14 @@ mod tests {
         // Identity::apply must route filter keys through `filters.apply`
         // so external callers (the query parser) don't have to know about
         // the split.
-        let mut f = IdentityFlags::default();
-        assert!(f.apply("block_msgid_in", "33,100-150").unwrap());
+        let mut identity = IdentityFlags::default();
+        assert!(identity.apply("block_msgid_in", "33,100-150").unwrap());
         assert_eq!(
-            f.filters.block_msgid_in,
+            identity.filters.block_msgid_in,
             vec![MsgIdRange::single(33), MsgIdRange { lo: 100, hi: 150 }]
         );
-        assert!(f.apply("allow_src_sys_out", "1").unwrap());
-        assert_eq!(f.filters.allow_src_sys_out, vec![U8Range::single(1)]);
+        assert!(identity.apply("allow_src_sys_out", "1").unwrap());
+        assert_eq!(identity.filters.allow_src_sys_out, vec![U8Range::single(1)]);
     }
 
     #[test]
@@ -139,24 +139,24 @@ mod tests {
                 _ => "1",
             }
         };
-        for k in IdentityFlags::KEYS {
-            let mut f = IdentityFlags::default();
-            let consumed = f
-                .apply(k, probe_value(k))
-                .unwrap_or_else(|e| panic!("apply({k}, ..) errored: {e}"));
+        for key in IdentityFlags::KEYS {
+            let mut identity = IdentityFlags::default();
+            let consumed = identity
+                .apply(key, probe_value(key))
+                .unwrap_or_else(|err| panic!("apply({key}, ..) errored: {err}"));
             assert!(
                 consumed,
-                "IdentityFlags::apply({k}) returned false; missing from match arm"
+                "IdentityFlags::apply({key}) returned false; missing from match arm"
             );
         }
     }
 
     #[test]
     fn identity_and_filter_key_sets_are_disjoint() {
-        for ik in IdentityFlags::KEYS {
+        for identity_key in IdentityFlags::KEYS {
             assert!(
-                !Filters::KEYS.contains(ik),
-                "key {ik} appears in both IdentityFlags::KEYS and Filters::KEYS"
+                !Filters::KEYS.contains(identity_key),
+                "key {identity_key} appears in both IdentityFlags::KEYS and Filters::KEYS"
             );
         }
     }

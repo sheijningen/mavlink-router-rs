@@ -62,11 +62,11 @@ pub struct PeerAddedPayload {
 /// by both UDP server and TCP server integration tests — the event shape is
 /// transport-agnostic.
 pub async fn next_peer_added(rx: &mut mpsc::Receiver<EndpointEvent>) -> PeerAddedPayload {
-    let ev = timeout(Duration::from_secs(2), rx.recv())
+    let event = timeout(Duration::from_secs(2), rx.recv())
         .await
         .expect("event_rx timeout waiting for PeerAdded")
         .expect("event_rx closed before PeerAdded");
-    match ev {
+    match event {
         EndpointEvent::PeerAdded {
             parent_id,
             child_id,

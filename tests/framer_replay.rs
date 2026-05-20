@@ -14,13 +14,13 @@ use rmr::mavlink::framer::Framer;
 /// inspect this — production code forwards signed frames opaquely — but the
 /// replay test asserts the framer admits both signed and unsigned v2 frames
 /// without panicking, so the predicate is useful here.
-fn is_signed(h: &ParsedHeader, bytes: &Bytes) -> bool {
-    h.version == Version::V2 && bytes[0] == STX_V2 && (bytes[2] & V2_IFLAG_SIGNED) != 0
+fn is_signed(header: &ParsedHeader, bytes: &Bytes) -> bool {
+    header.version == Version::V2 && bytes[0] == STX_V2 && (bytes[2] & V2_IFLAG_SIGNED) != 0
 }
 
 #[test]
 fn capture_replay_mixed_frames_in_chunks() {
-    let f1 = TestFrame::v1_message(&Heartbeat {
+    let frame1 = TestFrame::v1_message(&Heartbeat {
         custom_mode: 0x1111,
         mav_type: 2,
         autopilot: 3,
@@ -33,7 +33,7 @@ fn capture_replay_mixed_frames_in_chunks() {
     .compid(1)
     .build();
 
-    let f2 = TestFrame::v2_message(&SysStatus {
+    let frame2 = TestFrame::v2_message(&SysStatus {
         load: 100,
         voltage_battery: 12_500,
         current_battery: 50,
@@ -45,7 +45,7 @@ fn capture_replay_mixed_frames_in_chunks() {
     .compid(1)
     .build();
 
-    let f3 = TestFrame::v2_message(&Ping {
+    let frame3 = TestFrame::v2_message(&Ping {
         time_usec: 0xDEAD_BEEF,
         seq: 0xCAFE_BABE,
         target_system: 7,
@@ -60,7 +60,7 @@ fn capture_replay_mixed_frames_in_chunks() {
     // Override the CRC with deliberately bogus bytes to prove the framer
     // doesn't try to validate it.
     let unknown_msgid: u32 = 0x00B0_B0B0;
-    let f4 = TestFrame::v2(unknown_msgid, 0)
+    let frame4 = TestFrame::v2(unknown_msgid, 0)
         .seq(4)
         .sysid(11)
         .compid(1)
@@ -68,10 +68,10 @@ fn capture_replay_mixed_frames_in_chunks() {
         .build_with_crc_override(0xFFFF);
 
     // Signed v2: the 13-byte signature trailer must be forwarded byte-for-byte.
-    let sig: [u8; 13] = [
+    let signature: [u8; 13] = [
         0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD,
     ];
-    let f5 = TestFrame::v2_message(&Heartbeat {
+    let frame5 = TestFrame::v2_message(&Heartbeat {
         custom_mode: 0x5555,
         mav_type: 2,
         autopilot: 3,
@@ -82,12 +82,12 @@ fn capture_replay_mixed_frames_in_chunks() {
     .seq(5)
     .sysid(11)
     .compid(1)
-    .signed(sig)
+    .signed(signature)
     .build();
 
     let mut stream = Vec::new();
-    for f in [&f1, &f2, &f3, &f4, &f5] {
-        stream.extend_from_slice(f);
+    for frame in [&frame1, &frame2, &frame3, &frame4, &frame5] {
+        stream.extend_from_slice(frame);
     }
 
     let mut framer = Framer::new();
@@ -106,45 +106,45 @@ fn capture_replay_mixed_frames_in_chunks() {
     assert_eq!(framer.resync_bytes(), 0);
 
     // 1. HEARTBEAT v1
-    let (h, b) = &parsed[0];
-    assert_eq!(h.version, Version::V1);
-    assert_eq!(h.msgid, Heartbeat::MSGID);
-    assert_eq!(h.seq, 1);
-    assert_eq!(h.target_system, None);
-    assert_eq!(h.target_component, None);
-    assert_eq!(&b[..], &f1[..]);
+    let (header, bytes) = &parsed[0];
+    assert_eq!(header.version, Version::V1);
+    assert_eq!(header.msgid, Heartbeat::MSGID);
+    assert_eq!(header.seq, 1);
+    assert_eq!(header.target_system, None);
+    assert_eq!(header.target_component, None);
+    assert_eq!(&bytes[..], &frame1[..]);
 
     // 2. SYS_STATUS v2 — known, no targets.
-    let (h, b) = &parsed[1];
-    assert_eq!(h.version, Version::V2);
-    assert_eq!(h.msgid, SysStatus::MSGID);
-    assert_eq!(h.payload_len, 31);
-    assert!(!is_signed(h, b));
-    assert_eq!(h.target_system, None);
-    assert_eq!(&b[..], &f2[..]);
+    let (header, bytes) = &parsed[1];
+    assert_eq!(header.version, Version::V2);
+    assert_eq!(header.msgid, SysStatus::MSGID);
+    assert_eq!(header.payload_len, 31);
+    assert!(!is_signed(header, bytes));
+    assert_eq!(header.target_system, None);
+    assert_eq!(&bytes[..], &frame2[..]);
 
     // 3. PING v2 with extracted targets — "known msgid gets CRC-validated and
     //    targeted-routed."
-    let (h, b) = &parsed[2];
-    assert_eq!(h.msgid, Ping::MSGID);
-    assert_eq!(h.target_system, Some(7));
-    assert_eq!(h.target_component, Some(9));
-    assert_eq!(&b[..], &f3[..]);
+    let (header, bytes) = &parsed[2];
+    assert_eq!(header.msgid, Ping::MSGID);
+    assert_eq!(header.target_system, Some(7));
+    assert_eq!(header.target_component, Some(9));
+    assert_eq!(&bytes[..], &frame3[..]);
 
     // 4. Unknown msgid — forwarded with the bogus CRC, framer made no attempt
     //    to validate.
-    let (h, b) = &parsed[3];
-    assert_eq!(h.msgid, unknown_msgid);
-    assert_eq!(h.target_system, None);
-    assert_eq!(h.target_component, None);
-    assert_eq!(&b[..], &f4[..]);
+    let (header, bytes) = &parsed[3];
+    assert_eq!(header.msgid, unknown_msgid);
+    assert_eq!(header.target_system, None);
+    assert_eq!(header.target_component, None);
+    assert_eq!(&bytes[..], &frame4[..]);
 
     // 5. Signed v2 HEARTBEAT — signature trailer at the tail, byte-for-byte.
-    let (h, b) = &parsed[4];
-    assert!(is_signed(h, b));
-    assert_eq!(h.msgid, Heartbeat::MSGID);
-    assert_eq!(&b[..], &f5[..]);
-    assert_eq!(&b[b.len() - sig.len()..], &sig[..]);
+    let (header, bytes) = &parsed[4];
+    assert!(is_signed(header, bytes));
+    assert_eq!(header.msgid, Heartbeat::MSGID);
+    assert_eq!(&bytes[..], &frame5[..]);
+    assert_eq!(&bytes[bytes.len() - signature.len()..], &signature[..]);
 }
 
 #[test]
@@ -185,8 +185,8 @@ fn corrupted_frame_in_stream_is_dropped_and_following_frame_still_parses() {
     framer.buffer_mut().put_slice(&stream);
 
     let mut seqs = Vec::new();
-    while let Some((h, _)) = framer.try_next_frame() {
-        seqs.push(h.seq);
+    while let Some((header, _)) = framer.try_next_frame() {
+        seqs.push(header.seq);
     }
 
     assert!(seqs.contains(&1), "first good frame must parse");

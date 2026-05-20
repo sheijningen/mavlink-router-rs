@@ -67,8 +67,8 @@ impl Scheme {
 }
 
 impl fmt::Display for Scheme {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -132,9 +132,9 @@ impl EndpointSpec {
     ) -> Result<Self, SpecError> {
         let kind = parse_kind(scheme, body, pairs)?;
         let name = match explicit_name {
-            Some(n) => {
-                validate_name(n)?;
-                n.to_string()
+            Some(name) => {
+                validate_name(name)?;
+                name.to_string()
             }
             None => default_name(&kind),
         };

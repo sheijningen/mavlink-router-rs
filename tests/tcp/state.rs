@@ -25,11 +25,11 @@ use crate::common::{shutdown_all, wait_for_state};
 async fn tcps_listener_transitions_reconnecting_to_connected_on_bind() {
     let allocator = Arc::new(EndpointIdAllocator::new());
     let cancel = CancellationToken::new();
-    let h = spawn_tcps(&allocator, cancel.clone(), "p").await;
+    let harness = spawn_tcps(&allocator, cancel.clone(), "p").await;
     // spawn_tcps awaits the bound_addr handshake, so by the time it returns
     // the listener has bound — state must be Connected.
-    assert_eq!(h.stats.load_state(), EndpointState::Connected);
-    shutdown_all(&cancel, [h.task]).await;
+    assert_eq!(harness.stats.load_state(), EndpointState::Connected);
+    shutdown_all(&cancel, [harness.task]).await;
 }
 
 #[tokio::test]
@@ -42,7 +42,7 @@ async fn tcpc_transitions_through_connect_then_reconnect_cycle() {
         .expect("bind test server");
     let addr = listener.local_addr().expect("local_addr");
 
-    let h = spawn_tcpc_with(
+    let harness = spawn_tcpc_with(
         &allocator,
         cancel.clone(),
         addr,
@@ -56,14 +56,14 @@ async fn tcpc_transitions_through_connect_then_reconnect_cycle() {
 
     // Reconnecting at spawn time (harness constructs EndpointStats::new(
     // Reconnecting) just like the production spawner will).
-    assert_eq!(h.stats.load_state(), EndpointState::Reconnecting);
+    assert_eq!(harness.stats.load_state(), EndpointState::Reconnecting);
 
     // Once tcpc establishes its first session, state must be Connected.
     let (server, _peer) = timeout(Duration::from_secs(2), listener.accept())
         .await
         .expect("initial accept timeout")
         .expect("initial accept");
-    wait_for_state(&h.stats, EndpointState::Connected, "after connect").await;
+    wait_for_state(&harness.stats, EndpointState::Connected, "after connect").await;
 
     // Drop both the accepted stream AND the listener — otherwise tcpc's
     // immediate redial succeeds on the open listener within ~1ms and the
@@ -72,7 +72,12 @@ async fn tcpc_transitions_through_connect_then_reconnect_cycle() {
     // into its backoff sleep, which lives long enough to observe.
     drop(server);
     drop(listener);
-    wait_for_state(&h.stats, EndpointState::Reconnecting, "after disconnect").await;
+    wait_for_state(
+        &harness.stats,
+        EndpointState::Reconnecting,
+        "after disconnect",
+    )
+    .await;
 
     // Bring the listener back; tcpc's next dial succeeds and state flips
     // back to Connected.
@@ -81,7 +86,7 @@ async fn tcpc_transitions_through_connect_then_reconnect_cycle() {
         .await
         .expect("reconnect accept timeout")
         .expect("reconnect accept");
-    wait_for_state(&h.stats, EndpointState::Connected, "after reconnect").await;
+    wait_for_state(&harness.stats, EndpointState::Connected, "after reconnect").await;
 
-    shutdown_all(&cancel, [h.task]).await;
+    shutdown_all(&cancel, [harness.task]).await;
 }

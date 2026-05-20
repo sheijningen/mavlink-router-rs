@@ -13,12 +13,15 @@ pub struct MsgIdRange {
 }
 
 impl MsgIdRange {
-    pub fn single(n: u32) -> Self {
-        Self { lo: n, hi: n }
+    pub fn single(value: u32) -> Self {
+        Self {
+            lo: value,
+            hi: value,
+        }
     }
 
-    pub fn contains(self, x: u32) -> bool {
-        self.lo <= x && x <= self.hi
+    pub fn contains(self, value: u32) -> bool {
+        self.lo <= value && value <= self.hi
     }
 }
 
@@ -31,12 +34,15 @@ pub struct U8Range {
 }
 
 impl U8Range {
-    pub fn single(n: u8) -> Self {
-        Self { lo: n, hi: n }
+    pub fn single(value: u8) -> Self {
+        Self {
+            lo: value,
+            hi: value,
+        }
     }
 
-    pub fn contains(self, x: u8) -> bool {
-        self.lo <= x && x <= self.hi
+    pub fn contains(self, value: u8) -> bool {
+        self.lo <= value && value <= self.hi
     }
 }
 
@@ -172,10 +178,10 @@ impl Filters {
 /// some allow range; `block` rejects on match regardless.
 #[inline]
 fn pass_msgid_axis(value: u32, allow: &[MsgIdRange], block: &[MsgIdRange]) -> bool {
-    if !allow.is_empty() && !allow.iter().any(|r| r.contains(value)) {
+    if !allow.is_empty() && !allow.iter().any(|range| range.contains(value)) {
         return false;
     }
-    !block.iter().any(|r| r.contains(value))
+    !block.iter().any(|range| range.contains(value))
 }
 
 /// Per-axis decision for the `src_sys` / `src_comp` axes (u8 values,
@@ -184,20 +190,20 @@ fn pass_msgid_axis(value: u32, allow: &[MsgIdRange], block: &[MsgIdRange]) -> bo
 /// `contains` methods on the range types.
 #[inline]
 fn pass_u8_axis(value: u8, allow: &[U8Range], block: &[U8Range]) -> bool {
-    if !allow.is_empty() && !allow.iter().any(|r| r.contains(value)) {
+    if !allow.is_empty() && !allow.iter().any(|range| range.contains(value)) {
         return false;
     }
-    !block.iter().any(|r| r.contains(value))
+    !block.iter().any(|range| range.contains(value))
 }
 
-fn parse_msgid_ranges(v: &str, key: &'static str) -> Result<Vec<MsgIdRange>, SpecError> {
+fn parse_msgid_ranges(value: &str, key: &'static str) -> Result<Vec<MsgIdRange>, SpecError> {
     let mut out = Vec::new();
-    for item in v.split(',') {
+    for item in value.split(',') {
         let item = item.trim();
         if item.is_empty() {
             return Err(SpecError::InvalidQueryValue {
                 key,
-                reason: format!("empty entry in '{v}'"),
+                reason: format!("empty entry in '{value}'"),
             });
         }
         let (lo, hi) = parse_range_pair_u32(item, key)?;
@@ -206,14 +212,14 @@ fn parse_msgid_ranges(v: &str, key: &'static str) -> Result<Vec<MsgIdRange>, Spe
     Ok(out)
 }
 
-fn parse_u8_ranges(v: &str, key: &'static str) -> Result<Vec<U8Range>, SpecError> {
+fn parse_u8_ranges(value: &str, key: &'static str) -> Result<Vec<U8Range>, SpecError> {
     let mut out = Vec::new();
-    for item in v.split(',') {
+    for item in value.split(',') {
         let item = item.trim();
         if item.is_empty() {
             return Err(SpecError::InvalidQueryValue {
                 key,
-                reason: format!("empty entry in '{v}'"),
+                reason: format!("empty entry in '{value}'"),
             });
         }
         let (lo, hi) = parse_range_pair_u32(item, key)?;
@@ -232,28 +238,28 @@ fn parse_u8_ranges(v: &str, key: &'static str) -> Result<Vec<U8Range>, SpecError
 }
 
 fn parse_range_pair_u32(item: &str, key: &'static str) -> Result<(u32, u32), SpecError> {
-    let (lo, hi) = if let Some((lo_s, hi_s)) = item.split_once('-') {
-        let lo: u32 = lo_s
+    let (lo, hi) = if let Some((lo_text, hi_text)) = item.split_once('-') {
+        let lo: u32 = lo_text
             .trim()
             .parse()
             .map_err(|_| SpecError::InvalidQueryValue {
                 key,
-                reason: format!("range lower bound '{lo_s}' is not a decimal integer"),
+                reason: format!("range lower bound '{lo_text}' is not a decimal integer"),
             })?;
-        let hi: u32 = hi_s
+        let hi: u32 = hi_text
             .trim()
             .parse()
             .map_err(|_| SpecError::InvalidQueryValue {
                 key,
-                reason: format!("range upper bound '{hi_s}' is not a decimal integer"),
+                reason: format!("range upper bound '{hi_text}' is not a decimal integer"),
             })?;
         (lo, hi)
     } else {
-        let n: u32 = item.parse().map_err(|_| SpecError::InvalidQueryValue {
+        let value: u32 = item.parse().map_err(|_| SpecError::InvalidQueryValue {
             key,
             reason: format!("'{item}' is not a decimal integer or 'lo-hi' range"),
         })?;
-        (n, n)
+        (value, value)
     };
     if lo > hi {
         return Err(SpecError::InvalidQueryValue {
@@ -270,35 +276,35 @@ mod tests {
 
     #[test]
     fn default_is_all_empty() {
-        let f = Filters::default();
-        assert!(f.allow_msgid_in.is_empty());
-        assert!(f.block_msgid_in.is_empty());
-        assert!(f.allow_msgid_out.is_empty());
-        assert!(f.block_msgid_out.is_empty());
-        assert!(f.allow_src_sys_in.is_empty());
-        assert!(f.block_src_sys_in.is_empty());
-        assert!(f.allow_src_sys_out.is_empty());
-        assert!(f.block_src_sys_out.is_empty());
-        assert!(f.allow_src_comp_in.is_empty());
-        assert!(f.block_src_comp_in.is_empty());
-        assert!(f.allow_src_comp_out.is_empty());
-        assert!(f.block_src_comp_out.is_empty());
+        let filters = Filters::default();
+        assert!(filters.allow_msgid_in.is_empty());
+        assert!(filters.block_msgid_in.is_empty());
+        assert!(filters.allow_msgid_out.is_empty());
+        assert!(filters.block_msgid_out.is_empty());
+        assert!(filters.allow_src_sys_in.is_empty());
+        assert!(filters.block_src_sys_in.is_empty());
+        assert!(filters.allow_src_sys_out.is_empty());
+        assert!(filters.block_src_sys_out.is_empty());
+        assert!(filters.allow_src_comp_in.is_empty());
+        assert!(filters.block_src_comp_in.is_empty());
+        assert!(filters.allow_src_comp_out.is_empty());
+        assert!(filters.block_src_comp_out.is_empty());
     }
 
     #[test]
     fn apply_returns_false_on_non_filter_key() {
-        let mut f = Filters::default();
-        assert!(!f.apply("sniffer", "true").unwrap());
-        assert!(!f.apply("tx_queue_frames", "8").unwrap());
-        assert_eq!(f, Filters::default());
+        let mut filters = Filters::default();
+        assert!(!filters.apply("sniffer", "true").unwrap());
+        assert!(!filters.apply("tx_queue_frames", "8").unwrap());
+        assert_eq!(filters, Filters::default());
     }
 
     #[test]
     fn apply_msgid_lists_parse_ranges_and_singles() {
-        let mut f = Filters::default();
-        assert!(f.apply("block_msgid_in", "33,100-150,200").unwrap());
+        let mut filters = Filters::default();
+        assert!(filters.apply("block_msgid_in", "33,100-150,200").unwrap());
         assert_eq!(
-            f.block_msgid_in,
+            filters.block_msgid_in,
             vec![
                 MsgIdRange::single(33),
                 MsgIdRange { lo: 100, hi: 150 },
@@ -309,33 +315,33 @@ mod tests {
 
     #[test]
     fn apply_u8_lists_reject_out_of_range() {
-        let mut f = Filters::default();
-        assert!(f.apply("allow_src_sys_in", "256").is_err());
-        assert!(f.apply("allow_src_sys_in", "100-300").is_err());
+        let mut filters = Filters::default();
+        assert!(filters.apply("allow_src_sys_in", "256").is_err());
+        assert!(filters.apply("allow_src_sys_in", "100-300").is_err());
     }
 
     #[test]
     fn apply_rejects_inverted_range() {
-        let mut f = Filters::default();
-        assert!(f.apply("block_msgid_in", "150-100").is_err());
+        let mut filters = Filters::default();
+        assert!(filters.apply("block_msgid_in", "150-100").is_err());
     }
 
     #[test]
     fn apply_rejects_empty_list_entry() {
-        let mut f = Filters::default();
-        assert!(f.apply("block_msgid_in", "33,,100").is_err());
+        let mut filters = Filters::default();
+        assert!(filters.apply("block_msgid_in", "33,,100").is_err());
     }
 
     #[test]
     fn keys_cover_every_filter_field_handled_by_apply() {
-        for k in Filters::KEYS {
-            let mut f = Filters::default();
-            let consumed = f
-                .apply(k, "1")
-                .unwrap_or_else(|e| panic!("apply({k}, ..) errored: {e}"));
+        for key in Filters::KEYS {
+            let mut filters = Filters::default();
+            let consumed = filters
+                .apply(key, "1")
+                .unwrap_or_else(|err| panic!("apply({key}, ..) errored: {err}"));
             assert!(
                 consumed,
-                "Filters::apply({k}) returned false; missing from match arm"
+                "Filters::apply({key}) returned false; missing from match arm"
             );
         }
     }
@@ -344,139 +350,139 @@ mod tests {
 
     #[test]
     fn default_filters_accept_everything() {
-        let f = Filters::default();
-        assert!(f.passes_in_filter(0, NodeId::new(0, 0)));
-        assert!(f.passes_in_filter(u32::MAX, NodeId::new(u8::MAX, u8::MAX)));
-        assert!(f.passes_out_filter(33, NodeId::new(1, 1)));
+        let filters = Filters::default();
+        assert!(filters.passes_in_filter(0, NodeId::new(0, 0)));
+        assert!(filters.passes_in_filter(u32::MAX, NodeId::new(u8::MAX, u8::MAX)));
+        assert!(filters.passes_out_filter(33, NodeId::new(1, 1)));
     }
 
     #[test]
     fn allow_in_restricts_to_listed_msgids() {
-        let f = Filters {
+        let filters = Filters {
             allow_msgid_in: vec![MsgIdRange::single(0), MsgIdRange { lo: 30, hi: 40 }],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, NodeId::new(1, 1)));
-        assert!(f.passes_in_filter(30, NodeId::new(1, 1)));
-        assert!(f.passes_in_filter(35, NodeId::new(1, 1)));
-        assert!(f.passes_in_filter(40, NodeId::new(1, 1)));
-        assert!(!f.passes_in_filter(29, NodeId::new(1, 1)));
-        assert!(!f.passes_in_filter(41, NodeId::new(1, 1)));
-        assert!(!f.passes_in_filter(100, NodeId::new(1, 1)));
+        assert!(filters.passes_in_filter(0, NodeId::new(1, 1)));
+        assert!(filters.passes_in_filter(30, NodeId::new(1, 1)));
+        assert!(filters.passes_in_filter(35, NodeId::new(1, 1)));
+        assert!(filters.passes_in_filter(40, NodeId::new(1, 1)));
+        assert!(!filters.passes_in_filter(29, NodeId::new(1, 1)));
+        assert!(!filters.passes_in_filter(41, NodeId::new(1, 1)));
+        assert!(!filters.passes_in_filter(100, NodeId::new(1, 1)));
     }
 
     #[test]
     fn block_in_rejects_listed_msgids() {
-        let f = Filters {
+        let filters = Filters {
             block_msgid_in: vec![MsgIdRange::single(33), MsgIdRange { lo: 100, hi: 150 }],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, NodeId::new(1, 1)));
-        assert!(!f.passes_in_filter(33, NodeId::new(1, 1)));
-        assert!(!f.passes_in_filter(100, NodeId::new(1, 1)));
-        assert!(!f.passes_in_filter(125, NodeId::new(1, 1)));
-        assert!(!f.passes_in_filter(150, NodeId::new(1, 1)));
-        assert!(f.passes_in_filter(151, NodeId::new(1, 1)));
+        assert!(filters.passes_in_filter(0, NodeId::new(1, 1)));
+        assert!(!filters.passes_in_filter(33, NodeId::new(1, 1)));
+        assert!(!filters.passes_in_filter(100, NodeId::new(1, 1)));
+        assert!(!filters.passes_in_filter(125, NodeId::new(1, 1)));
+        assert!(!filters.passes_in_filter(150, NodeId::new(1, 1)));
+        assert!(filters.passes_in_filter(151, NodeId::new(1, 1)));
     }
 
     #[test]
     fn block_wins_over_allow_on_overlap() {
         // CLAUDE.md: "If both are set, Block* wins on overlap."
-        let f = Filters {
+        let filters = Filters {
             allow_msgid_in: vec![MsgIdRange { lo: 0, hi: 100 }],
             block_msgid_in: vec![MsgIdRange::single(33)],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, NodeId::new(1, 1)));
-        assert!(f.passes_in_filter(32, NodeId::new(1, 1)));
-        assert!(!f.passes_in_filter(33, NodeId::new(1, 1)));
-        assert!(f.passes_in_filter(34, NodeId::new(1, 1)));
+        assert!(filters.passes_in_filter(0, NodeId::new(1, 1)));
+        assert!(filters.passes_in_filter(32, NodeId::new(1, 1)));
+        assert!(!filters.passes_in_filter(33, NodeId::new(1, 1)));
+        assert!(filters.passes_in_filter(34, NodeId::new(1, 1)));
         // outside allow → reject regardless of block
-        assert!(!f.passes_in_filter(101, NodeId::new(1, 1)));
+        assert!(!filters.passes_in_filter(101, NodeId::new(1, 1)));
     }
 
     #[test]
     fn src_sys_in_axis_independent_of_msgid_axis() {
-        let f = Filters {
+        let filters = Filters {
             allow_src_sys_in: vec![U8Range::single(1)],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, NodeId::new(1, 0)));
-        assert!(!f.passes_in_filter(0, NodeId::new(2, 0)));
+        assert!(filters.passes_in_filter(0, NodeId::new(1, 0)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(2, 0)));
         // Block on the same axis works.
-        let f = Filters {
+        let filters = Filters {
             block_src_sys_in: vec![U8Range::single(255)],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, NodeId::new(1, 0)));
-        assert!(!f.passes_in_filter(0, NodeId::new(255, 0)));
+        assert!(filters.passes_in_filter(0, NodeId::new(1, 0)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(255, 0)));
     }
 
     #[test]
     fn src_comp_in_axis_independent_of_other_axes() {
-        let f = Filters {
+        let filters = Filters {
             allow_src_comp_in: vec![U8Range { lo: 1, hi: 10 }],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, NodeId::new(0, 1)));
-        assert!(f.passes_in_filter(0, NodeId::new(0, 10)));
-        assert!(!f.passes_in_filter(0, NodeId::new(0, 11)));
-        assert!(!f.passes_in_filter(0, NodeId::new(0, 0)));
+        assert!(filters.passes_in_filter(0, NodeId::new(0, 1)));
+        assert!(filters.passes_in_filter(0, NodeId::new(0, 10)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(0, 11)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(0, 0)));
     }
 
     #[test]
     fn in_filter_requires_every_axis_to_pass() {
-        let f = Filters {
+        let filters = Filters {
             allow_msgid_in: vec![MsgIdRange::single(0)],
             allow_src_sys_in: vec![U8Range::single(1)],
             allow_src_comp_in: vec![U8Range::single(2)],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, NodeId::new(1, 2)));
+        assert!(filters.passes_in_filter(0, NodeId::new(1, 2)));
         // any single axis miss → fail
-        assert!(!f.passes_in_filter(1, NodeId::new(1, 2)));
-        assert!(!f.passes_in_filter(0, NodeId::new(2, 2)));
-        assert!(!f.passes_in_filter(0, NodeId::new(1, 3)));
+        assert!(!filters.passes_in_filter(1, NodeId::new(1, 2)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(2, 2)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(1, 3)));
     }
 
     #[test]
     fn in_and_out_axes_are_independent() {
-        let f = Filters {
+        let filters = Filters {
             block_msgid_in: vec![MsgIdRange::single(33)],
             ..Filters::default()
         };
         // _out is untouched by an _in blocklist, and vice versa.
-        assert!(!f.passes_in_filter(33, NodeId::new(1, 1)));
-        assert!(f.passes_out_filter(33, NodeId::new(1, 1)));
+        assert!(!filters.passes_in_filter(33, NodeId::new(1, 1)));
+        assert!(filters.passes_out_filter(33, NodeId::new(1, 1)));
 
-        let f = Filters {
+        let filters = Filters {
             allow_msgid_out: vec![MsgIdRange::single(0)],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(99, NodeId::new(1, 1)));
-        assert!(!f.passes_out_filter(99, NodeId::new(1, 1)));
+        assert!(filters.passes_in_filter(99, NodeId::new(1, 1)));
+        assert!(!filters.passes_out_filter(99, NodeId::new(1, 1)));
     }
 
     #[test]
     fn out_filter_mirrors_in_filter_logic_on_out_lists() {
-        let f = Filters {
+        let filters = Filters {
             allow_msgid_out: vec![MsgIdRange { lo: 30, hi: 40 }],
             block_msgid_out: vec![MsgIdRange::single(35)],
             allow_src_sys_out: vec![U8Range::single(1)],
             block_src_comp_out: vec![U8Range::single(99)],
             ..Filters::default()
         };
-        assert!(f.passes_out_filter(30, NodeId::new(1, 1)));
-        assert!(f.passes_out_filter(40, NodeId::new(1, 1)));
-        assert!(!f.passes_out_filter(35, NodeId::new(1, 1))); // block wins
-        assert!(!f.passes_out_filter(29, NodeId::new(1, 1))); // outside allow
-        assert!(!f.passes_out_filter(30, NodeId::new(2, 1))); // src_sys not allowed
-        assert!(!f.passes_out_filter(30, NodeId::new(1, 99))); // src_comp blocked
+        assert!(filters.passes_out_filter(30, NodeId::new(1, 1)));
+        assert!(filters.passes_out_filter(40, NodeId::new(1, 1)));
+        assert!(!filters.passes_out_filter(35, NodeId::new(1, 1))); // block wins
+        assert!(!filters.passes_out_filter(29, NodeId::new(1, 1))); // outside allow
+        assert!(!filters.passes_out_filter(30, NodeId::new(2, 1))); // src_sys not allowed
+        assert!(!filters.passes_out_filter(30, NodeId::new(1, 99))); // src_comp blocked
     }
 
     #[test]
     fn multi_range_allow_accepts_any_matching_range() {
-        let f = Filters {
+        let filters = Filters {
             allow_msgid_in: vec![
                 MsgIdRange::single(0),
                 MsgIdRange { lo: 100, hi: 200 },
@@ -484,35 +490,35 @@ mod tests {
             ],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, NodeId::new(0, 0)));
-        assert!(f.passes_in_filter(100, NodeId::new(0, 0)));
-        assert!(f.passes_in_filter(150, NodeId::new(0, 0)));
-        assert!(f.passes_in_filter(200, NodeId::new(0, 0)));
-        assert!(f.passes_in_filter(500, NodeId::new(0, 0)));
-        assert!(!f.passes_in_filter(1, NodeId::new(0, 0)));
-        assert!(!f.passes_in_filter(201, NodeId::new(0, 0)));
-        assert!(!f.passes_in_filter(499, NodeId::new(0, 0)));
-        assert!(!f.passes_in_filter(501, NodeId::new(0, 0)));
+        assert!(filters.passes_in_filter(0, NodeId::new(0, 0)));
+        assert!(filters.passes_in_filter(100, NodeId::new(0, 0)));
+        assert!(filters.passes_in_filter(150, NodeId::new(0, 0)));
+        assert!(filters.passes_in_filter(200, NodeId::new(0, 0)));
+        assert!(filters.passes_in_filter(500, NodeId::new(0, 0)));
+        assert!(!filters.passes_in_filter(1, NodeId::new(0, 0)));
+        assert!(!filters.passes_in_filter(201, NodeId::new(0, 0)));
+        assert!(!filters.passes_in_filter(499, NodeId::new(0, 0)));
+        assert!(!filters.passes_in_filter(501, NodeId::new(0, 0)));
     }
 
     #[test]
     fn boundary_values_u8_full_range_allow_or_block() {
         // U8Range covering the whole space behaves correctly at the ends.
-        let f = Filters {
+        let filters = Filters {
             allow_src_sys_in: vec![U8Range { lo: 0, hi: 255 }],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, NodeId::new(0, 0)));
-        assert!(f.passes_in_filter(0, NodeId::new(255, 0)));
+        assert!(filters.passes_in_filter(0, NodeId::new(0, 0)));
+        assert!(filters.passes_in_filter(0, NodeId::new(255, 0)));
 
-        let f = Filters {
+        let filters = Filters {
             block_src_comp_in: vec![U8Range { lo: 0, hi: 255 }],
             ..Filters::default()
         };
         // Every value rejected when blocklist covers the whole space.
-        assert!(!f.passes_in_filter(0, NodeId::new(0, 0)));
-        assert!(!f.passes_in_filter(0, NodeId::new(0, 128)));
-        assert!(!f.passes_in_filter(0, NodeId::new(0, 255)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(0, 0)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(0, 128)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(0, 255)));
     }
 
     // ----- property tests -----
@@ -545,25 +551,25 @@ mod tests {
             8 => (0u32..=512, 0u32..=512),
             2 => (any::<u32>(), any::<u32>()),
         ]
-        .prop_map(|(a, b)| MsgIdRange {
-            lo: a.min(b),
-            hi: a.max(b),
+        .prop_map(|(first, second)| MsgIdRange {
+            lo: first.min(second),
+            hi: first.max(second),
         })
     }
 
     fn u8_range() -> impl Strategy<Value = U8Range> {
-        (0u8..=u8::MAX, 0u8..=u8::MAX).prop_map(|(a, b)| U8Range {
-            lo: a.min(b),
-            hi: a.max(b),
+        (0u8..=u8::MAX, 0u8..=u8::MAX).prop_map(|(first, second)| U8Range {
+            lo: first.min(second),
+            hi: first.max(second),
         })
     }
 
-    fn msgid_range_around(p: u32) -> impl Strategy<Value = MsgIdRange> {
-        (0u32..=p, p..=u32::MAX).prop_map(|(lo, hi)| MsgIdRange { lo, hi })
+    fn msgid_range_around(pivot: u32) -> impl Strategy<Value = MsgIdRange> {
+        (0u32..=pivot, pivot..=u32::MAX).prop_map(|(lo, hi)| MsgIdRange { lo, hi })
     }
 
-    fn u8_range_around(p: u8) -> impl Strategy<Value = U8Range> {
-        (0u8..=p, p..=u8::MAX).prop_map(|(lo, hi)| U8Range { lo, hi })
+    fn u8_range_around(pivot: u8) -> impl Strategy<Value = U8Range> {
+        (0u8..=pivot, pivot..=u8::MAX).prop_map(|(lo, hi)| U8Range { lo, hi })
     }
 
     proptest! {
@@ -586,12 +592,12 @@ mod tests {
             allow_all.extend(extra_allow);
             let mut block_all = extra_block;
             block_all.push(blocker);
-            let f = Filters {
+            let filters = Filters {
                 allow_msgid_in: allow_all,
                 block_msgid_in: block_all,
                 ..Filters::default()
             };
-            prop_assert!(!f.passes_in_filter(msgid, NodeId::new(0, 0)));
+            prop_assert!(!filters.passes_in_filter(msgid, NodeId::new(0, 0)));
         }
 
         #[test]
@@ -604,12 +610,12 @@ mod tests {
                 )
             }),
         ) {
-            let f = Filters {
+            let filters = Filters {
                 allow_src_sys_in: allow,
                 block_src_sys_in: vec![blocker],
                 ..Filters::default()
             };
-            prop_assert!(!f.passes_in_filter(0, NodeId::new(src_sys, 0)));
+            prop_assert!(!filters.passes_in_filter(0, NodeId::new(src_sys, 0)));
         }
 
         #[test]
@@ -622,12 +628,12 @@ mod tests {
                 )
             }),
         ) {
-            let f = Filters {
+            let filters = Filters {
                 allow_src_comp_in: allow,
                 block_src_comp_in: vec![blocker],
                 ..Filters::default()
             };
-            prop_assert!(!f.passes_in_filter(0, NodeId::new(0, src_comp)));
+            prop_assert!(!filters.passes_in_filter(0, NodeId::new(0, src_comp)));
         }
 
         // Block-wins-on-overlap also applies to the egress filter — the
@@ -649,12 +655,12 @@ mod tests {
             allow_all.extend(extra_allow);
             let mut block_all = extra_block;
             block_all.push(blocker);
-            let f = Filters {
+            let filters = Filters {
                 allow_msgid_out: allow_all,
                 block_msgid_out: block_all,
                 ..Filters::default()
             };
-            prop_assert!(!f.passes_out_filter(msgid, NodeId::new(0, 0)));
+            prop_assert!(!filters.passes_out_filter(msgid, NodeId::new(0, 0)));
         }
 
         // Empty allow lists impose no restriction: result equals "not in any
@@ -668,16 +674,16 @@ mod tests {
             block_sys in vec(u8_range(), 0..6),
             block_comp in vec(u8_range(), 0..6),
         ) {
-            let f = Filters {
+            let filters = Filters {
                 block_msgid_in: block_msgid.clone(),
                 block_src_sys_in: block_sys.clone(),
                 block_src_comp_in: block_comp.clone(),
                 ..Filters::default()
             };
-            let blocked = block_msgid.iter().any(|r| r.contains(msgid))
-                || block_sys.iter().any(|r| r.contains(src_sys))
-                || block_comp.iter().any(|r| r.contains(src_comp));
-            prop_assert_eq!(f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp)), !blocked);
+            let blocked = block_msgid.iter().any(|range| range.contains(msgid))
+                || block_sys.iter().any(|range| range.contains(src_sys))
+                || block_comp.iter().any(|range| range.contains(src_comp));
+            prop_assert_eq!(filters.passes_in_filter(msgid, NodeId::new(src_sys, src_comp)), !blocked);
         }
 
         // Non-empty allow: a value matched by no allow range is rejected
@@ -688,13 +694,13 @@ mod tests {
             allow in vec(msgid_range(), 1..5),
             block in vec(msgid_range(), 0..5),
         ) {
-            prop_assume!(!allow.iter().any(|r| r.contains(msgid)));
-            let f = Filters {
+            prop_assume!(!allow.iter().any(|range| range.contains(msgid)));
+            let filters = Filters {
                 allow_msgid_in: allow,
                 block_msgid_in: block,
                 ..Filters::default()
             };
-            prop_assert!(!f.passes_in_filter(msgid, NodeId::new(0, 0)));
+            prop_assert!(!filters.passes_in_filter(msgid, NodeId::new(0, 0)));
         }
 
         // Adding a range to the blocklist can only narrow acceptance: a frame
@@ -708,14 +714,14 @@ mod tests {
             block_msgid in vec(msgid_range(), 0..4),
             extra_block in msgid_range(),
         ) {
-            let mut f = Filters {
+            let mut filters = Filters {
                 allow_msgid_in: allow_msgid,
                 block_msgid_in: block_msgid,
                 ..Filters::default()
             };
-            let before = f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
-            f.block_msgid_in.push(extra_block);
-            let after = f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
+            let before = filters.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
+            filters.block_msgid_in.push(extra_block);
+            let after = filters.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
             // Monotone: `before == false` implies `after == false`.
             prop_assert!(before || !after);
         }
@@ -731,14 +737,14 @@ mod tests {
             block_msgid in vec(msgid_range(), 0..4),
             extra_allow in msgid_range(),
         ) {
-            let mut f = Filters {
+            let mut filters = Filters {
                 allow_msgid_in: allow_msgid,
                 block_msgid_in: block_msgid,
                 ..Filters::default()
             };
-            let before = f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
-            f.allow_msgid_in.push(extra_allow);
-            let after = f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
+            let before = filters.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
+            filters.allow_msgid_in.push(extra_allow);
+            let after = filters.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
             // Monotone: `before == true` implies `after == true`.
             prop_assert!(!before || after);
         }
@@ -831,7 +837,7 @@ mod tests {
             allow_comp in vec(u8_range(), 0..4),
             block_comp in vec(u8_range(), 0..4),
         ) {
-            let f = Filters {
+            let filters = Filters {
                 allow_msgid_in: allow_msgid.clone(),
                 block_msgid_in: block_msgid.clone(),
                 allow_src_sys_in: allow_sys.clone(),
@@ -844,7 +850,7 @@ mod tests {
             let sys_pass = pass_u8_axis(src_sys, &allow_sys, &block_sys);
             let comp_pass = pass_u8_axis(src_comp, &allow_comp, &block_comp);
             prop_assert_eq!(
-                f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp)),
+                filters.passes_in_filter(msgid, NodeId::new(src_sys, src_comp)),
                 msgid_pass && sys_pass && comp_pass,
             );
         }

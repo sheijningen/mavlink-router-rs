@@ -92,12 +92,12 @@ async fn pty_pair_round_trips_frame() {
 
     let frame = common::build_v2_heartbeat(0);
     slave.write_all(&frame).await.expect("slave write");
-    let rf = timeout(Duration::from_secs(2), frame_rx.recv())
+    let router_frame = timeout(Duration::from_secs(2), frame_rx.recv())
         .await
         .expect("frame_rx timeout")
         .expect("frame_rx closed");
-    assert_eq!(rf.endpoint_id, endpoint_id);
-    assert_eq!(&rf.frame[..], &frame[..]);
+    assert_eq!(router_frame.endpoint_id, endpoint_id);
+    assert_eq!(&router_frame.frame[..], &frame[..]);
     assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 1);
     assert_eq!(stats.rx_bytes.load(Ordering::Relaxed), frame.len() as u64);
 
@@ -105,12 +105,12 @@ async fn pty_pair_round_trips_frame() {
     let mut buf = vec![0u8; frame.len()];
     let mut got = 0;
     while got < frame.len() {
-        let n = timeout(Duration::from_secs(2), slave.read(&mut buf[got..]))
+        let bytes_read = timeout(Duration::from_secs(2), slave.read(&mut buf[got..]))
             .await
             .expect("slave read timeout")
             .expect("slave read");
-        assert!(n > 0, "EOF before full frame arrived");
-        got += n;
+        assert!(bytes_read > 0, "EOF before full frame arrived");
+        got += bytes_read;
     }
     assert_eq!(buf, frame);
     assert_eq!(stats.tx_frames.load(Ordering::Relaxed), 1);

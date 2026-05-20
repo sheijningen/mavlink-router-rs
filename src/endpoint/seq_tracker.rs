@@ -58,10 +58,10 @@ impl SeqTracker {
     /// Construct with an explicit threshold. Used by tests; production
     /// callers should always go through [`SeqTracker::new`].
     pub fn with_threshold(capacity: usize, threshold: u8) -> Self {
-        let cap = capacity.max(1);
+        let clamped = capacity.max(1);
         Self {
-            entries: Vec::with_capacity(cap),
-            capacity: cap,
+            entries: Vec::with_capacity(clamped),
+            capacity: clamped,
             threshold,
         }
     }
@@ -110,19 +110,19 @@ impl SeqTracker {
     }
 
     fn find_mut(&mut self, node: NodeId) -> Option<&mut Entry> {
-        self.entries.iter_mut().find(|e| e.node == node)
+        self.entries.iter_mut().find(|entry| entry.node == node)
     }
 
     fn evict_oldest(&mut self) {
-        let Some((idx, _)) = self
+        let Some((index, _)) = self
             .entries
             .iter()
             .enumerate()
-            .min_by_key(|(_, e)| e.last_seen)
+            .min_by_key(|(_, entry)| entry.last_seen)
         else {
             return;
         };
-        self.entries.swap_remove(idx);
+        self.entries.swap_remove(index);
     }
 }
 
@@ -132,23 +132,23 @@ mod tests {
     use rstest::rstest;
     use std::time::Duration;
 
-    fn at(ms: u64) -> Instant {
-        Instant::now() + Duration::from_millis(ms)
+    fn at(millis: u64) -> Instant {
+        Instant::now() + Duration::from_millis(millis)
     }
 
     #[test]
     fn first_observation_returns_zero() {
-        let mut t = SeqTracker::new(4);
-        assert_eq!(t.observe(NodeId::new(1, 1), 0, at(0)), 0);
-        assert_eq!(t.len(), 1);
+        let mut tracker = SeqTracker::new(4);
+        assert_eq!(tracker.observe(NodeId::new(1, 1), 0, at(0)), 0);
+        assert_eq!(tracker.len(), 1);
     }
 
     #[test]
     fn consecutive_seqs_return_zero_no_bump() {
-        let mut t = SeqTracker::new(4);
-        t.observe(NodeId::new(1, 1), 10, at(0));
-        for i in 11u8..=15u8 {
-            assert_eq!(t.observe(NodeId::new(1, 1), i, at(i as u64)), 0);
+        let mut tracker = SeqTracker::new(4);
+        tracker.observe(NodeId::new(1, 1), 10, at(0));
+        for seq in 11u8..=15u8 {
+            assert_eq!(tracker.observe(NodeId::new(1, 1), seq, at(seq as u64)), 0);
         }
     }
 
@@ -171,10 +171,10 @@ mod tests {
         #[case] threshold: u8,
         #[case] expected_loss: u32,
     ) {
-        let mut t = SeqTracker::with_threshold(4, threshold);
-        t.observe(NodeId::new(1, 1), last_seq, at(0));
+        let mut tracker = SeqTracker::with_threshold(4, threshold);
+        tracker.observe(NodeId::new(1, 1), last_seq, at(0));
         assert_eq!(
-            t.observe(NodeId::new(1, 1), current_seq, at(1)),
+            tracker.observe(NodeId::new(1, 1), current_seq, at(1)),
             expected_loss
         );
     }
@@ -185,45 +185,45 @@ mod tests {
         // is observed, `last_seq` must be updated to the post-restart seq —
         // not left pointing at the pre-restart value — so the next
         // consecutive observation is correctly classified.
-        let mut t = SeqTracker::with_threshold(4, 64);
-        t.observe(NodeId::new(1, 1), 10, at(0));
-        assert_eq!(t.observe(NodeId::new(1, 1), 200, at(1)), 0);
-        assert_eq!(t.observe(NodeId::new(1, 1), 201, at(2)), 0);
+        let mut tracker = SeqTracker::with_threshold(4, 64);
+        tracker.observe(NodeId::new(1, 1), 10, at(0));
+        assert_eq!(tracker.observe(NodeId::new(1, 1), 200, at(1)), 0);
+        assert_eq!(tracker.observe(NodeId::new(1, 1), 201, at(2)), 0);
     }
 
     #[test]
     fn distinct_identities_are_independent() {
-        let mut t = SeqTracker::new(4);
-        t.observe(NodeId::new(1, 1), 10, at(0));
-        t.observe(NodeId::new(2, 1), 20, at(0));
+        let mut tracker = SeqTracker::new(4);
+        tracker.observe(NodeId::new(1, 1), 10, at(0));
+        tracker.observe(NodeId::new(2, 1), 20, at(0));
         // Each identity tracks its own last_seq.
-        assert_eq!(t.observe(NodeId::new(1, 1), 11, at(1)), 0);
-        assert_eq!(t.observe(NodeId::new(2, 1), 22, at(1)), 1); // one lost
+        assert_eq!(tracker.observe(NodeId::new(1, 1), 11, at(1)), 0);
+        assert_eq!(tracker.observe(NodeId::new(2, 1), 22, at(1)), 1); // one lost
     }
 
     #[test]
     fn lru_eviction_drops_oldest_by_last_seen() {
-        let mut t = SeqTracker::new(2);
-        t.observe(NodeId::new(1, 1), 0, at(0));
-        t.observe(NodeId::new(2, 1), 0, at(10));
+        let mut tracker = SeqTracker::new(2);
+        tracker.observe(NodeId::new(1, 1), 0, at(0));
+        tracker.observe(NodeId::new(2, 1), 0, at(10));
         // Insert a third identity — evicts (1, 1), the oldest.
-        t.observe(NodeId::new(3, 1), 0, at(20));
-        assert_eq!(t.len(), 2);
+        tracker.observe(NodeId::new(3, 1), 0, at(20));
+        assert_eq!(tracker.len(), 2);
         // Now observing (1, 1, 5) — looks like a fresh insert (no prior).
         // Returns 0 even though we'd otherwise infer a gap.
-        assert_eq!(t.observe(NodeId::new(1, 1), 5, at(30)), 0);
+        assert_eq!(tracker.observe(NodeId::new(1, 1), 5, at(30)), 0);
         // And the second observation of (1, 1) after re-insertion behaves
         // like a normal continuation.
-        assert_eq!(t.observe(NodeId::new(1, 1), 7, at(40)), 1);
+        assert_eq!(tracker.observe(NodeId::new(1, 1), 7, at(40)), 1);
     }
 
     #[test]
     fn capacity_zero_clamps_to_one() {
-        let mut t = SeqTracker::new(0);
-        assert_eq!(t.capacity(), 1);
-        t.observe(NodeId::new(1, 1), 0, at(0));
+        let mut tracker = SeqTracker::new(0);
+        assert_eq!(tracker.capacity(), 1);
+        tracker.observe(NodeId::new(1, 1), 0, at(0));
         // Inserting a second identity evicts the first.
-        t.observe(NodeId::new(2, 1), 0, at(10));
-        assert_eq!(t.len(), 1);
+        tracker.observe(NodeId::new(2, 1), 0, at(10));
+        assert_eq!(tracker.len(), 1);
     }
 }

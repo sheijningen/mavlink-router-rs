@@ -16,9 +16,9 @@ async fn main() -> ExitCode {
 
     let toml = match cli.config.clone() {
         Some(path) => match TomlConfig::from_path(&path) {
-            Ok(t) => Some(t),
-            Err(e) => {
-                eprintln!("error: {e}");
+            Ok(toml) => Some(toml),
+            Err(err) => {
+                eprintln!("error: {err}");
                 return ExitCode::FAILURE;
             }
         },
@@ -26,9 +26,9 @@ async fn main() -> ExitCode {
     };
 
     let cli_cfg = match cli.into_cli_config() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
+        Ok(cli_cfg) => cli_cfg,
+        Err(err) => {
+            eprintln!("error: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -40,8 +40,8 @@ async fn main() -> ExitCode {
     // actually reach the operator.
     let (cfg, overrides) = match Config::merge(toml, cli_cfg) {
         Ok(outcome) => (outcome.config, outcome.overridden_names),
-        Err(e) => {
-            eprintln!("error: {e}");
+        Err(err) => {
+            eprintln!("error: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -63,8 +63,8 @@ async fn main() -> ExitCode {
 
     match run(cfg, token).await {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e}");
+        Err(err) => {
+            eprintln!("error: {err}");
             ExitCode::FAILURE
         }
     }

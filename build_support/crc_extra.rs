@@ -12,8 +12,8 @@
 const CRC_INIT: u16 = 0xFFFF;
 
 #[inline]
-fn crc16_update(crc: &mut u16, b: u8) {
-    let tmp = b ^ ((*crc & 0xFF) as u8);
+fn crc16_update(crc: &mut u16, byte: u8) {
+    let tmp = byte ^ ((*crc & 0xFF) as u8);
     let tmp = tmp ^ (tmp << 4);
     let tmp16 = tmp as u16;
     *crc = (*crc >> 8) ^ (tmp16 << 8) ^ (tmp16 << 3) ^ (tmp16 >> 4);
@@ -53,28 +53,28 @@ fn crc_type(type_name: &str) -> &str {
 }
 
 pub(crate) fn crc_extra_for_message(msg_name: &str, fields: &[CrcExtraField<'_>]) -> u8 {
-    let mut base: Vec<&CrcExtraField<'_>> = fields.iter().filter(|f| !f.is_extension).collect();
+    let mut base: Vec<&CrcExtraField<'_>> = fields.iter().filter(|field| !field.is_extension).collect();
     // Stable sort by element size, descending.
-    base.sort_by(|a, b| type_size(b.type_name).cmp(&type_size(a.type_name)));
+    base.sort_by(|left, right| type_size(right.type_name).cmp(&type_size(left.type_name)));
 
     let mut crc = CRC_INIT;
-    for &b in msg_name.as_bytes() {
-        crc16_update(&mut crc, b);
+    for &byte in msg_name.as_bytes() {
+        crc16_update(&mut crc, byte);
     }
     crc16_update(&mut crc, b' ');
 
-    for f in base {
-        let t = crc_type(f.type_name);
-        for &b in t.as_bytes() {
-            crc16_update(&mut crc, b);
+    for field in base {
+        let type_for_crc = crc_type(field.type_name);
+        for &byte in type_for_crc.as_bytes() {
+            crc16_update(&mut crc, byte);
         }
         crc16_update(&mut crc, b' ');
-        for &b in f.name.as_bytes() {
-            crc16_update(&mut crc, b);
+        for &byte in field.name.as_bytes() {
+            crc16_update(&mut crc, byte);
         }
         crc16_update(&mut crc, b' ');
-        if f.array_length > 0 {
-            crc16_update(&mut crc, f.array_length);
+        if field.array_length > 0 {
+            crc16_update(&mut crc, field.array_length);
         }
     }
 
@@ -87,13 +87,13 @@ mod tests {
 
     fn crc16_mcrf4xx(bytes: &[u8]) -> u16 {
         let mut crc = CRC_INIT;
-        for &b in bytes {
-            crc16_update(&mut crc, b);
+        for &byte in bytes {
+            crc16_update(&mut crc, byte);
         }
         crc
     }
 
-    fn f(name: &'static str, type_name: &'static str) -> CrcExtraField<'static> {
+    fn field(name: &'static str, type_name: &'static str) -> CrcExtraField<'static> {
         CrcExtraField {
             name,
             type_name,
@@ -101,7 +101,7 @@ mod tests {
             is_extension: false,
         }
     }
-    fn fx(name: &'static str, type_name: &'static str) -> CrcExtraField<'static> {
+    fn extension_field(name: &'static str, type_name: &'static str) -> CrcExtraField<'static> {
         CrcExtraField {
             name,
             type_name,
@@ -109,7 +109,7 @@ mod tests {
             is_extension: true,
         }
     }
-    fn fa(name: &'static str, type_name: &'static str, len: u8) -> CrcExtraField<'static> {
+    fn array_field(name: &'static str, type_name: &'static str, len: u8) -> CrcExtraField<'static> {
         CrcExtraField {
             name,
             type_name,
@@ -134,12 +134,12 @@ mod tests {
     #[test]
     fn crc_extra_heartbeat() {
         let fields = &[
-            f("type", "uint8_t"),
-            f("autopilot", "uint8_t"),
-            f("base_mode", "uint8_t"),
-            f("custom_mode", "uint32_t"),
-            f("system_status", "uint8_t"),
-            f("mavlink_version", "uint8_t_mavlink_version"),
+            field("type", "uint8_t"),
+            field("autopilot", "uint8_t"),
+            field("base_mode", "uint8_t"),
+            field("custom_mode", "uint32_t"),
+            field("system_status", "uint8_t"),
+            field("mavlink_version", "uint8_t_mavlink_version"),
         ];
         assert_eq!(crc_extra_for_message("HEARTBEAT", fields), 50);
     }
@@ -149,22 +149,22 @@ mod tests {
     #[test]
     fn crc_extra_sys_status() {
         let fields = &[
-            f("onboard_control_sensors_present", "uint32_t"),
-            f("onboard_control_sensors_enabled", "uint32_t"),
-            f("onboard_control_sensors_health", "uint32_t"),
-            f("load", "uint16_t"),
-            f("voltage_battery", "uint16_t"),
-            f("current_battery", "int16_t"),
-            f("battery_remaining", "int8_t"),
-            f("drop_rate_comm", "uint16_t"),
-            f("errors_comm", "uint16_t"),
-            f("errors_count1", "uint16_t"),
-            f("errors_count2", "uint16_t"),
-            f("errors_count3", "uint16_t"),
-            f("errors_count4", "uint16_t"),
-            fx("onboard_control_sensors_present_extended", "uint32_t"),
-            fx("onboard_control_sensors_enabled_extended", "uint32_t"),
-            fx("onboard_control_sensors_health_extended", "uint32_t"),
+            field("onboard_control_sensors_present", "uint32_t"),
+            field("onboard_control_sensors_enabled", "uint32_t"),
+            field("onboard_control_sensors_health", "uint32_t"),
+            field("load", "uint16_t"),
+            field("voltage_battery", "uint16_t"),
+            field("current_battery", "int16_t"),
+            field("battery_remaining", "int8_t"),
+            field("drop_rate_comm", "uint16_t"),
+            field("errors_comm", "uint16_t"),
+            field("errors_count1", "uint16_t"),
+            field("errors_count2", "uint16_t"),
+            field("errors_count3", "uint16_t"),
+            field("errors_count4", "uint16_t"),
+            extension_field("onboard_control_sensors_present_extended", "uint32_t"),
+            extension_field("onboard_control_sensors_enabled_extended", "uint32_t"),
+            extension_field("onboard_control_sensors_health_extended", "uint32_t"),
         ];
         assert_eq!(crc_extra_for_message("SYS_STATUS", fields), 124);
     }
@@ -173,8 +173,8 @@ mod tests {
     #[test]
     fn crc_extra_system_time() {
         let fields = &[
-            f("time_unix_usec", "uint64_t"),
-            f("time_boot_ms", "uint32_t"),
+            field("time_unix_usec", "uint64_t"),
+            field("time_boot_ms", "uint32_t"),
         ];
         assert_eq!(crc_extra_for_message("SYSTEM_TIME", fields), 137);
     }
@@ -184,10 +184,10 @@ mod tests {
     #[test]
     fn crc_extra_ping() {
         let fields = &[
-            f("time_usec", "uint64_t"),
-            f("seq", "uint32_t"),
-            f("target_system", "uint8_t"),
-            f("target_component", "uint8_t"),
+            field("time_usec", "uint64_t"),
+            field("seq", "uint32_t"),
+            field("target_system", "uint8_t"),
+            field("target_component", "uint8_t"),
         ];
         assert_eq!(crc_extra_for_message("PING", fields), 237);
     }
@@ -197,13 +197,13 @@ mod tests {
     #[test]
     fn crc_extra_attitude() {
         let fields = &[
-            f("time_boot_ms", "uint32_t"),
-            f("roll", "float"),
-            f("pitch", "float"),
-            f("yaw", "float"),
-            f("rollspeed", "float"),
-            f("pitchspeed", "float"),
-            f("yawspeed", "float"),
+            field("time_boot_ms", "uint32_t"),
+            field("roll", "float"),
+            field("pitch", "float"),
+            field("yaw", "float"),
+            field("rollspeed", "float"),
+            field("pitchspeed", "float"),
+            field("yawspeed", "float"),
         ];
         assert_eq!(crc_extra_for_message("ATTITUDE", fields), 39);
     }
@@ -213,12 +213,12 @@ mod tests {
     #[test]
     fn crc_extra_gps_status_arrays() {
         let fields = &[
-            f("satellites_visible", "uint8_t"),
-            fa("satellite_prn", "uint8_t", 20),
-            fa("satellite_used", "uint8_t", 20),
-            fa("satellite_elevation", "uint8_t", 20),
-            fa("satellite_azimuth", "uint8_t", 20),
-            fa("satellite_snr", "uint8_t", 20),
+            field("satellites_visible", "uint8_t"),
+            array_field("satellite_prn", "uint8_t", 20),
+            array_field("satellite_used", "uint8_t", 20),
+            array_field("satellite_elevation", "uint8_t", 20),
+            array_field("satellite_azimuth", "uint8_t", 20),
+            array_field("satellite_snr", "uint8_t", 20),
         ];
         assert_eq!(crc_extra_for_message("GPS_STATUS", fields), 23);
     }

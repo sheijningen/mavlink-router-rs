@@ -24,11 +24,11 @@ use crate::common::{shutdown_all, wait_for_state};
 async fn udps_listener_transitions_reconnecting_to_connected_on_bind() {
     let allocator = Arc::new(EndpointIdAllocator::new());
     let cancel = CancellationToken::new();
-    let h = spawn_udps(&allocator, cancel.clone(), "p").await;
+    let harness = spawn_udps(&allocator, cancel.clone(), "p").await;
     // spawn_udps awaits the bound_addr handshake, so by the time it returns
     // the listener has bound — state must be Connected.
-    assert_eq!(h.stats.load_state(), EndpointState::Connected);
-    shutdown_all(&cancel, [h.task]).await;
+    assert_eq!(harness.stats.load_state(), EndpointState::Connected);
+    shutdown_all(&cancel, [harness.task]).await;
 }
 
 #[tokio::test]
@@ -40,13 +40,13 @@ async fn udpc_transitions_to_connected_after_local_bind() {
         .expect("bind dummy")
         .local_addr()
         .expect("local_addr");
-    let h = spawn_udpc(
+    let harness = spawn_udpc(
         &allocator,
         cancel.clone(),
         configured,
         UdpClientEndpoint::default(),
         "c",
     );
-    wait_for_state(&h.stats, EndpointState::Connected, "after udpc bind").await;
-    shutdown_all(&cancel, [h.task]).await;
+    wait_for_state(&harness.stats, EndpointState::Connected, "after udpc bind").await;
+    shutdown_all(&cancel, [harness.task]).await;
 }

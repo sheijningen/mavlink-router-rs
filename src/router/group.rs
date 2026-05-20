@@ -104,10 +104,10 @@ mod tests {
 
     #[test]
     fn join_creates_group_with_first_member_capacity() {
-        let mut reg = GroupRegistry::new();
+        let mut registry = GroupRegistry::new();
         let name = Arc::<str>::from("uplink");
-        assert_eq!(reg.join(name.clone(), 7), 1);
-        let entry = reg.get(&name).expect("group present after join");
+        assert_eq!(registry.join(name.clone(), 7), 1);
+        let entry = registry.get(&name).expect("group present after join");
         assert_eq!(entry.learn.capacity(), 7);
         assert_eq!(entry.member_count(), 1);
     }
@@ -116,38 +116,38 @@ mod tests {
     fn join_existing_group_keeps_capacity_silently() {
         // First-member-wins: capacity is set on first join; later joiners
         // get the existing table regardless of the capacity they passed.
-        let mut reg = GroupRegistry::new();
+        let mut registry = GroupRegistry::new();
         let name = Arc::<str>::from("uplink");
-        reg.join(name.clone(), 7);
-        assert_eq!(reg.join(name.clone(), 99), 2);
-        let entry = reg.get(&name).expect("group still present");
+        registry.join(name.clone(), 7);
+        assert_eq!(registry.join(name.clone(), 99), 2);
+        let entry = registry.get(&name).expect("group still present");
         assert_eq!(entry.learn.capacity(), 7, "capacity must not be resized");
         assert_eq!(entry.member_count(), 2);
     }
 
     #[test]
     fn leave_drops_group_when_last_member_leaves() {
-        let mut reg = GroupRegistry::new();
+        let mut registry = GroupRegistry::new();
         let name = Arc::<str>::from("uplink");
-        reg.join(name.clone(), 4);
-        reg.join(name.clone(), 4);
-        assert_eq!(reg.len(), 1);
-        reg.leave(&name);
-        assert!(reg.get(&name).is_some(), "still has one member");
-        reg.leave(&name);
+        registry.join(name.clone(), 4);
+        registry.join(name.clone(), 4);
+        assert_eq!(registry.len(), 1);
+        registry.leave(&name);
+        assert!(registry.get(&name).is_some(), "still has one member");
+        registry.leave(&name);
         assert!(
-            reg.get(&name).is_none(),
+            registry.get(&name).is_none(),
             "group should be removed at last leave"
         );
-        assert!(reg.is_empty());
+        assert!(registry.is_empty());
     }
 
     #[test]
     fn leave_unknown_group_is_a_noop() {
-        let mut reg = GroupRegistry::new();
+        let mut registry = GroupRegistry::new();
         let name = Arc::<str>::from("does-not-exist");
-        reg.leave(&name);
-        assert!(reg.is_empty());
+        registry.leave(&name);
+        assert!(registry.is_empty());
     }
 
     #[test]
@@ -155,12 +155,12 @@ mod tests {
         // Touching the group's table from one access path must be visible
         // when read back via the same registry — confirms the registry
         // returns the same underlying table on every `get_mut`.
-        let mut reg = GroupRegistry::new();
+        let mut registry = GroupRegistry::new();
         let name = Arc::<str>::from("uplink");
-        reg.join(name.clone(), 4);
-        let g = reg.get_mut(&name).unwrap();
-        g.learn.touch(NodeId::new(7, 1), now_at(0));
-        let g2 = reg.get(&name).unwrap();
-        assert!(g2.learn.contains(NodeId::new(7, 1)));
+        registry.join(name.clone(), 4);
+        let group_mut = registry.get_mut(&name).unwrap();
+        group_mut.learn.touch(NodeId::new(7, 1), now_at(0));
+        let group_ref = registry.get(&name).unwrap();
+        assert!(group_ref.learn.contains(NodeId::new(7, 1)));
     }
 }

@@ -45,15 +45,19 @@ impl TcpClientSpec {
     /// `endpoint_id` and `name` because the parser doesn't allocate IDs. The
     /// TxQueue's depth (`tx_queue_frames`) is consumed by the spawner before
     /// the spec is built — it sizes the queue and never appears here.
-    pub fn from_endpoint(ep: TcpClientEndpoint, endpoint_id: EndpointId, name: String) -> Self {
+    pub fn from_endpoint(
+        endpoint: TcpClientEndpoint,
+        endpoint_id: EndpointId,
+        name: String,
+    ) -> Self {
         Self {
-            host: ep.host,
-            port: ep.port,
+            host: endpoint.host,
+            port: endpoint.port,
             endpoint_id,
             name,
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
-            identity: ep.identity,
+            identity: endpoint.identity,
         }
     }
 }
@@ -105,7 +109,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
         }
 
         let stream = match dial_with_dns(&host, port, &cancel).await {
-            DialOutcome::Connected(s) => s,
+            DialOutcome::Connected(stream) => stream,
             DialOutcome::Cancelled => {
                 tx_queue.drain_and_discard();
                 return;
@@ -119,8 +123,8 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
             }
         };
 
-        if let Err(e) = configure_tcp_stream(&stream) {
-            warn!(error = %e, "tcpc configure_tcp_stream failed");
+        if let Err(err) = configure_tcp_stream(&stream) {
+            warn!(error = %err, "tcpc configure_tcp_stream failed");
         }
 
         backoff.reset();
@@ -184,9 +188,9 @@ async fn dial_with_dns(host: &str, port: u16, cancel: &CancellationToken) -> Dia
     }
     for target in resolved {
         match connect_one(target, cancel).await {
-            DialOutcome::Connected(s) => {
+            DialOutcome::Connected(stream) => {
                 info!(%target, "tcpc connected");
-                return DialOutcome::Connected(s);
+                return DialOutcome::Connected(stream);
             }
             DialOutcome::Cancelled => return DialOutcome::Cancelled,
             DialOutcome::Failed => continue,
@@ -200,9 +204,9 @@ async fn connect_one(target: SocketAddr, cancel: &CancellationToken) -> DialOutc
         biased;
         _ = cancel.cancelled() => DialOutcome::Cancelled,
         res = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(target)) => match res {
-            Ok(Ok(s)) => DialOutcome::Connected(s),
-            Ok(Err(e)) => {
-                warn!(error = %e, %target, "tcpc connect failed");
+            Ok(Ok(stream)) => DialOutcome::Connected(stream),
+            Ok(Err(err)) => {
+                warn!(error = %err, %target, "tcpc connect failed");
                 DialOutcome::Failed
             }
             Err(_) => {
@@ -214,15 +218,15 @@ async fn connect_one(target: SocketAddr, cancel: &CancellationToken) -> DialOutc
 }
 
 async fn resolve_to_socket_addrs(host: &str, port: u16) -> Vec<SocketAddr> {
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return vec![SocketAddr::new(ip, port)];
+    if let Ok(ip_addr) = host.parse::<IpAddr>() {
+        return vec![SocketAddr::new(ip_addr, port)];
     }
     let target = format!("{host}:{port}");
     match lookup_host(target.as_str()).await {
         Ok(addrs) => {
             let mut all: Vec<SocketAddr> = addrs.collect();
             // CLAUDE.md: "prefer v4 on tie, since most MAVLink ecosystems are v4-only".
-            all.sort_by_key(|sa| match sa.ip() {
+            all.sort_by_key(|addr| match addr.ip() {
                 IpAddr::V4(_) => 0u8,
                 IpAddr::V6(_) => 1u8,
             });
@@ -231,8 +235,8 @@ async fn resolve_to_socket_addrs(host: &str, port: u16) -> Vec<SocketAddr> {
             }
             all
         }
-        Err(e) => {
-            warn!(error = %e, %host, "tcpc DNS resolution failed");
+        Err(err) => {
+            warn!(error = %err, %host, "tcpc DNS resolution failed");
             Vec::new()
         }
     }
@@ -245,26 +249,26 @@ mod tests {
 
     #[test]
     fn spec_defaults_when_endpoint_unset() {
-        let ep = TcpClientEndpoint::default();
-        let spec = TcpClientSpec::from_endpoint(ep, EndpointId(0), "n".into());
+        let endpoint = TcpClientEndpoint::default();
+        let spec = TcpClientSpec::from_endpoint(endpoint, EndpointId(0), "n".into());
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     }
 
     #[tokio::test]
     async fn resolve_ipv4_literal_short_circuits_dns() {
-        let v = resolve_to_socket_addrs("127.0.0.1", 5760).await;
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
-        assert_eq!(v[0].port(), 5760);
+        let addrs = resolve_to_socket_addrs("127.0.0.1", 5760).await;
+        assert_eq!(addrs.len(), 1);
+        assert_eq!(addrs[0].ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(addrs[0].port(), 5760);
     }
 
     #[tokio::test]
     async fn resolve_ipv6_literal_short_circuits_dns() {
-        let v = resolve_to_socket_addrs("::1", 5760).await;
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
-        assert_eq!(v[0].port(), 5760);
+        let addrs = resolve_to_socket_addrs("::1", 5760).await;
+        assert_eq!(addrs.len(), 1);
+        assert_eq!(addrs[0].ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+        assert_eq!(addrs[0].port(), 5760);
     }
 
     /// Cancellation set before the call must short-circuit `connect_one`

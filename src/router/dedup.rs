@@ -56,11 +56,11 @@ impl DedupWindow {
     /// `Duration::ZERO` disables the window (CLAUDE.md: "`dedup_ms == 0`
     /// turns dedup off").
     pub fn new(ttl: Duration, capacity: usize) -> Self {
-        let cap = capacity.max(1);
+        let clamped = capacity.max(1);
         Self {
-            ring: VecDeque::with_capacity(if ttl.is_zero() { 0 } else { cap }),
-            set: HashSet::with_capacity(if ttl.is_zero() { 0 } else { cap }),
-            capacity: cap,
+            ring: VecDeque::with_capacity(if ttl.is_zero() { 0 } else { clamped }),
+            set: HashSet::with_capacity(if ttl.is_zero() { 0 } else { clamped }),
+            capacity: clamped,
             ttl,
         }
     }
@@ -133,8 +133,8 @@ impl DedupWindow {
 mod tests {
     use super::*;
 
-    fn at(ms: u64) -> Instant {
-        Instant::now() + Duration::from_millis(ms)
+    fn at(millis: u64) -> Instant {
+        Instant::now() + Duration::from_millis(millis)
     }
 
     fn make_frame(bytes: &'static [u8]) -> Bytes {
@@ -143,57 +143,57 @@ mod tests {
 
     #[test]
     fn disabled_window_never_hits_and_stays_empty() {
-        let mut w = DedupWindow::new(Duration::ZERO, 16);
-        assert!(!w.is_enabled());
+        let mut window = DedupWindow::new(Duration::ZERO, 16);
+        assert!(!window.is_enabled());
         for _ in 0..10 {
-            assert!(!w.check_and_insert(&make_frame(b"abc"), Instant::now()));
+            assert!(!window.check_and_insert(&make_frame(b"abc"), Instant::now()));
         }
-        assert_eq!(w.len(), 0);
+        assert_eq!(window.len(), 0);
     }
 
     #[test]
     fn first_insert_misses_second_identical_hits() {
-        let mut w = DedupWindow::new(Duration::from_millis(100), 16);
-        let f = make_frame(b"hello");
-        assert!(!w.check_and_insert(&f, at(0)));
-        assert!(w.check_and_insert(&f, at(0)));
+        let mut window = DedupWindow::new(Duration::from_millis(100), 16);
+        let frame = make_frame(b"hello");
+        assert!(!window.check_and_insert(&frame, at(0)));
+        assert!(window.check_and_insert(&frame, at(0)));
     }
 
     #[test]
     fn distinct_frames_both_admitted() {
-        let mut w = DedupWindow::new(Duration::from_millis(100), 16);
-        assert!(!w.check_and_insert(&make_frame(b"frame-a"), at(0)));
-        assert!(!w.check_and_insert(&make_frame(b"frame-b"), at(0)));
-        assert_eq!(w.len(), 2);
+        let mut window = DedupWindow::new(Duration::from_millis(100), 16);
+        assert!(!window.check_and_insert(&make_frame(b"frame-a"), at(0)));
+        assert!(!window.check_and_insert(&make_frame(b"frame-b"), at(0)));
+        assert_eq!(window.len(), 2);
     }
 
     #[test]
     fn ttl_expiry_drops_old_entries_then_admits_repeat() {
         // After TTL elapses, the same frame must be admitted again.
-        let mut w = DedupWindow::new(Duration::from_millis(50), 16);
-        let f = make_frame(b"telemetry");
-        assert!(!w.check_and_insert(&f, at(0)));
+        let mut window = DedupWindow::new(Duration::from_millis(50), 16);
+        let frame = make_frame(b"telemetry");
+        assert!(!window.check_and_insert(&frame, at(0)));
         // 25ms — still within window
-        assert!(w.check_and_insert(&f, at(25)));
+        assert!(window.check_and_insert(&frame, at(25)));
         // 55ms — past TTL; the next call sees the entry as expired before
         // hashing the new arrival, then admits.
-        assert!(!w.check_and_insert(&f, at(55)));
+        assert!(!window.check_and_insert(&frame, at(55)));
     }
 
     #[test]
     fn capacity_oldest_evicted_when_full() {
-        let mut w = DedupWindow::new(Duration::from_millis(1000), 2);
-        assert!(!w.check_and_insert(&make_frame(b"a"), at(0)));
-        assert!(!w.check_and_insert(&make_frame(b"b"), at(10)));
+        let mut window = DedupWindow::new(Duration::from_millis(1000), 2);
+        assert!(!window.check_and_insert(&make_frame(b"a"), at(0)));
+        assert!(!window.check_and_insert(&make_frame(b"b"), at(10)));
         // Inserting a third must evict the oldest ("a"). Both b and c
         // remain live; a is gone.
-        assert!(!w.check_and_insert(&make_frame(b"c"), at(20)));
-        assert_eq!(w.len(), 2);
+        assert!(!window.check_and_insert(&make_frame(b"c"), at(20)));
+        assert_eq!(window.len(), 2);
         // "a" was evicted, so re-inserting it is a miss again.
-        assert!(!w.check_and_insert(&make_frame(b"a"), at(30)));
-        assert_eq!(w.len(), 2, "a's admission evicted b");
+        assert!(!window.check_and_insert(&make_frame(b"a"), at(30)));
+        assert_eq!(window.len(), 2, "a's admission evicted b");
         // "b" is what got evicted by the previous insert.
-        assert!(!w.check_and_insert(&make_frame(b"b"), at(40)));
+        assert!(!window.check_and_insert(&make_frame(b"b"), at(40)));
     }
 
     #[test]
@@ -201,21 +201,21 @@ mod tests {
         // Regression guard: TTL-expired hashes must leave the HashSet, not
         // just the ring — otherwise a "replay after expiry" frame would be
         // a false positive.
-        let mut w = DedupWindow::new(Duration::from_millis(10), 16);
-        let f = make_frame(b"repeat");
-        assert!(!w.check_and_insert(&f, at(0)));
+        let mut window = DedupWindow::new(Duration::from_millis(10), 16);
+        let frame = make_frame(b"repeat");
+        assert!(!window.check_and_insert(&frame, at(0)));
         // 30ms — well past TTL.
-        assert!(!w.check_and_insert(&f, at(30)));
-        assert_eq!(w.len(), 1);
+        assert!(!window.check_and_insert(&frame, at(30)));
+        assert_eq!(window.len(), 1);
     }
 
     #[test]
     fn capacity_zero_is_clamped_to_one() {
-        let mut w = DedupWindow::new(Duration::from_millis(50), 0);
-        assert!(!w.check_and_insert(&make_frame(b"a"), at(0)));
+        let mut window = DedupWindow::new(Duration::from_millis(50), 0);
+        assert!(!window.check_and_insert(&make_frame(b"a"), at(0)));
         // Capacity is 1, so admitting "b" evicts "a".
-        assert!(!w.check_and_insert(&make_frame(b"b"), at(0)));
-        assert_eq!(w.len(), 1);
+        assert!(!window.check_and_insert(&make_frame(b"b"), at(0)));
+        assert_eq!(window.len(), 1);
     }
 
     #[test]
@@ -224,16 +224,16 @@ mod tests {
         // the same frame on two different transports — each producing its
         // own backing allocation. Dedup must collide on identical content
         // regardless of which buffer the bytes were copied from.
-        let mut w = DedupWindow::new(Duration::from_millis(100), 16);
+        let mut window = DedupWindow::new(Duration::from_millis(100), 16);
         let content: &[u8] = &[0xFD, 9, 0, 0, 0, 1, 1, 0, 0, 0, 1, 2, 3, 4];
-        let a = Bytes::copy_from_slice(content);
-        let b = Bytes::copy_from_slice(content);
+        let first = Bytes::copy_from_slice(content);
+        let second = Bytes::copy_from_slice(content);
         assert_ne!(
-            a.as_ptr(),
-            b.as_ptr(),
+            first.as_ptr(),
+            second.as_ptr(),
             "test setup requires independent allocations"
         );
-        assert!(!w.check_and_insert(&a, at(0)));
-        assert!(w.check_and_insert(&b, at(0)));
+        assert!(!window.check_and_insert(&first, at(0)));
+        assert!(window.check_and_insert(&second, at(0)));
     }
 }

@@ -66,9 +66,9 @@ pub async fn spawn_tcps(
     };
     let parent_id = allocator.alloc();
     let spec = TcpServerSpec::from_endpoint(endpoint, parent_id, name.to_string());
-    let h = spawn_tcps_with_spec(allocator, cancel, spec);
-    wait_for_state(&h.stats, EndpointState::Connected, "tcps bind").await;
-    h
+    let harness = spawn_tcps_with_spec(allocator, cancel, spec);
+    wait_for_state(&harness.stats, EndpointState::Connected, "tcps bind").await;
+    harness
 }
 
 /// Spawn a `tcps:` listener with a fully-constructed `TcpServerSpec`. The
@@ -202,9 +202,9 @@ pub async fn connect_with_retry(addr: SocketAddr, deadline: Duration) -> TcpStre
     let mut last_err: Option<std::io::Error> = None;
     while start.elapsed() < deadline {
         match TcpStream::connect(addr).await {
-            Ok(s) => return s,
-            Err(e) => {
-                last_err = Some(e);
+            Ok(stream) => return stream,
+            Err(err) => {
+                last_err = Some(err);
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }

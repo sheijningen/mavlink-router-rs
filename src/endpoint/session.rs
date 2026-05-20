@@ -55,7 +55,7 @@ pub async fn run_session<S>(
 where
     S: AsyncRead + AsyncWrite,
 {
-    let (mut rh, mut wh) = tokio::io::split(stream);
+    let (mut read_half, mut write_half) = tokio::io::split(stream);
     let mut framer = Framer::with_capacity(READ_BUF_BYTES);
     let mut framer_counters = FramerCounters::new();
     let mut seq_tracker = SeqTracker::new(SEQ_TRACKER_CAPACITY);
@@ -64,7 +64,7 @@ where
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return SessionOutcome::Terminated,
-            res = rh.read_buf(framer.buffer_mut()) => {
+            res = read_half.read_buf(framer.buffer_mut()) => {
                 if let ControlFlow::Break(outcome) = handle_read_result(
                     res,
                     &mut framer,
@@ -79,7 +79,7 @@ where
                 }
             }
             frame = tx_queue.pop_or_wait() => {
-                if let ControlFlow::Break(outcome) = write_outbound_frame(&mut wh, frame, stats).await {
+                if let ControlFlow::Break(outcome) = write_outbound_frame(&mut write_half, frame, stats).await {
                     return outcome;
                 }
             }
@@ -103,8 +103,8 @@ async fn handle_read_result(
             debug!("read returned EOF (peer closed)");
             return ControlFlow::Break(SessionOutcome::Disconnected);
         }
-        Err(e) => {
-            warn!(error = %e, "session read failed");
+        Err(err) => {
+            warn!(error = %err, "session read failed");
             return ControlFlow::Break(SessionOutcome::Disconnected);
         }
         Ok(_) => {}
@@ -176,12 +176,12 @@ pub(crate) async fn forward_inbound_frames(
 }
 
 async fn write_outbound_frame<W: AsyncWrite + Unpin>(
-    wh: &mut W,
+    write_half: &mut W,
     frame: Bytes,
     stats: &EndpointStats,
 ) -> ControlFlow<SessionOutcome> {
-    if let Err(e) = wh.write_all(&frame).await {
-        warn!(error = %e, "session write failed");
+    if let Err(err) = write_half.write_all(&frame).await {
+        warn!(error = %err, "session write failed");
         return ControlFlow::Break(SessionOutcome::Disconnected);
     }
     stats.add_tx_frame(frame.len());
@@ -217,9 +217,9 @@ mod tests {
         let mut crc = Crc16::new();
         crc.update_slice(&frame[1..]);
         crc.update(50);
-        let c = crc.finalize();
-        frame.push((c & 0xFF) as u8);
-        frame.push((c >> 8) as u8);
+        let crc_value = crc.finalize();
+        frame.push((crc_value & 0xFF) as u8);
+        frame.push((crc_value >> 8) as u8);
         frame
     }
 
@@ -320,9 +320,9 @@ mod tests {
         .await;
         assert_eq!(out, ControlFlow::Continue(()));
 
-        let rf = rx.try_recv().expect("frame should be forwarded");
-        assert_eq!(rf.endpoint_id, id);
-        assert_eq!(&rf.frame[..], &bytes[..]);
+        let router_frame = rx.try_recv().expect("frame should be forwarded");
+        assert_eq!(router_frame.endpoint_id, id);
+        assert_eq!(&router_frame.frame[..], &bytes[..]);
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 1);
         assert_eq!(stats.rx_bytes.load(Ordering::Relaxed), bytes.len() as u64);
     }
@@ -612,9 +612,9 @@ mod tests {
         let mut crc = Crc16::new();
         crc.update_slice(&frame[1..]);
         crc.update(50);
-        let c = crc.finalize();
-        frame.push((c & 0xFF) as u8);
-        frame.push((c >> 8) as u8);
+        let crc_value = crc.finalize();
+        frame.push((crc_value & 0xFF) as u8);
+        frame.push((crc_value >> 8) as u8);
         frame
     }
 
@@ -674,8 +674,8 @@ mod tests {
     async fn seq_tracker_consecutive_seqs_no_bump() {
         let frames: Vec<Vec<u8>> = (0u8..=4u8).map(build_v1_heartbeat_with_seq).collect();
         let mut framer = Framer::with_capacity(256);
-        for f in &frames {
-            framer.buffer_mut().put_slice(f);
+        for frame in &frames {
+            framer.buffer_mut().put_slice(frame);
         }
         let stats = Arc::new(EndpointStats::default());
         let (tx, _rx) = mpsc::channel(16);
@@ -750,8 +750,8 @@ mod tests {
         }
 
         let stats = Arc::new(EndpointStats::default());
-        let mut w = AlwaysErr;
-        let out = write_outbound_frame(&mut w, Bytes::from_static(b"hi"), &stats).await;
+        let mut writer = AlwaysErr;
+        let out = write_outbound_frame(&mut writer, Bytes::from_static(b"hi"), &stats).await;
         assert_eq!(out, ControlFlow::Break(SessionOutcome::Disconnected));
         assert_eq!(stats.tx_frames.load(Ordering::Relaxed), 0);
         assert_eq!(stats.tx_bytes.load(Ordering::Relaxed), 0);

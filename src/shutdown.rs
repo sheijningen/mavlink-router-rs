@@ -19,8 +19,8 @@ pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 pub async fn watch_for_shutdown_signal(token: CancellationToken) {
     let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            warn!(error = %e, "ctrl-c handler failed; signal source unavailable");
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            warn!(error = %err, "ctrl-c handler failed; signal source unavailable");
             std::future::pending::<()>().await
         }
     };
@@ -29,11 +29,11 @@ pub async fn watch_for_shutdown_signal(token: CancellationToken) {
     let sigterm = async {
         use tokio::signal::unix::{SignalKind, signal};
         match signal(SignalKind::terminate()) {
-            Ok(mut s) => {
-                s.recv().await;
+            Ok(mut sigterm_stream) => {
+                sigterm_stream.recv().await;
             }
-            Err(e) => {
-                warn!(error = %e, "SIGTERM handler install failed");
+            Err(err) => {
+                warn!(error = %err, "SIGTERM handler install failed");
                 std::future::pending::<()>().await
             }
         }
@@ -125,10 +125,10 @@ mod tests {
         let mut tasks: JoinSet<()> = JoinSet::new();
         let counter = Arc::new(AtomicUsize::new(0));
         for _ in 0..3 {
-            let c = counter.clone();
+            let counter_clone = counter.clone();
             tasks.spawn(async move {
                 tokio::time::sleep(Duration::from_millis(20)).await;
-                c.fetch_add(1, Ordering::Relaxed);
+                counter_clone.fetch_add(1, Ordering::Relaxed);
             });
         }
         shutdown(tasks, Duration::from_secs(5)).await;
@@ -140,10 +140,10 @@ mod tests {
         let mut tasks: JoinSet<()> = JoinSet::new();
         let counter = Arc::new(AtomicUsize::new(0));
         for _ in 0..2 {
-            let c = counter.clone();
+            let counter_clone = counter.clone();
             tasks.spawn(async move {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
-                c.fetch_add(1, Ordering::Relaxed);
+                counter_clone.fetch_add(1, Ordering::Relaxed);
             });
         }
         let start = tokio::time::Instant::now();
@@ -164,10 +164,10 @@ mod tests {
         let mut tasks: JoinSet<()> = JoinSet::new();
         let counter = Arc::new(AtomicUsize::new(0));
         for _ in 0..2 {
-            let c = counter.clone();
+            let counter_clone = counter.clone();
             tasks.spawn(async move {
                 tokio::time::sleep(Duration::from_secs(60)).await;
-                c.fetch_add(1, Ordering::Relaxed);
+                counter_clone.fetch_add(1, Ordering::Relaxed);
             });
         }
         let start = tokio::time::Instant::now();
@@ -190,10 +190,10 @@ mod tests {
         let mut tasks: JoinSet<()> = JoinSet::new();
         let counter = Arc::new(AtomicUsize::new(0));
         for _ in 0..3 {
-            let c = counter.clone();
+            let counter_clone = counter.clone();
             tasks.spawn(async move {
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                c.fetch_add(1, Ordering::Relaxed);
+                counter_clone.fetch_add(1, Ordering::Relaxed);
             });
         }
         let start = tokio::time::Instant::now();

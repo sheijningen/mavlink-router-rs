@@ -107,7 +107,7 @@ async fn sniffer_admits_targeted_frame_that_non_sniffer_rejects() {
         Ok(Ok((n, _))) => {
             panic!("non-sniffer target unexpectedly received a frame ({n} bytes)")
         }
-        Ok(Err(e)) => panic!("target recv errored: {e}"),
+        Ok(Err(err)) => panic!("target recv errored: {err}"),
     }
 
     cancel.cancel();

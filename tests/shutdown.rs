@@ -67,13 +67,13 @@ fn spawn_router() -> RouterHarness {
     };
     let stats_task = {
         let cancel = cancel.clone();
-        let cfg = StatsRunConfig {
+        let config = StatsRunConfig {
             enabled: false,
             interval: std::time::Duration::from_secs(60),
             queue_capacity: 8,
         };
         let writer = tokio::io::sink();
-        tokio::spawn(async move { stats_task::run(stats_event_rx, cancel, cfg, writer).await })
+        tokio::spawn(async move { stats_task::run(stats_event_rx, cancel, config, writer).await })
     };
 
     RouterHarness {
@@ -92,7 +92,7 @@ async fn router_writes_down_on_cancel_for_leaf_top_level_endpoint() {
     let target = UdpSocket::bind("127.0.0.1:0").await.expect("target bind");
     let target_addr: SocketAddr = target.local_addr().expect("target local_addr");
 
-    let h = spawn_router();
+    let harness = spawn_router();
     let allocator = Arc::new(EndpointIdAllocator::new());
     let endpoint_id: EndpointId = allocator.alloc();
     let endpoint_stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
@@ -107,7 +107,8 @@ async fn router_writes_down_on_cancel_for_leaf_top_level_endpoint() {
 
     // Announce BEFORE spawning the endpoint task — mirrors the production
     // spawner ordering enforced by the biased select on `event_rx`.
-    h.event_tx
+    harness
+        .event_tx
         .send(EndpointEvent::EndpointAdded {
             id: endpoint_id,
             name: "uc".to_string(),
@@ -121,9 +122,9 @@ async fn router_writes_down_on_cancel_for_leaf_top_level_endpoint() {
         .expect("EndpointAdded send");
 
     let endpoint_handle = {
-        let cancel = h.cancel.clone();
+        let cancel = harness.cancel.clone();
         let stats = endpoint_stats.clone();
-        let frame_tx = h.frame_tx.clone();
+        let frame_tx = harness.frame_tx.clone();
         let tx_queue = tx_queue.clone();
         tokio::spawn(async move {
             udp_client::run(
@@ -144,7 +145,11 @@ async fn router_writes_down_on_cancel_for_leaf_top_level_endpoint() {
     // changed since spawn".
     wait_for_state(&endpoint_stats, EndpointState::Connected, "after udpc bind").await;
 
-    shutdown_all(&h.cancel, [endpoint_handle, h.router_task, h.stats_task]).await;
+    shutdown_all(
+        &harness.cancel,
+        [endpoint_handle, harness.router_task, harness.stats_task],
+    )
+    .await;
 
     assert_eq!(
         endpoint_stats.load_state(),
@@ -161,18 +166,19 @@ async fn router_writes_down_on_cancel_for_parent_listener() {
     let listen_addr: SocketAddr = probe.local_addr().expect("probe local_addr");
     drop(probe);
 
-    let h = spawn_router();
+    let harness = spawn_router();
     let allocator = Arc::new(EndpointIdAllocator::new());
     let parent_id: EndpointId = allocator.alloc();
     let parent_stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
 
-    let ep = TcpServerEndpoint {
+    let endpoint = TcpServerEndpoint {
         bind_addr: listen_addr,
         ..TcpServerEndpoint::default()
     };
-    let spec = TcpServerSpec::from_endpoint(ep, parent_id, "ts".to_string());
+    let spec = TcpServerSpec::from_endpoint(endpoint, parent_id, "ts".to_string());
 
-    h.event_tx
+    harness
+        .event_tx
         .send(EndpointEvent::EndpointAdded {
             id: parent_id,
             name: "ts".to_string(),
@@ -186,10 +192,10 @@ async fn router_writes_down_on_cancel_for_parent_listener() {
     // — no client connects in this test so the channel stays empty, but
     // wiring it correctly keeps the topology faithful to production.
     let listener_handle = {
-        let cancel = h.cancel.clone();
+        let cancel = harness.cancel.clone();
         let stats = parent_stats.clone();
-        let frame_tx = h.frame_tx.clone();
-        let event_tx = h.event_tx.clone();
+        let frame_tx = harness.frame_tx.clone();
+        let event_tx = harness.event_tx.clone();
         tokio::spawn(async move {
             tcp_server::run(
                 spec,
@@ -207,7 +213,11 @@ async fn router_writes_down_on_cancel_for_parent_listener() {
 
     wait_for_state(&parent_stats, EndpointState::Connected, "after tcps bind").await;
 
-    shutdown_all(&h.cancel, [listener_handle, h.router_task, h.stats_task]).await;
+    shutdown_all(
+        &harness.cancel,
+        [listener_handle, harness.router_task, harness.stats_task],
+    )
+    .await;
 
     assert_eq!(
         parent_stats.load_state(),

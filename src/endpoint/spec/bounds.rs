@@ -9,35 +9,35 @@ use super::error::SpecError;
 
 /// Inclusive range check for `usize` knobs (capacities, byte counts).
 pub(crate) fn check_usize_range(
-    n: usize,
+    value: usize,
     key: &'static str,
     min: usize,
     max: usize,
 ) -> Result<usize, SpecError> {
-    if n < min || n > max {
+    if value < min || value > max {
         Err(SpecError::InvalidQueryValue {
             key,
-            reason: format!("must be in {min}..={max}, got {n}"),
+            reason: format!("must be in {min}..={max}, got {value}"),
         })
     } else {
-        Ok(n)
+        Ok(value)
     }
 }
 
 /// Inclusive range check for `u64` knobs (time intervals in ms / s).
 pub(crate) fn check_u64_range(
-    n: u64,
+    value: u64,
     key: &'static str,
     min: u64,
     max: u64,
 ) -> Result<u64, SpecError> {
-    if n < min || n > max {
+    if value < min || value > max {
         Err(SpecError::InvalidQueryValue {
             key,
-            reason: format!("must be in {min}..={max}, got {n}"),
+            reason: format!("must be in {min}..={max}, got {value}"),
         })
     } else {
-        Ok(n)
+        Ok(value)
     }
 }
 

@@ -21,7 +21,7 @@ pub(crate) fn lookup(msgid: u32) -> Option<&'static MsgEntry> {
     SORTED
         .binary_search_by_key(&msgid, |(id, _)| *id)
         .ok()
-        .map(|i| &SORTED[i].1)
+        .map(|index| &SORTED[index].1)
 }
 
 #[cfg(test)]
@@ -30,34 +30,34 @@ mod tests {
 
     #[test]
     fn heartbeat() {
-        let e = lookup(0).expect("HEARTBEAT (id 0) must be in the table");
-        assert_eq!(e.crc_extra, 50);
-        assert_eq!(e.target_sys_offset, None);
-        assert_eq!(e.target_comp_offset, None);
+        let entry = lookup(0).expect("HEARTBEAT (id 0) must be in the table");
+        assert_eq!(entry.crc_extra, 50);
+        assert_eq!(entry.target_sys_offset, None);
+        assert_eq!(entry.target_comp_offset, None);
     }
 
     #[test]
     fn sys_status() {
-        let e = lookup(1).expect("SYS_STATUS (id 1) must be in the table");
-        assert_eq!(e.crc_extra, 124);
-        assert_eq!(e.target_sys_offset, None);
+        let entry = lookup(1).expect("SYS_STATUS (id 1) must be in the table");
+        assert_eq!(entry.crc_extra, 124);
+        assert_eq!(entry.target_sys_offset, None);
     }
 
     #[test]
     fn ping_target_offsets() {
-        let e = lookup(4).expect("PING (id 4) must be in the table");
-        assert_eq!(e.crc_extra, 237);
+        let entry = lookup(4).expect("PING (id 4) must be in the table");
+        assert_eq!(entry.crc_extra, 237);
         // Wire order: time_usec (u64, 0..8), seq (u32, 8..12),
         //             target_system (u8, 12), target_component (u8, 13).
-        assert_eq!(e.target_sys_offset, Some(12));
-        assert_eq!(e.target_comp_offset, Some(13));
+        assert_eq!(entry.target_sys_offset, Some(12));
+        assert_eq!(entry.target_comp_offset, Some(13));
     }
 
     #[test]
     fn attitude() {
-        let e = lookup(30).expect("ATTITUDE (id 30) must be in the table");
-        assert_eq!(e.crc_extra, 39);
-        assert_eq!(e.target_sys_offset, None);
+        let entry = lookup(30).expect("ATTITUDE (id 30) must be in the table");
+        assert_eq!(entry.crc_extra, 39);
+        assert_eq!(entry.target_sys_offset, None);
     }
 
     #[test]
@@ -69,8 +69,11 @@ mod tests {
     fn sorted_invariant() {
         let mut prev: Option<u32> = None;
         for (id, _) in SORTED {
-            if let Some(p) = prev {
-                assert!(*id > p, "SORTED not sorted by msgid: {p} then {id}");
+            if let Some(prev_id) = prev {
+                assert!(
+                    *id > prev_id,
+                    "SORTED not sorted by msgid: {prev_id} then {id}"
+                );
             }
             prev = Some(*id);
         }
@@ -89,19 +92,19 @@ mod tests {
 
     #[test]
     fn param_request_list_targets_at_start() {
-        let e = lookup(21).expect("PARAM_REQUEST_LIST (id 21) must be in the table");
+        let entry = lookup(21).expect("PARAM_REQUEST_LIST (id 21) must be in the table");
         // Two uint8_t fields, stable size-sort preserves their declaration order.
-        assert_eq!(e.target_sys_offset, Some(0));
-        assert_eq!(e.target_comp_offset, Some(1));
+        assert_eq!(entry.target_sys_offset, Some(0));
+        assert_eq!(entry.target_comp_offset, Some(1));
     }
 
     #[test]
     fn command_long_targets() {
-        let e = lookup(76).expect("COMMAND_LONG (id 76) must be in the table");
+        let entry = lookup(76).expect("COMMAND_LONG (id 76) must be in the table");
         // Wire sort: 7 floats (28 bytes), command u16 (2), then the three u8s:
         // target_system (30), target_component (31), confirmation (32).
-        assert_eq!(e.target_sys_offset, Some(30));
-        assert_eq!(e.target_comp_offset, Some(31));
+        assert_eq!(entry.target_sys_offset, Some(30));
+        assert_eq!(entry.target_comp_offset, Some(31));
     }
 
     #[test]
@@ -109,8 +112,8 @@ mod tests {
         // CHANGE_OPERATOR_CONTROL (id 5) is the only standard targeted message
         // that has target_system without target_component — exercises the
         // half-target offset branch end to end.
-        let e = lookup(5).expect("CHANGE_OPERATOR_CONTROL (id 5) must be in the table");
-        assert_eq!(e.target_sys_offset, Some(0));
-        assert_eq!(e.target_comp_offset, None);
+        let entry = lookup(5).expect("CHANGE_OPERATOR_CONTROL (id 5) must be in the table");
+        assert_eq!(entry.target_sys_offset, Some(0));
+        assert_eq!(entry.target_comp_offset, None);
     }
 }
