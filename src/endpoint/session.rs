@@ -145,16 +145,16 @@ pub(crate) async fn forward_inbound_frames(
 ) -> ControlFlow<()> {
     while let Some((header, frame)) = framer.try_next_frame() {
         stats.add_rx_frame(frame.len());
-        let lost = seq_tracker.observe(header.sysid, header.compid, header.seq, Instant::now());
+        let lost = seq_tracker.observe(header.source, header.seq, Instant::now());
         if lost > 0 {
             stats.rx_lost_est.fetch_add(lost as u64, Ordering::Relaxed);
         }
-        if !filters.passes_in_filter(header.msgid, header.sysid, header.compid) {
+        if !filters.passes_in_filter(header.msgid, header.source) {
             stats.in_filter_drops.fetch_add(1, Ordering::Relaxed);
             trace!(
                 msgid = header.msgid,
-                sysid = header.sysid,
-                compid = header.compid,
+                sysid = header.source.sys,
+                compid = header.source.comp,
                 "in-filter dropped frame at ingress"
             );
             continue;

@@ -3,8 +3,8 @@ use tracing::trace;
 
 use super::crc::Crc16;
 use super::frame::{
-    CRC_LEN, ParsedHeader, Stx, V1_HEADER_LEN, V2_HEADER_LEN, V2_IFLAG_SIGNED, V2_SIGNATURE_LEN,
-    Version,
+    CRC_LEN, NodeId, ParsedHeader, Stx, V1_HEADER_LEN, V2_HEADER_LEN, V2_IFLAG_SIGNED,
+    V2_SIGNATURE_LEN, Version,
 };
 use super::msgid_table::{self, MsgEntry};
 
@@ -205,8 +205,7 @@ fn parse_header(frame: &[u8], stx: Stx) -> ParsedHeader {
             version: Version::V1,
             payload_len: frame[1],
             seq: frame[2],
-            sysid: frame[3],
-            compid: frame[4],
+            source: NodeId::new(frame[3], frame[4]),
             msgid: frame[5] as u32,
             target_system: None,
             target_component: None,
@@ -215,8 +214,7 @@ fn parse_header(frame: &[u8], stx: Stx) -> ParsedHeader {
             version: Version::V2,
             payload_len: frame[1],
             seq: frame[4],
-            sysid: frame[5],
-            compid: frame[6],
+            source: NodeId::new(frame[5], frame[6]),
             msgid: u32::from_le_bytes([frame[7], frame[8], frame[9], 0]),
             target_system: None,
             target_component: None,
@@ -336,7 +334,7 @@ mod tests {
         let (header, bytes) = f.try_next_frame().expect("frame");
         assert_eq!(header.version, Version::V1);
         assert_eq!(header.msgid, 0);
-        assert_eq!(header.sysid, 1);
+        assert_eq!(header.source.sys, 1);
         assert_eq!(header.payload_len, 9);
         assert_eq!(header.target_system, None);
         assert_eq!(header.target_component, None);
@@ -722,8 +720,7 @@ mod tests {
         };
         let header = |payload_len: u8| ParsedHeader {
             version: Version::V2,
-            sysid: 0,
-            compid: 0,
+            source: NodeId::new(0, 0),
             msgid: 0,
             seq: 0,
             payload_len,

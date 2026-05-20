@@ -1,5 +1,7 @@
 //! Per-endpoint filter rules and the range types they carry.
 
+use crate::mavlink::frame::NodeId;
+
 use super::spec::SpecError;
 
 /// Inclusive decimal range used inside `allow_msgid_*` and `block_msgid_*`
@@ -140,28 +142,28 @@ impl Filters {
         }
     }
 
-    /// Decide whether a frame with `(msgid, src_sys, src_comp)` passes the
-    /// ingress filter for this endpoint. A frame passes when every axis
-    /// passes: an empty `allow_*_in` imposes no restriction; a non-empty
-    /// `allow_*_in` requires the value to be in some allow range; a
-    /// non-empty `block_*_in` rejects the value if it's in some block range.
+    /// Decide whether a frame with `(msgid, src)` passes the ingress filter
+    /// for this endpoint. A frame passes when every axis passes: an empty
+    /// `allow_*_in` imposes no restriction; a non-empty `allow_*_in`
+    /// requires the value to be in some allow range; a non-empty
+    /// `block_*_in` rejects the value if it's in some block range.
     /// **Block wins on overlap** — a value that's simultaneously in an allow
     /// range and a block range is rejected.
     #[must_use]
-    pub fn passes_in_filter(&self, msgid: u32, src_sys: u8, src_comp: u8) -> bool {
+    pub fn passes_in_filter(&self, msgid: u32, src: NodeId) -> bool {
         pass_msgid_axis(msgid, &self.allow_msgid_in, &self.block_msgid_in)
-            && pass_u8_axis(src_sys, &self.allow_src_sys_in, &self.block_src_sys_in)
-            && pass_u8_axis(src_comp, &self.allow_src_comp_in, &self.block_src_comp_in)
+            && pass_u8_axis(src.sys, &self.allow_src_sys_in, &self.block_src_sys_in)
+            && pass_u8_axis(src.comp, &self.allow_src_comp_in, &self.block_src_comp_in)
     }
 
-    /// Decide whether a frame with `(msgid, src_sys, src_comp)` passes the
-    /// egress filter for this endpoint. Same semantics as
-    /// [`Filters::passes_in_filter`] applied to the `*_out` lists.
+    /// Decide whether a frame with `(msgid, src)` passes the egress filter
+    /// for this endpoint. Same semantics as [`Filters::passes_in_filter`]
+    /// applied to the `*_out` lists.
     #[must_use]
-    pub fn passes_out_filter(&self, msgid: u32, src_sys: u8, src_comp: u8) -> bool {
+    pub fn passes_out_filter(&self, msgid: u32, src: NodeId) -> bool {
         pass_msgid_axis(msgid, &self.allow_msgid_out, &self.block_msgid_out)
-            && pass_u8_axis(src_sys, &self.allow_src_sys_out, &self.block_src_sys_out)
-            && pass_u8_axis(src_comp, &self.allow_src_comp_out, &self.block_src_comp_out)
+            && pass_u8_axis(src.sys, &self.allow_src_sys_out, &self.block_src_sys_out)
+            && pass_u8_axis(src.comp, &self.allow_src_comp_out, &self.block_src_comp_out)
     }
 }
 
@@ -343,9 +345,9 @@ mod tests {
     #[test]
     fn default_filters_accept_everything() {
         let f = Filters::default();
-        assert!(f.passes_in_filter(0, 0, 0));
-        assert!(f.passes_in_filter(u32::MAX, u8::MAX, u8::MAX));
-        assert!(f.passes_out_filter(33, 1, 1));
+        assert!(f.passes_in_filter(0, NodeId::new(0, 0)));
+        assert!(f.passes_in_filter(u32::MAX, NodeId::new(u8::MAX, u8::MAX)));
+        assert!(f.passes_out_filter(33, NodeId::new(1, 1)));
     }
 
     #[test]
@@ -354,13 +356,13 @@ mod tests {
             allow_msgid_in: vec![MsgIdRange::single(0), MsgIdRange { lo: 30, hi: 40 }],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, 1, 1));
-        assert!(f.passes_in_filter(30, 1, 1));
-        assert!(f.passes_in_filter(35, 1, 1));
-        assert!(f.passes_in_filter(40, 1, 1));
-        assert!(!f.passes_in_filter(29, 1, 1));
-        assert!(!f.passes_in_filter(41, 1, 1));
-        assert!(!f.passes_in_filter(100, 1, 1));
+        assert!(f.passes_in_filter(0, NodeId::new(1, 1)));
+        assert!(f.passes_in_filter(30, NodeId::new(1, 1)));
+        assert!(f.passes_in_filter(35, NodeId::new(1, 1)));
+        assert!(f.passes_in_filter(40, NodeId::new(1, 1)));
+        assert!(!f.passes_in_filter(29, NodeId::new(1, 1)));
+        assert!(!f.passes_in_filter(41, NodeId::new(1, 1)));
+        assert!(!f.passes_in_filter(100, NodeId::new(1, 1)));
     }
 
     #[test]
@@ -369,12 +371,12 @@ mod tests {
             block_msgid_in: vec![MsgIdRange::single(33), MsgIdRange { lo: 100, hi: 150 }],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, 1, 1));
-        assert!(!f.passes_in_filter(33, 1, 1));
-        assert!(!f.passes_in_filter(100, 1, 1));
-        assert!(!f.passes_in_filter(125, 1, 1));
-        assert!(!f.passes_in_filter(150, 1, 1));
-        assert!(f.passes_in_filter(151, 1, 1));
+        assert!(f.passes_in_filter(0, NodeId::new(1, 1)));
+        assert!(!f.passes_in_filter(33, NodeId::new(1, 1)));
+        assert!(!f.passes_in_filter(100, NodeId::new(1, 1)));
+        assert!(!f.passes_in_filter(125, NodeId::new(1, 1)));
+        assert!(!f.passes_in_filter(150, NodeId::new(1, 1)));
+        assert!(f.passes_in_filter(151, NodeId::new(1, 1)));
     }
 
     #[test]
@@ -385,12 +387,12 @@ mod tests {
             block_msgid_in: vec![MsgIdRange::single(33)],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, 1, 1));
-        assert!(f.passes_in_filter(32, 1, 1));
-        assert!(!f.passes_in_filter(33, 1, 1));
-        assert!(f.passes_in_filter(34, 1, 1));
+        assert!(f.passes_in_filter(0, NodeId::new(1, 1)));
+        assert!(f.passes_in_filter(32, NodeId::new(1, 1)));
+        assert!(!f.passes_in_filter(33, NodeId::new(1, 1)));
+        assert!(f.passes_in_filter(34, NodeId::new(1, 1)));
         // outside allow → reject regardless of block
-        assert!(!f.passes_in_filter(101, 1, 1));
+        assert!(!f.passes_in_filter(101, NodeId::new(1, 1)));
     }
 
     #[test]
@@ -399,15 +401,15 @@ mod tests {
             allow_src_sys_in: vec![U8Range::single(1)],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, 1, 0));
-        assert!(!f.passes_in_filter(0, 2, 0));
+        assert!(f.passes_in_filter(0, NodeId::new(1, 0)));
+        assert!(!f.passes_in_filter(0, NodeId::new(2, 0)));
         // Block on the same axis works.
         let f = Filters {
             block_src_sys_in: vec![U8Range::single(255)],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, 1, 0));
-        assert!(!f.passes_in_filter(0, 255, 0));
+        assert!(f.passes_in_filter(0, NodeId::new(1, 0)));
+        assert!(!f.passes_in_filter(0, NodeId::new(255, 0)));
     }
 
     #[test]
@@ -416,10 +418,10 @@ mod tests {
             allow_src_comp_in: vec![U8Range { lo: 1, hi: 10 }],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, 0, 1));
-        assert!(f.passes_in_filter(0, 0, 10));
-        assert!(!f.passes_in_filter(0, 0, 11));
-        assert!(!f.passes_in_filter(0, 0, 0));
+        assert!(f.passes_in_filter(0, NodeId::new(0, 1)));
+        assert!(f.passes_in_filter(0, NodeId::new(0, 10)));
+        assert!(!f.passes_in_filter(0, NodeId::new(0, 11)));
+        assert!(!f.passes_in_filter(0, NodeId::new(0, 0)));
     }
 
     #[test]
@@ -430,11 +432,11 @@ mod tests {
             allow_src_comp_in: vec![U8Range::single(2)],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, 1, 2));
+        assert!(f.passes_in_filter(0, NodeId::new(1, 2)));
         // any single axis miss → fail
-        assert!(!f.passes_in_filter(1, 1, 2));
-        assert!(!f.passes_in_filter(0, 2, 2));
-        assert!(!f.passes_in_filter(0, 1, 3));
+        assert!(!f.passes_in_filter(1, NodeId::new(1, 2)));
+        assert!(!f.passes_in_filter(0, NodeId::new(2, 2)));
+        assert!(!f.passes_in_filter(0, NodeId::new(1, 3)));
     }
 
     #[test]
@@ -444,15 +446,15 @@ mod tests {
             ..Filters::default()
         };
         // _out is untouched by an _in blocklist, and vice versa.
-        assert!(!f.passes_in_filter(33, 1, 1));
-        assert!(f.passes_out_filter(33, 1, 1));
+        assert!(!f.passes_in_filter(33, NodeId::new(1, 1)));
+        assert!(f.passes_out_filter(33, NodeId::new(1, 1)));
 
         let f = Filters {
             allow_msgid_out: vec![MsgIdRange::single(0)],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(99, 1, 1));
-        assert!(!f.passes_out_filter(99, 1, 1));
+        assert!(f.passes_in_filter(99, NodeId::new(1, 1)));
+        assert!(!f.passes_out_filter(99, NodeId::new(1, 1)));
     }
 
     #[test]
@@ -464,12 +466,12 @@ mod tests {
             block_src_comp_out: vec![U8Range::single(99)],
             ..Filters::default()
         };
-        assert!(f.passes_out_filter(30, 1, 1));
-        assert!(f.passes_out_filter(40, 1, 1));
-        assert!(!f.passes_out_filter(35, 1, 1)); // block wins
-        assert!(!f.passes_out_filter(29, 1, 1)); // outside allow
-        assert!(!f.passes_out_filter(30, 2, 1)); // src_sys not allowed
-        assert!(!f.passes_out_filter(30, 1, 99)); // src_comp blocked
+        assert!(f.passes_out_filter(30, NodeId::new(1, 1)));
+        assert!(f.passes_out_filter(40, NodeId::new(1, 1)));
+        assert!(!f.passes_out_filter(35, NodeId::new(1, 1))); // block wins
+        assert!(!f.passes_out_filter(29, NodeId::new(1, 1))); // outside allow
+        assert!(!f.passes_out_filter(30, NodeId::new(2, 1))); // src_sys not allowed
+        assert!(!f.passes_out_filter(30, NodeId::new(1, 99))); // src_comp blocked
     }
 
     #[test]
@@ -482,15 +484,15 @@ mod tests {
             ],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, 0, 0));
-        assert!(f.passes_in_filter(100, 0, 0));
-        assert!(f.passes_in_filter(150, 0, 0));
-        assert!(f.passes_in_filter(200, 0, 0));
-        assert!(f.passes_in_filter(500, 0, 0));
-        assert!(!f.passes_in_filter(1, 0, 0));
-        assert!(!f.passes_in_filter(201, 0, 0));
-        assert!(!f.passes_in_filter(499, 0, 0));
-        assert!(!f.passes_in_filter(501, 0, 0));
+        assert!(f.passes_in_filter(0, NodeId::new(0, 0)));
+        assert!(f.passes_in_filter(100, NodeId::new(0, 0)));
+        assert!(f.passes_in_filter(150, NodeId::new(0, 0)));
+        assert!(f.passes_in_filter(200, NodeId::new(0, 0)));
+        assert!(f.passes_in_filter(500, NodeId::new(0, 0)));
+        assert!(!f.passes_in_filter(1, NodeId::new(0, 0)));
+        assert!(!f.passes_in_filter(201, NodeId::new(0, 0)));
+        assert!(!f.passes_in_filter(499, NodeId::new(0, 0)));
+        assert!(!f.passes_in_filter(501, NodeId::new(0, 0)));
     }
 
     #[test]
@@ -500,17 +502,17 @@ mod tests {
             allow_src_sys_in: vec![U8Range { lo: 0, hi: 255 }],
             ..Filters::default()
         };
-        assert!(f.passes_in_filter(0, 0, 0));
-        assert!(f.passes_in_filter(0, 255, 0));
+        assert!(f.passes_in_filter(0, NodeId::new(0, 0)));
+        assert!(f.passes_in_filter(0, NodeId::new(255, 0)));
 
         let f = Filters {
             block_src_comp_in: vec![U8Range { lo: 0, hi: 255 }],
             ..Filters::default()
         };
         // Every value rejected when blocklist covers the whole space.
-        assert!(!f.passes_in_filter(0, 0, 0));
-        assert!(!f.passes_in_filter(0, 0, 128));
-        assert!(!f.passes_in_filter(0, 0, 255));
+        assert!(!f.passes_in_filter(0, NodeId::new(0, 0)));
+        assert!(!f.passes_in_filter(0, NodeId::new(0, 128)));
+        assert!(!f.passes_in_filter(0, NodeId::new(0, 255)));
     }
 
     // ----- property tests -----
@@ -589,7 +591,7 @@ mod tests {
                 block_msgid_in: block_all,
                 ..Filters::default()
             };
-            prop_assert!(!f.passes_in_filter(msgid, 0, 0));
+            prop_assert!(!f.passes_in_filter(msgid, NodeId::new(0, 0)));
         }
 
         #[test]
@@ -607,7 +609,7 @@ mod tests {
                 block_src_sys_in: vec![blocker],
                 ..Filters::default()
             };
-            prop_assert!(!f.passes_in_filter(0, src_sys, 0));
+            prop_assert!(!f.passes_in_filter(0, NodeId::new(src_sys, 0)));
         }
 
         #[test]
@@ -625,7 +627,7 @@ mod tests {
                 block_src_comp_in: vec![blocker],
                 ..Filters::default()
             };
-            prop_assert!(!f.passes_in_filter(0, 0, src_comp));
+            prop_assert!(!f.passes_in_filter(0, NodeId::new(0, src_comp)));
         }
 
         // Block-wins-on-overlap also applies to the egress filter — the
@@ -652,7 +654,7 @@ mod tests {
                 block_msgid_out: block_all,
                 ..Filters::default()
             };
-            prop_assert!(!f.passes_out_filter(msgid, 0, 0));
+            prop_assert!(!f.passes_out_filter(msgid, NodeId::new(0, 0)));
         }
 
         // Empty allow lists impose no restriction: result equals "not in any
@@ -675,7 +677,7 @@ mod tests {
             let blocked = block_msgid.iter().any(|r| r.contains(msgid))
                 || block_sys.iter().any(|r| r.contains(src_sys))
                 || block_comp.iter().any(|r| r.contains(src_comp));
-            prop_assert_eq!(f.passes_in_filter(msgid, src_sys, src_comp), !blocked);
+            prop_assert_eq!(f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp)), !blocked);
         }
 
         // Non-empty allow: a value matched by no allow range is rejected
@@ -692,7 +694,7 @@ mod tests {
                 block_msgid_in: block,
                 ..Filters::default()
             };
-            prop_assert!(!f.passes_in_filter(msgid, 0, 0));
+            prop_assert!(!f.passes_in_filter(msgid, NodeId::new(0, 0)));
         }
 
         // Adding a range to the blocklist can only narrow acceptance: a frame
@@ -711,9 +713,9 @@ mod tests {
                 block_msgid_in: block_msgid,
                 ..Filters::default()
             };
-            let before = f.passes_in_filter(msgid, src_sys, src_comp);
+            let before = f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
             f.block_msgid_in.push(extra_block);
-            let after = f.passes_in_filter(msgid, src_sys, src_comp);
+            let after = f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
             // Monotone: `before == false` implies `after == false`.
             prop_assert!(before || !after);
         }
@@ -734,9 +736,9 @@ mod tests {
                 block_msgid_in: block_msgid,
                 ..Filters::default()
             };
-            let before = f.passes_in_filter(msgid, src_sys, src_comp);
+            let before = f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
             f.allow_msgid_in.push(extra_allow);
-            let after = f.passes_in_filter(msgid, src_sys, src_comp);
+            let after = f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp));
             // Monotone: `before == true` implies `after == true`.
             prop_assert!(!before || after);
         }
@@ -774,8 +776,8 @@ mod tests {
                 ..Filters::default()
             };
             prop_assert_eq!(
-                baseline.passes_in_filter(msgid, src_sys, src_comp),
-                with_out.passes_in_filter(msgid, src_sys, src_comp),
+                baseline.passes_in_filter(msgid, NodeId::new(src_sys, src_comp)),
+                with_out.passes_in_filter(msgid, NodeId::new(src_sys, src_comp)),
             );
         }
 
@@ -810,8 +812,8 @@ mod tests {
                 ..Filters::default()
             };
             prop_assert_eq!(
-                baseline.passes_out_filter(msgid, src_sys, src_comp),
-                with_in.passes_out_filter(msgid, src_sys, src_comp),
+                baseline.passes_out_filter(msgid, NodeId::new(src_sys, src_comp)),
+                with_in.passes_out_filter(msgid, NodeId::new(src_sys, src_comp)),
             );
         }
 
@@ -842,7 +844,7 @@ mod tests {
             let sys_pass = pass_u8_axis(src_sys, &allow_sys, &block_sys);
             let comp_pass = pass_u8_axis(src_comp, &allow_comp, &block_comp);
             prop_assert_eq!(
-                f.passes_in_filter(msgid, src_sys, src_comp),
+                f.passes_in_filter(msgid, NodeId::new(src_sys, src_comp)),
                 msgid_pass && sys_pass && comp_pass,
             );
         }

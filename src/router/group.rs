@@ -94,6 +94,7 @@ impl GroupRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mavlink::frame::NodeId;
     use std::time::Duration;
     use tokio::time::Instant;
 
@@ -158,8 +159,8 @@ mod tests {
         let name = Arc::<str>::from("uplink");
         reg.join(name.clone(), 4);
         let g = reg.get_mut(&name).unwrap();
-        g.learn.touch(7, 1, now_at(0));
+        g.learn.touch(NodeId::new(7, 1), now_at(0));
         let g2 = reg.get(&name).unwrap();
-        assert!(g2.learn.contains(7, 1));
+        assert!(g2.learn.contains(NodeId::new(7, 1)));
     }
 }

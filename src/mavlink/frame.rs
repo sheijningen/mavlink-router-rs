@@ -45,14 +45,29 @@ impl Stx {
     }
 }
 
+/// MAVLink node identity: the `(sysid, compid)` pair every frame carries as
+/// its source address and that targeted frames carry as their destination.
+/// Used as the key in learn tables, the seq tracker, and as the src half of
+/// the filter axes; passed by value (16 bits, `Copy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId {
+    pub sys: u8,
+    pub comp: u8,
+}
+
+impl NodeId {
+    pub const fn new(sys: u8, comp: u8) -> Self {
+        Self { sys, comp }
+    }
+}
+
 /// Routing-relevant fields extracted from a MAVLink frame header in the reader
 /// task, so the router never re-parses. Bytes the header was decoded from stay
 /// in the `Bytes` payload returned alongside this struct.
 #[derive(Debug, Clone, Copy)]
 pub struct ParsedHeader {
     pub version: Version,
-    pub sysid: u8,
-    pub compid: u8,
+    pub source: NodeId,
     pub msgid: u32,
     pub seq: u8,
     pub payload_len: u8,

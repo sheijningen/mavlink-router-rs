@@ -23,7 +23,7 @@
 //! other admission criterion comes from here.
 
 use crate::endpoint::identity_flags::IdentityFlags;
-use crate::mavlink::frame::ParsedHeader;
+use crate::mavlink::frame::{NodeId, ParsedHeader};
 
 use super::learn::LearnTable;
 
@@ -52,12 +52,12 @@ pub fn decide(
     if dest_identity.sniffer {
         return Decision::Admit;
     }
-    if dest_learn.contains(header.sysid, header.compid) {
+    if dest_learn.contains(header.source) {
         return Decision::LoopBlocked;
     }
     if !dest_identity
         .filters
-        .passes_out_filter(header.msgid, header.sysid, header.compid)
+        .passes_out_filter(header.msgid, header.source)
     {
         return Decision::OutFilterBlocked;
     }
@@ -76,7 +76,7 @@ fn target_match(header: &ParsedHeader, learn: &LearnTable) -> bool {
     }
     match header.target_component {
         None | Some(0) => learn.contains_sys(target_sys),
-        Some(comp) => learn.contains(target_sys, comp),
+        Some(comp) => learn.contains(NodeId::new(target_sys, comp)),
     }
 }
 
@@ -96,8 +96,7 @@ mod tests {
     ) -> ParsedHeader {
         ParsedHeader {
             version: Version::V2,
-            sysid,
-            compid,
+            source: NodeId::new(sysid, compid),
             msgid: 0,
             seq: 0,
             payload_len: 0,
@@ -109,8 +108,7 @@ mod tests {
     fn header_with_msgid(msgid: u32, sysid: u8, compid: u8) -> ParsedHeader {
         ParsedHeader {
             version: Version::V2,
-            sysid,
-            compid,
+            source: NodeId::new(sysid, compid),
             msgid,
             seq: 0,
             payload_len: 0,
@@ -127,7 +125,7 @@ mod tests {
         let mut t = LearnTable::new(8);
         let base = Instant::now();
         for (i, (s, c)) in entries.iter().enumerate() {
-            t.touch(*s, *c, base + Duration::from_millis(i as u64));
+            t.touch(NodeId::new(*s, *c), base + Duration::from_millis(i as u64));
         }
         t
     }

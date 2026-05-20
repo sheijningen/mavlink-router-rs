@@ -320,7 +320,7 @@ fn handle_frame(
                 debug!(%src_id, ?name, "router: source group missing; dropped");
                 return;
             };
-            g.learn.touch(header.sysid, header.compid, now);
+            g.learn.touch(header.source, now);
             g.learn.len()
         }
         None => {
@@ -328,7 +328,7 @@ fn handle_frame(
                 .get_mut(&src_id)
                 .and_then(|ep| ep.routable.as_mut())
                 .expect("source routable just observed above");
-            src_rs.learn.touch(header.sysid, header.compid, now);
+            src_rs.learn.touch(header.source, now);
             src_rs.learn.len()
         }
     };
@@ -412,7 +412,7 @@ mod tests {
     use crate::endpoint::EndpointIdAllocator;
     use crate::endpoint::events::{PeerRemovalReason, Routable};
     use crate::endpoint::filters::{Filters, MsgIdRange};
-    use crate::mavlink::frame::{ParsedHeader, Version};
+    use crate::mavlink::frame::{NodeId, ParsedHeader, Version};
     use bytes::Bytes;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::time::Duration;
@@ -420,8 +420,7 @@ mod tests {
     fn header(sysid: u8, compid: u8, target_system: Option<u8>) -> ParsedHeader {
         ParsedHeader {
             version: Version::V2,
-            sysid,
-            compid,
+            source: NodeId::new(sysid, compid),
             msgid: 0,
             seq: 0,
             payload_len: 0,
