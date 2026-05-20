@@ -242,4 +242,20 @@ mod tests {
             .expect("join");
         assert!(matches!(outcome, OpenOutcome::Cancelled));
     }
+
+    #[test]
+    fn try_open_runs_both_flow_control_variants_without_panicking() {
+        // The mapping `SerialFlowControl::RtsCts → tokio_serial::FlowControl::
+        // Hardware` is a one-line match arm whose only failure mode is "the
+        // variant ends up in the wrong arm". A bad-path open errors out the
+        // same way for both variants, so we only assert the call doesn't
+        // panic — what matters is the branch executes.
+        for fc in [SerialFlowControl::None, SerialFlowControl::RtsCts] {
+            let result = try_open("/this/path/definitely/does/not/exist", 115200, fc);
+            assert!(
+                result.is_err(),
+                "expected Err for bogus path with {fc:?}, got Ok"
+            );
+        }
+    }
 }

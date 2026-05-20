@@ -59,3 +59,44 @@ async fn udps_peer_inherits_parent_identity() {
 
     shutdown_all(&cancel, std::iter::once(harness.task)).await;
 }
+
+#[tokio::test]
+async fn udps_peer_inherits_sniffer_flag_in_isolation() {
+    // The kitchen-sink test above asserts the whole `IdentityFlags` struct
+    // matches, so a sniffer regression would surface as a multi-field diff.
+    // This case isolates `sniffer = true` (everything else default) so a
+    // future refactor that drops *only* the sniffer field during clone fails
+    // here with a clear single-field message instead of swimming inside a
+    // struct diff.
+    let allocator = Arc::new(EndpointIdAllocator::new());
+    let cancel = CancellationToken::new();
+
+    let parent_identity = IdentityFlags {
+        sniffer: true,
+        ..IdentityFlags::default()
+    };
+
+    let endpoint = UdpServerEndpoint {
+        bind_addr: pick_free_udp_addr(),
+        ..UdpServerEndpoint::default()
+    };
+    let parent_id = allocator.alloc();
+    let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps-sniffer".to_string());
+    spec.identity = parent_identity.clone();
+    let mut harness = spawn_udps_with_spec(&allocator, cancel.clone(), spec);
+    wait_for_state(&harness.stats, EndpointState::Connected, "udps bind").await;
+
+    let peer = UdpSocket::bind("127.0.0.1:0").await.expect("peer bind");
+    let frame = common::build_v2_heartbeat(0);
+    peer.send_to(&frame, harness.listen_addr)
+        .await
+        .expect("peer send_to listener");
+
+    let added = next_peer_added(&mut harness.event_rx).await;
+    assert!(
+        added.identity.sniffer,
+        "udps peer must inherit sniffer=true from parent"
+    );
+
+    shutdown_all(&cancel, std::iter::once(harness.task)).await;
+}

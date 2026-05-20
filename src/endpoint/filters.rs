@@ -402,6 +402,58 @@ mod tests {
     }
 
     #[test]
+    fn block_wins_over_allow_on_overlap_src_sys_in() {
+        let filters = Filters {
+            allow_src_sys_in: vec![U8Range { lo: 0, hi: 10 }],
+            block_src_sys_in: vec![U8Range::single(5)],
+            ..Filters::default()
+        };
+        assert!(filters.passes_in_filter(0, NodeId::new(4, 0)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(5, 0)));
+        assert!(filters.passes_in_filter(0, NodeId::new(6, 0)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(11, 0)));
+    }
+
+    #[test]
+    fn block_wins_over_allow_on_overlap_src_sys_out() {
+        let filters = Filters {
+            allow_src_sys_out: vec![U8Range { lo: 0, hi: 10 }],
+            block_src_sys_out: vec![U8Range::single(5)],
+            ..Filters::default()
+        };
+        assert!(filters.passes_out_filter(0, NodeId::new(4, 0)));
+        assert!(!filters.passes_out_filter(0, NodeId::new(5, 0)));
+        assert!(filters.passes_out_filter(0, NodeId::new(6, 0)));
+        assert!(!filters.passes_out_filter(0, NodeId::new(11, 0)));
+    }
+
+    #[test]
+    fn block_wins_over_allow_on_overlap_src_comp_in() {
+        let filters = Filters {
+            allow_src_comp_in: vec![U8Range { lo: 0, hi: 10 }],
+            block_src_comp_in: vec![U8Range::single(5)],
+            ..Filters::default()
+        };
+        assert!(filters.passes_in_filter(0, NodeId::new(0, 4)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(0, 5)));
+        assert!(filters.passes_in_filter(0, NodeId::new(0, 6)));
+        assert!(!filters.passes_in_filter(0, NodeId::new(0, 11)));
+    }
+
+    #[test]
+    fn block_wins_over_allow_on_overlap_src_comp_out() {
+        let filters = Filters {
+            allow_src_comp_out: vec![U8Range { lo: 0, hi: 10 }],
+            block_src_comp_out: vec![U8Range::single(5)],
+            ..Filters::default()
+        };
+        assert!(filters.passes_out_filter(0, NodeId::new(0, 4)));
+        assert!(!filters.passes_out_filter(0, NodeId::new(0, 5)));
+        assert!(filters.passes_out_filter(0, NodeId::new(0, 6)));
+        assert!(!filters.passes_out_filter(0, NodeId::new(0, 11)));
+    }
+
+    #[test]
     fn src_sys_in_axis_independent_of_msgid_axis() {
         let filters = Filters {
             allow_src_sys_in: vec![U8Range::single(1)],

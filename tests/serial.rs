@@ -25,10 +25,11 @@ use tokio::time::timeout;
 use tokio_serial::SerialStream;
 use tokio_util::sync::CancellationToken;
 
-#[tokio::test]
-async fn run_returns_when_cancelled_while_open_retrying() {
+async fn assert_run_cancels_cleanly_with(flow_control: SerialFlowControl) {
     // /dev/null is not a tty so open() fails immediately and the hot-replug
-    // loop retries forever — exercises cancel-during-reopen-sleep.
+    // loop retries forever — exercises cancel-during-reopen-sleep. Parameterised
+    // on flow_control so both branches of `try_open`'s mapping run end-to-end
+    // through the public `run()` API.
     let allocator = EndpointIdAllocator::new();
     let endpoint_id = allocator.alloc();
     let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
@@ -39,7 +40,7 @@ async fn run_returns_when_cancelled_while_open_retrying() {
     let spec = SerialSpec {
         path: "/dev/null".to_string(),
         baud: 115200,
-        flow_control: SerialFlowControl::None,
+        flow_control,
         endpoint_id,
         name: "test-serial".to_string(),
         identity: IdentityFlags::default(),
@@ -59,6 +60,20 @@ async fn run_returns_when_cancelled_while_open_retrying() {
         .await
         .expect("serial run did not return after cancel")
         .expect("join");
+}
+
+#[tokio::test]
+async fn run_returns_when_cancelled_while_open_retrying() {
+    assert_run_cancels_cleanly_with(SerialFlowControl::None).await;
+}
+
+#[tokio::test]
+async fn run_returns_when_cancelled_while_open_retrying_rtscts() {
+    // RtsCts variant: same shape as the None case; what we're proving is that
+    // `?flow_control=rtscts` flows through `SerialSpec → try_open` without
+    // tripping the reopen loop. Production parity test for the locked Phase 4
+    // contract — every other test path uses `None`.
+    assert_run_cancels_cleanly_with(SerialFlowControl::RtsCts).await;
 }
 
 #[tokio::test]

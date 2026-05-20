@@ -246,6 +246,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn empty_learn_rejects_half_target_compid_zero() {
+        // target_sys = N (non-zero), target_comp = 0 with no prior learning:
+        // `target_match` routes through `learn.contains_sys(N)` which is
+        // false on an empty table → `TargetMismatch`. Guards the "the
+        // 0-wildcard component does not accidentally bypass the empty-learn
+        // check" boundary documented in CLAUDE.md's per-destination decision.
+        let header = header_at(99, 99, Some(5), Some(0));
+        assert_eq!(
+            decide(&header, &empty_learn(), &plain_identity()),
+            Decision::TargetMismatch
+        );
+    }
+
+    #[test]
+    fn empty_learn_rejects_half_target_no_compid_field() {
+        // Same boundary as above for messages whose msgid carries
+        // `target_system` only (no `target_component` slot).
+        let header = header_at(99, 99, Some(5), None);
+        assert_eq!(
+            decide(&header, &empty_learn(), &plain_identity()),
+            Decision::TargetMismatch
+        );
+    }
+
     // ----- Out-filter -----
 
     #[test]

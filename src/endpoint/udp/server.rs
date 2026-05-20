@@ -522,6 +522,94 @@ mod tests {
         assert_eq!(removed, vec![addr(1), addr(3)]);
     }
 
+    /// Boundary test for the locked `DEFAULT_PEER_CAPACITY` invariant: when a
+    /// fresh source arrives and the peer table is already at `peer_capacity`,
+    /// `handle_packet` must (a) keep the table size at the cap, (b) evict the
+    /// LRU entry by last-seen, (c) admit the new peer, and (d) emit
+    /// `PeerAdded` for the newcomer followed by `PeerRemoved { LruEvicted }`
+    /// for the victim. The production cap is 256 (CLAUDE.md "Hardcoded
+    /// plumbing knobs"); the spec's mutable `peer_capacity` field exists so
+    /// this branch can run against a small N rather than 256 dummy peers.
+    #[tokio::test]
+    async fn handle_packet_evicts_lru_when_at_capacity() {
+        let socket = Arc::new(
+            UdpSocket::bind("127.0.0.1:0")
+                .await
+                .expect("bind ctx socket"),
+        );
+        let allocator = Arc::new(EndpointIdAllocator::new());
+        let parent_id = allocator.alloc();
+        let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
+        let (event_tx, mut event_rx) = mpsc::channel::<EndpointEvent>(16);
+        let cancel = CancellationToken::new();
+        let spec = UdpServerSpec {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            parent_id,
+            parent_name: "test".to_string(),
+            idle_secs: DEFAULT_IDLE_SECS,
+            peer_capacity: 3,
+            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
+            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
+            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
+            identity: IdentityFlags::default(),
+        };
+        let wiring = UdpServerWiring {
+            allocator: allocator.clone(),
+            frame_tx,
+            event_tx,
+            cancel: cancel.clone(),
+            stats: Arc::new(EndpointStats::default()),
+        };
+        let ctx = ListenerCtx {
+            socket: socket.clone(),
+            spec: &spec,
+            wiring: &wiring,
+        };
+
+        let mut peers: HashMap<SocketAddr, PeerEntry> = HashMap::new();
+        // addr(2) is the LRU victim (last_seen 60s ago).
+        peers.insert(addr(1), dummy_peer(EndpointId(10), Duration::from_secs(30)));
+        peers.insert(addr(2), dummy_peer(EndpointId(11), Duration::from_secs(60)));
+        peers.insert(addr(3), dummy_peer(EndpointId(12), Duration::from_secs(5)));
+        assert_eq!(
+            peers.len(),
+            3,
+            "pre-condition: table must be at peer_capacity before handle_packet"
+        );
+        let mut writer_tasks: JoinSet<()> = JoinSet::new();
+
+        handle_packet(&[], addr(4), &mut peers, &mut writer_tasks, &ctx).await;
+
+        assert_eq!(peers.len(), 3, "table size should stay at peer_capacity");
+        assert!(!peers.contains_key(&addr(2)), "LRU peer should be evicted");
+        assert!(peers.contains_key(&addr(1)));
+        assert!(peers.contains_key(&addr(3)));
+        assert!(peers.contains_key(&addr(4)), "new peer should be admitted");
+
+        match event_rx.try_recv() {
+            Ok(EndpointEvent::PeerAdded { peer_addr, .. }) => {
+                assert_eq!(peer_addr, addr(4));
+            }
+            other => panic!("expected PeerAdded for addr(4), got {other:?}"),
+        }
+        match event_rx.try_recv() {
+            Ok(EndpointEvent::PeerRemoved {
+                reason, peer_addr, ..
+            }) => {
+                assert_eq!(reason, PeerRemovalReason::LruEvicted);
+                assert_eq!(peer_addr, addr(2));
+            }
+            other => panic!("expected PeerRemoved(LruEvicted) for addr(2), got {other:?}"),
+        }
+        assert!(
+            event_rx.try_recv().is_err(),
+            "no further lifecycle events expected"
+        );
+
+        cancel.cancel();
+        writer_tasks.shutdown().await;
+    }
+
     /// Regression: when the router event channel is already closed and a
     /// brand-new peer arrives at capacity, `handle_packet` must NOT evict an
     /// existing peer just to drop the new one. Reordering the announce ahead
