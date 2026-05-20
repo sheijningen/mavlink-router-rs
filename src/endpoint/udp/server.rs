@@ -26,6 +26,7 @@ use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
+use super::MAX_DATAGRAM_BYTES;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_IDLE_SECS: u64 = 60;
@@ -47,10 +48,6 @@ pub const MIN_IDLE_SECS: u64 = 1;
 /// "never reap"; if that's intentional an operator should reconsider the
 /// retention model rather than push the knob through its sane range.
 pub const MAX_IDLE_SECS: u64 = 86_400;
-// Max IP datagram payload plus headroom; one `recv_from` cannot return more
-// than the kernel's MTU-bounded payload, but we size the buffer to the IP
-// theoretical max so a fragmented giant datagram couldn't be truncated.
-const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REAP_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Per-peer state the listener task carries between packets: the child

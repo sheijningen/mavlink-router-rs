@@ -24,6 +24,7 @@ use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
+use super::MAX_DATAGRAM_BYTES;
 use crate::mavlink::framer::Framer;
 
 const DEFAULT_LATCH_IDLE_SECS: u64 = 30;
@@ -35,9 +36,6 @@ pub const MIN_LATCH_IDLE_SECS: u64 = 1;
 /// `latch_idle_secs` upper bound (24 hours). Same rationale as
 /// [`super::server::MAX_IDLE_SECS`]: a day is effectively "never revert".
 pub const MAX_LATCH_IDLE_SECS: u64 = 86_400;
-// Max IP datagram payload plus headroom; matches `udps:` for symmetry so
-// neither side truncates an oversized inbound packet.
-const MAX_DATAGRAM_BYTES: usize = 65_536;
 const REVERT_TICK: Duration = Duration::from_secs(1);
 
 /// Inputs that distinguish one `udpc:` endpoint from another: where to send,
