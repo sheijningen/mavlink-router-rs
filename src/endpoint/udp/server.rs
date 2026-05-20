@@ -12,12 +12,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::super::EndpointId;
-use super::super::EndpointIdAllocator;
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES, READ_BUF_BYTES,
 };
-use super::super::events::{EndpointEvent, PeerRemovalReason, Routable, RouterFrame};
+use super::super::events::{EndpointEvent, PeerRemovalReason, Routable};
 use super::super::identity_flags::{IdentityFlags, SEQ_TRACKER_CAPACITY};
 use super::super::peer_endpoint_name;
 use super::super::seq_tracker::SeqTracker;
@@ -26,6 +25,7 @@ use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
+use super::super::wiring::ServerWiring;
 use super::MAX_DATAGRAM_BYTES;
 use crate::mavlink::framer::Framer;
 
@@ -110,21 +110,6 @@ impl UdpServerSpec {
     }
 }
 
-/// Shared wiring every endpoint needs: the global EndpointId allocator,
-/// the reader→router frame channel, the sub-endpoint lifecycle channel,
-/// and the cancellation token. `stats` is the parent listener's own
-/// `Arc<EndpointStats>` (spawner-constructed via
-/// `EndpointStats::new(Reconnecting)`); the listener writes `Connected`
-/// once bind succeeds — that transition is the observable signal callers
-/// use to detect bind completion when starting from `127.0.0.1:0`.
-pub struct UdpServerWiring {
-    pub allocator: Arc<EndpointIdAllocator>,
-    pub frame_tx: mpsc::Sender<RouterFrame>,
-    pub event_tx: mpsc::Sender<EndpointEvent>,
-    pub cancel: CancellationToken,
-    pub stats: Arc<EndpointStats>,
-}
-
 /// Run a `udps:` listener until the cancellation token fires. Binding is
 /// retried with the shared capped-exp backoff (CLAUDE.md "Initial bind/dial
 /// failure path"), so a port collision at startup logs at WARN and the
@@ -132,12 +117,12 @@ pub struct UdpServerWiring {
 /// `recv_from`, the idle reaper, and cancellation. Each learned peer becomes
 /// a sub-routing endpoint announced via `event_tx` with its own TxQueue and
 /// writer task.
-pub async fn run(spec: UdpServerSpec, wiring: UdpServerWiring) {
+pub async fn run(spec: UdpServerSpec, wiring: ServerWiring) {
     let span = info_span!("udps", name = %spec.parent_name);
     run_inner(spec, wiring).instrument(span).await
 }
 
-async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) {
+async fn run_inner(spec: UdpServerSpec, wiring: ServerWiring) {
     let mut backoff = Backoff::new(spec.reconnect_initial_ms, spec.reconnect_max_ms);
 
     let socket = match bind_with_backoff(
@@ -214,7 +199,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: UdpServerWiring) {
 struct ListenerCtx<'a> {
     socket: Arc<UdpSocket>,
     spec: &'a UdpServerSpec,
-    wiring: &'a UdpServerWiring,
+    wiring: &'a ServerWiring,
 }
 
 async fn handle_packet(
@@ -416,6 +401,8 @@ async fn run_peer_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::endpoint::EndpointIdAllocator;
+    use crate::endpoint::events::RouterFrame;
     use crate::endpoint::spec::CommonQuery;
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -554,7 +541,7 @@ mod tests {
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
             identity: IdentityFlags::default(),
         };
-        let wiring = UdpServerWiring {
+        let wiring = ServerWiring {
             allocator: allocator.clone(),
             frame_tx,
             event_tx,
@@ -638,7 +625,7 @@ mod tests {
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
             identity: IdentityFlags::default(),
         };
-        let wiring = UdpServerWiring {
+        let wiring = ServerWiring {
             allocator: allocator.clone(),
             frame_tx,
             event_tx,

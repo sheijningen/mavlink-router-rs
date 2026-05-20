@@ -19,6 +19,7 @@ pub mod stats;
 pub mod tcp;
 pub mod tx_queue;
 pub mod udp;
+pub mod wiring;
 
 use std::net::SocketAddr;
 

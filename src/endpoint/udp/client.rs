@@ -7,7 +7,6 @@ use bytes::Bytes;
 use tokio::net::{UdpSocket, lookup_host};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval};
-use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::super::EndpointId;
@@ -23,7 +22,7 @@ use super::super::session::forward_inbound_frames;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
-use super::super::tx_queue::TxQueue;
+use super::super::wiring::ClientWiring;
 use super::MAX_DATAGRAM_BYTES;
 use crate::mavlink::framer::Framer;
 
@@ -80,16 +79,6 @@ impl UdpClientSpec {
             identity: endpoint.identity,
         }
     }
-}
-
-/// Shared wiring a `udpc:` task needs. The TxQueue and stats are constructed
-/// by the spawner so the router can hold its own clones before this task
-/// starts running.
-pub struct UdpClientWiring {
-    pub frame_tx: mpsc::Sender<RouterFrame>,
-    pub tx_queue: TxQueue,
-    pub stats: Arc<EndpointStats>,
-    pub cancel: CancellationToken,
 }
 
 /// Overlay applied on top of the configured destination once an accepted
@@ -202,12 +191,12 @@ async fn resolve_host(host: &str, port: u16) -> Vec<IpAddr> {
 /// not fatal"); performs an initial DNS resolution (failure is non-fatal —
 /// retried on first send/inbound); then loops over inbound, the revert tick,
 /// the TX queue, and cancellation.
-pub async fn run(spec: UdpClientSpec, wiring: UdpClientWiring) {
+pub async fn run(spec: UdpClientSpec, wiring: ClientWiring) {
     let span = info_span!("udpc", name = %spec.name);
     run_inner(spec, wiring).instrument(span).await
 }
 
-async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
+async fn run_inner(spec: UdpClientSpec, wiring: ClientWiring) {
     let UdpClientSpec {
         host,
         port,
@@ -218,7 +207,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: UdpClientWiring) {
         reconnect_max_ms,
         identity,
     } = spec;
-    let UdpClientWiring {
+    let ClientWiring {
         frame_tx,
         tx_queue,
         stats,

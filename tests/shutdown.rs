@@ -28,9 +28,10 @@ use rmr::endpoint::events::{EndpointEvent, Routable, RouterFrame};
 use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::spec::{TcpServerEndpoint, UdpClientEndpoint};
 use rmr::endpoint::stats::{EndpointState, EndpointStats};
-use rmr::endpoint::tcp::server::{self as tcp_server, TcpServerSpec, TcpServerWiring};
+use rmr::endpoint::tcp::server::{self as tcp_server, TcpServerSpec};
 use rmr::endpoint::tx_queue::TxQueue;
-use rmr::endpoint::udp::client::{self as udp_client, UdpClientSpec, UdpClientWiring};
+use rmr::endpoint::udp::client::{self as udp_client, UdpClientSpec};
+use rmr::endpoint::wiring::{ClientWiring, ServerWiring};
 use rmr::endpoint::{EndpointId, EndpointIdAllocator};
 use rmr::router::{self, RouterWiring};
 use rmr::stats::{self as stats_task, StatsEvent, StatsRunConfig};
@@ -129,7 +130,7 @@ async fn router_writes_down_on_cancel_for_leaf_top_level_endpoint() {
         tokio::spawn(async move {
             udp_client::run(
                 spec,
-                UdpClientWiring {
+                ClientWiring {
                     frame_tx,
                     tx_queue,
                     stats,
@@ -199,7 +200,7 @@ async fn router_writes_down_on_cancel_for_parent_listener() {
         tokio::spawn(async move {
             tcp_server::run(
                 spec,
-                TcpServerWiring {
+                ServerWiring {
                     allocator,
                     frame_tx,
                     event_tx,

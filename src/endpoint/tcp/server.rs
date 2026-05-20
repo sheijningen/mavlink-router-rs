@@ -4,17 +4,14 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::super::EndpointId;
-use super::super::EndpointIdAllocator;
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES,
 };
-use super::super::events::{EndpointEvent, PeerRemovalReason, Routable, RouterFrame};
-use super::super::filters::Filters;
+use super::super::events::{EndpointEvent, PeerRemovalReason, Routable};
 use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
 use super::super::session::{SessionOutcome, run_session};
@@ -22,6 +19,7 @@ use super::super::socket::{bind_tcp_dual_stack, configure_tcp_stream};
 use super::super::spec::TcpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats};
 use super::super::tx_queue::TxQueue;
+use super::super::wiring::{ClientWiring, ServerWiring};
 
 /// Inputs that distinguish one `tcps:` listener from another: where to bind
 /// and what to call it. The `reconnect_*_ms` fields are always the
@@ -64,32 +62,17 @@ impl TcpServerSpec {
     }
 }
 
-/// Shared wiring every endpoint needs: the global EndpointId allocator,
-/// the reader→router frame channel, the sub-endpoint lifecycle channel,
-/// and the cancellation token. `stats` is the parent listener's own
-/// `Arc<EndpointStats>` (spawner-constructed via
-/// `EndpointStats::new(Reconnecting)`); the listener writes `Connected`
-/// once bind succeeds — that transition is the observable signal callers
-/// use to detect bind completion when starting from `127.0.0.1:0`.
-pub struct TcpServerWiring {
-    pub allocator: Arc<EndpointIdAllocator>,
-    pub frame_tx: mpsc::Sender<RouterFrame>,
-    pub event_tx: mpsc::Sender<EndpointEvent>,
-    pub cancel: CancellationToken,
-    pub stats: Arc<EndpointStats>,
-}
-
 /// Run a `tcps:` listener until the cancellation token fires. Binding is
 /// retried with the shared capped-exp backoff (CLAUDE.md "Initial bind/dial
 /// failure path"), so a port collision at startup logs at WARN and the
 /// listener attaches as soon as the port frees. Each accepted client becomes
 /// its own routing endpoint announced via `event_tx`.
-pub async fn run(spec: TcpServerSpec, wiring: TcpServerWiring) {
+pub async fn run(spec: TcpServerSpec, wiring: ServerWiring) {
     let span = info_span!("tcps", name = %spec.parent_name);
     run_inner(spec, wiring).instrument(span).await
 }
 
-async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) {
+async fn run_inner(spec: TcpServerSpec, wiring: ServerWiring) {
     let mut backoff = Backoff::new(spec.reconnect_initial_ms, spec.reconnect_max_ms);
 
     loop {
@@ -119,7 +102,7 @@ async fn run_inner(spec: TcpServerSpec, wiring: TcpServerWiring) {
     }
 }
 
-async fn run_accept_loop(listener: TcpListener, spec: &TcpServerSpec, wiring: &TcpServerWiring) {
+async fn run_accept_loop(listener: TcpListener, spec: &TcpServerSpec, wiring: &ServerWiring) {
     let mut children: JoinSet<()> = JoinSet::new();
 
     loop {
@@ -153,7 +136,7 @@ async fn accept_one_client(
     stream: TcpStream,
     peer_addr: SocketAddr,
     spec: &TcpServerSpec,
-    wiring: &TcpServerWiring,
+    wiring: &ServerWiring,
     children: &mut JoinSet<()>,
 ) {
     if let Err(err) = configure_tcp_stream(&stream) {
@@ -193,38 +176,49 @@ async fn accept_one_client(
     }
     info!(parent_id = %spec.parent_id, %peer_addr, %child_id, "tcps client accepted");
 
+    let child_wiring = ClientWiring {
+        frame_tx: wiring.frame_tx.clone(),
+        tx_queue,
+        stats,
+        cancel: wiring.cancel.clone(),
+    };
     children.spawn(
         run_client_session(
             stream,
             peer_addr,
             spec.parent_id,
             child_id,
-            stats,
-            wiring.frame_tx.clone(),
-            tx_queue,
+            child_wiring,
             wiring.event_tx.clone(),
-            wiring.cancel.clone(),
-            spec.identity.filters.clone(),
+            spec.identity.clone(),
         )
         .instrument(child_span),
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_client_session(
     stream: TcpStream,
     peer_addr: SocketAddr,
     parent_id: EndpointId,
     child_id: EndpointId,
-    stats: Arc<EndpointStats>,
-    frame_tx: mpsc::Sender<RouterFrame>,
-    tx_queue: TxQueue,
+    wiring: ClientWiring,
     event_tx: mpsc::Sender<EndpointEvent>,
-    cancel: CancellationToken,
-    filters: Filters,
+    identity: IdentityFlags,
 ) {
+    let ClientWiring {
+        frame_tx,
+        tx_queue,
+        stats,
+        cancel,
+    } = wiring;
     let outcome = run_session(
-        stream, child_id, &stats, &frame_tx, &tx_queue, &cancel, &filters,
+        stream,
+        child_id,
+        &stats,
+        &frame_tx,
+        &tx_queue,
+        &cancel,
+        &identity.filters,
     )
     .await;
     // Drain anything still queued for this client; the socket is going away.

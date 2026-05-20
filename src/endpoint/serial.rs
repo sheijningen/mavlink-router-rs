@@ -1,22 +1,19 @@
 //! `serial:` endpoint: open the device, run the shared session loop, and
 //! reopen on disconnect via the fixed [`REOPEN_DELAY`] poll.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::EndpointId;
-use super::events::RouterFrame;
 use super::identity_flags::IdentityFlags;
 use super::session::{SessionOutcome, run_session};
 use super::spec::{SerialEndpoint, SerialFlowControl};
-use super::stats::{EndpointState, EndpointStats};
-use super::tx_queue::TxQueue;
+use super::stats::EndpointState;
 use super::wait_or_cancel;
+use super::wiring::ClientWiring;
 
 /// Fixed hot-replug poll interval. Below ~100 ms the open-retry loop spins
 /// on a missing device for nothing (USB re-enumeration is on the order of
@@ -57,17 +54,6 @@ impl SerialSpec {
     }
 }
 
-/// Shared wiring a `serial:` task needs. Mirrors `TcpClientWiring` /
-/// `UdpClientWiring` — the TxQueue and stats are constructed by the spawner so
-/// the router can hold its own clones before this task starts running. There
-/// is no `event_tx` (serial has no children).
-pub struct SerialWiring {
-    pub frame_tx: mpsc::Sender<RouterFrame>,
-    pub tx_queue: TxQueue,
-    pub stats: Arc<EndpointStats>,
-    pub cancel: CancellationToken,
-}
-
 /// Run a `serial:` endpoint until the cancellation token fires.
 ///
 /// On startup, opens the configured device at `baud` with the requested
@@ -77,12 +63,12 @@ pub struct SerialWiring {
 /// token trips. The TxQueue is drained-and-discarded on every disconnect so a
 /// fresh device never inherits telemetry that aged out while unplugged
 /// (CLAUDE.md "TX queue on disconnect: drain and discard, never replay").
-pub async fn run(spec: SerialSpec, wiring: SerialWiring) {
+pub async fn run(spec: SerialSpec, wiring: ClientWiring) {
     let span = info_span!("serial", name = %spec.name);
     run_inner(spec, wiring).instrument(span).await
 }
 
-async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
+async fn run_inner(spec: SerialSpec, wiring: ClientWiring) {
     let SerialSpec {
         path,
         baud,
@@ -91,7 +77,7 @@ async fn run_inner(spec: SerialSpec, wiring: SerialWiring) {
         name: _,
         identity,
     } = spec;
-    let SerialWiring {
+    let ClientWiring {
         frame_tx,
         tx_queue,
         stats,

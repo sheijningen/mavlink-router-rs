@@ -24,14 +24,15 @@ use crate::endpoint::EndpointIdAllocator;
 use crate::endpoint::defaults::{DEFAULT_DEDUP_WINDOW_CAPACITY, DEFAULT_TX_QUEUE_FRAMES};
 use crate::endpoint::events::{EndpointEvent, Routable, RouterFrame};
 use crate::endpoint::identity_flags::IdentityFlags;
-use crate::endpoint::serial::{SerialSpec, SerialWiring};
+use crate::endpoint::serial::SerialSpec;
 use crate::endpoint::spec::{EndpointKind, EndpointSpec};
 use crate::endpoint::stats::{EndpointState, EndpointStats};
-use crate::endpoint::tcp::client::{TcpClientSpec, TcpClientWiring};
-use crate::endpoint::tcp::server::{TcpServerSpec, TcpServerWiring};
+use crate::endpoint::tcp::client::TcpClientSpec;
+use crate::endpoint::tcp::server::TcpServerSpec;
 use crate::endpoint::tx_queue::TxQueue;
-use crate::endpoint::udp::client::{UdpClientSpec, UdpClientWiring};
-use crate::endpoint::udp::server::{DEFAULT_PEER_CAPACITY, UdpServerSpec, UdpServerWiring};
+use crate::endpoint::udp::client::UdpClientSpec;
+use crate::endpoint::udp::server::{DEFAULT_PEER_CAPACITY, UdpServerSpec};
+use crate::endpoint::wiring::{ClientWiring, ServerWiring};
 use crate::router::RouterWiring;
 use crate::stats::{DEFAULT_STATS_QUEUE_LINES, StatsEvent, StatsRunConfig};
 
@@ -274,7 +275,7 @@ async fn spawn_endpoint(
                 return Ok(());
             };
             let spec = SerialSpec::from_endpoint(ep, endpoint_id, name);
-            let wiring = SerialWiring {
+            let wiring = ClientWiring {
                 frame_tx: frame_tx.clone(),
                 tx_queue,
                 stats,
@@ -298,7 +299,7 @@ async fn spawn_endpoint(
                 return Ok(());
             };
             let spec = TcpClientSpec::from_endpoint(ep, endpoint_id, name);
-            let wiring = TcpClientWiring {
+            let wiring = ClientWiring {
                 frame_tx: frame_tx.clone(),
                 tx_queue,
                 stats,
@@ -322,7 +323,7 @@ async fn spawn_endpoint(
                 return Ok(());
             };
             let spec = UdpClientSpec::from_endpoint(ep, endpoint_id, name);
-            let wiring = UdpClientWiring {
+            let wiring = ClientWiring {
                 frame_tx: frame_tx.clone(),
                 tx_queue,
                 stats,
@@ -337,7 +338,7 @@ async fn spawn_endpoint(
                 return Ok(());
             }
             let spec = TcpServerSpec::from_endpoint(ep, endpoint_id, name);
-            let wiring = TcpServerWiring {
+            let wiring = ServerWiring {
                 allocator: allocator.clone(),
                 frame_tx: frame_tx.clone(),
                 event_tx: event_tx.clone(),
@@ -353,7 +354,7 @@ async fn spawn_endpoint(
                 return Ok(());
             }
             let spec = UdpServerSpec::from_endpoint(ep, endpoint_id, name);
-            let wiring = UdpServerWiring {
+            let wiring = ServerWiring {
                 allocator: allocator.clone(),
                 frame_tx: frame_tx.clone(),
                 event_tx: event_tx.clone(),

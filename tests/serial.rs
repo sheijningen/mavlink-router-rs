@@ -14,11 +14,12 @@ use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::RouterFrame;
 use rmr::endpoint::filters::Filters;
 use rmr::endpoint::identity_flags::IdentityFlags;
-use rmr::endpoint::serial::{SerialSpec, SerialWiring, run};
+use rmr::endpoint::serial::{SerialSpec, run};
 use rmr::endpoint::session::{SessionOutcome, run_session};
 use rmr::endpoint::spec::SerialFlowControl;
 use rmr::endpoint::stats::{EndpointState, EndpointStats};
 use rmr::endpoint::tx_queue::TxQueue;
+use rmr::endpoint::wiring::ClientWiring;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -45,7 +46,7 @@ async fn assert_run_cancels_cleanly_with(flow_control: SerialFlowControl) {
         name: "test-serial".to_string(),
         identity: IdentityFlags::default(),
     };
-    let wiring = SerialWiring {
+    let wiring = ClientWiring {
         frame_tx,
         tx_queue: tx_queue.clone(),
         stats: stats.clone(),

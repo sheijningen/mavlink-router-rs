@@ -1,23 +1,20 @@
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::{TcpStream, lookup_host};
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::super::EndpointId;
 use super::super::backoff::Backoff;
 use super::super::defaults::{DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS};
-use super::super::events::RouterFrame;
 use super::super::identity_flags::IdentityFlags;
 use super::super::session::{SessionOutcome, run_session};
 use super::super::socket::configure_tcp_stream;
 use super::super::spec::TcpClientEndpoint;
-use super::super::stats::{EndpointState, EndpointStats};
-use super::super::tx_queue::TxQueue;
+use super::super::stats::EndpointState;
 use super::super::wait_or_cancel;
+use super::super::wiring::ClientWiring;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -62,28 +59,18 @@ impl TcpClientSpec {
     }
 }
 
-/// Shared wiring a `tcpc:` task needs. The TxQueue and stats are constructed
-/// by the spawner so the router can hold its own clones before this task
-/// starts running.
-pub struct TcpClientWiring {
-    pub frame_tx: mpsc::Sender<RouterFrame>,
-    pub tx_queue: TxQueue,
-    pub stats: Arc<EndpointStats>,
-    pub cancel: CancellationToken,
-}
-
 /// Run a `tcpc:` endpoint until the cancellation token fires. Resolves DNS,
 /// dials with capped-exponential backoff + ±20% jitter, and on every
 /// successful connect drains the TxQueue (frames buffered during the outage
 /// are stale — CLAUDE.md "TX queue on disconnect: drain and discard"). Each
 /// session reads inbound bytes through a fresh `Framer` and writes outbound
 /// frames pulled from the TxQueue.
-pub async fn run(spec: TcpClientSpec, wiring: TcpClientWiring) {
+pub async fn run(spec: TcpClientSpec, wiring: ClientWiring) {
     let span = info_span!("tcpc", name = %spec.name);
     run_inner(spec, wiring).instrument(span).await
 }
 
-async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
+async fn run_inner(spec: TcpClientSpec, wiring: ClientWiring) {
     let TcpClientSpec {
         host,
         port,
@@ -93,7 +80,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: TcpClientWiring) {
         reconnect_max_ms,
         identity,
     } = spec;
-    let TcpClientWiring {
+    let ClientWiring {
         frame_tx,
         tx_queue,
         stats,

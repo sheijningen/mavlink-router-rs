@@ -18,8 +18,9 @@ use rmr::endpoint::{
     spec::{UdpClientEndpoint, UdpServerEndpoint},
     stats::{EndpointState, EndpointStats},
     tx_queue::TxQueue,
-    udp::client::{self as udp_client, UdpClientSpec, UdpClientWiring},
-    udp::server::{self as udp_server, UdpServerSpec, UdpServerWiring},
+    udp::client::{self as udp_client, UdpClientSpec},
+    udp::server::{self as udp_server, UdpServerSpec},
+    wiring::{ClientWiring, ServerWiring},
 };
 
 use crate::common::wait_for_state;
@@ -102,7 +103,7 @@ pub fn spawn_udps_with_spec(
         tokio::spawn(async move {
             udp_server::run(
                 spec,
-                UdpServerWiring {
+                ServerWiring {
                     allocator,
                     frame_tx,
                     event_tx,
@@ -161,7 +162,7 @@ pub fn spawn_udpc(
         tokio::spawn(async move {
             udp_client::run(
                 spec,
-                UdpClientWiring {
+                ClientWiring {
                     frame_tx,
                     tx_queue,
                     stats,

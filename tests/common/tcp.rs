@@ -16,9 +16,10 @@ use rmr::endpoint::{
     events::{EndpointEvent, RouterFrame},
     spec::{TcpClientEndpoint, TcpServerEndpoint},
     stats::{EndpointState, EndpointStats},
-    tcp::client::{self as tcp_client, TcpClientSpec, TcpClientWiring},
-    tcp::server::{self as tcp_server, TcpServerSpec, TcpServerWiring},
+    tcp::client::{self as tcp_client, TcpClientSpec},
+    tcp::server::{self as tcp_server, TcpServerSpec},
     tx_queue::TxQueue,
+    wiring::{ClientWiring, ServerWiring},
 };
 
 use crate::common::wait_for_state;
@@ -93,7 +94,7 @@ pub fn spawn_tcps_with_spec(
         tokio::spawn(async move {
             tcp_server::run(
                 spec,
-                TcpServerWiring {
+                ServerWiring {
                     allocator,
                     frame_tx,
                     event_tx,
@@ -175,7 +176,7 @@ pub fn spawn_tcpc_with(
         tokio::spawn(async move {
             tcp_client::run(
                 spec,
-                TcpClientWiring {
+                ClientWiring {
                     frame_tx,
                     tx_queue,
                     stats,
