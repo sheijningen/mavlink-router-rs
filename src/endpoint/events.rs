@@ -51,9 +51,8 @@ pub enum EndpointEvent {
         child_id: EndpointId,
         peer_addr: SocketAddr,
         name: String,
-        tx_queue: TxQueue,
         stats: Arc<EndpointStats>,
-        identity: IdentityFlags,
+        routable: Routable,
     },
     PeerRemoved {
         parent_id: EndpointId,
@@ -64,10 +63,14 @@ pub enum EndpointEvent {
 }
 
 /// The dispatch handles an endpoint contributes when it is a routing
-/// destination. Leaf endpoints supply this; `tcps:` / `udps:` parent
-/// listeners pass `None` to [`EndpointEvent::EndpointAdded`] because they
-/// never receive frames themselves — their accepted children / learned peers
-/// register separately via [`EndpointEvent::PeerAdded`].
+/// destination: a `TxQueue` to enqueue frames into and the `IdentityFlags`
+/// the router consults for filters, sniffer, and group membership. Carried
+/// on [`EndpointEvent::EndpointAdded`] for leaf top-level endpoints (`tcpc:`
+/// / `udpc:` / `serial:`) and on [`EndpointEvent::PeerAdded`] for every
+/// accepted `tcps:` child / learned `udps:` peer. `tcps:` / `udps:` parent
+/// listeners pass `None` to `EndpointAdded` because they never receive
+/// frames themselves — their children / peers register separately and supply
+/// their own `Routable`.
 #[derive(Debug)]
 pub struct Routable {
     pub tx_queue: TxQueue,

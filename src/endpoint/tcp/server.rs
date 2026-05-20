@@ -13,7 +13,7 @@ use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES,
 };
-use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
+use super::super::events::{EndpointEvent, PeerRemovalReason, Routable, RouterFrame};
 use super::super::filters::Filters;
 use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
@@ -179,9 +179,11 @@ async fn accept_one_client(
             child_id,
             peer_addr,
             name,
-            tx_queue: tx_queue.clone(),
             stats: stats.clone(),
-            identity: spec.identity.clone(),
+            routable: Routable {
+                tx_queue: tx_queue.clone(),
+                identity: spec.identity.clone(),
+            },
         })
         .await
         .is_err()

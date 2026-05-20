@@ -210,19 +210,18 @@ async fn handle_event(
             child_id,
             peer_addr: _,
             name,
-            tx_queue,
             stats,
-            identity,
+            routable,
         } => {
-            if let Some(group) = &identity.group {
+            if let Some(group) = &routable.identity.group {
                 groups.join(group.clone(), LEARN_CAPACITY);
             }
             let entry = RegisteredEndpoint {
                 name: name.clone(),
                 stats: stats.clone(),
                 routable: Some(RoutableState {
-                    tx_queue,
-                    identity,
+                    tx_queue: routable.tx_queue,
+                    identity: routable.identity,
                     learn: LearnTable::new(LEARN_CAPACITY),
                 }),
             };
@@ -485,9 +484,11 @@ mod tests {
             child_id: fx.id,
             peer_addr: fake_addr(),
             name: name.to_string(),
-            tx_queue: fx.tx_queue.clone(),
             stats: fx.stats.clone(),
-            identity: IdentityFlags::default(),
+            routable: Routable {
+                tx_queue: fx.tx_queue.clone(),
+                identity: IdentityFlags::default(),
+            },
         }
     }
 

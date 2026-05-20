@@ -17,7 +17,7 @@ use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES, READ_BUF_BYTES,
 };
-use super::super::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
+use super::super::events::{EndpointEvent, PeerRemovalReason, Routable, RouterFrame};
 use super::super::identity_flags::{IdentityFlags, SEQ_TRACKER_CAPACITY};
 use super::super::peer_endpoint_name;
 use super::super::seq_tracker::SeqTracker;
@@ -250,9 +250,11 @@ async fn handle_packet(
                 child_id,
                 peer_addr: src,
                 name,
-                tx_queue: tx_queue.clone(),
                 stats: stats.clone(),
-                identity: ctx.spec.identity.clone(),
+                routable: Routable {
+                    tx_queue: tx_queue.clone(),
+                    identity: ctx.spec.identity.clone(),
+                },
             })
             .await
             .is_err()
