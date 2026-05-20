@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
@@ -404,6 +405,7 @@ async fn run_peer_writer(
                 match socket.send_to(&frame, peer_addr).await {
                     Ok(bytes_sent) => stats.add_tx_frame(bytes_sent),
                     Err(err) => {
+                        stats.dropped_tx.fetch_add(1, Ordering::Relaxed);
                         warn!(error = %err, peer = %peer_addr, "udps send_to failed; dropping frame");
                     }
                 }
