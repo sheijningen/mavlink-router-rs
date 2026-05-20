@@ -217,14 +217,19 @@ pub(crate) fn parse_host_port(body: &str, scheme: Scheme) -> Result<(String, u16
     Ok((host, port))
 }
 
+/// Shared regex check for explicit `#name` values and `?group=` values:
+/// `[A-Za-z0-9_-]{1,64}`. Kept as a bool helper so callers can wrap it
+/// in whichever [`SpecError`] variant fits their context.
+pub fn name_matches_regex(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
 pub fn validate_name(name: &str) -> Result<(), SpecError> {
-    if name.is_empty() || name.len() > 64 {
-        return Err(SpecError::InvalidName(name.to_string()));
-    }
-    if !name
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-    {
+    if !name_matches_regex(name) {
         return Err(SpecError::InvalidName(name.to_string()));
     }
     Ok(())

@@ -679,15 +679,27 @@ mod tests {
     }
 
     #[test]
-    fn empty_value_for_group_ok() {
-        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1?group=")).clone();
-        assert_eq!(endpoint.identity.group.as_deref(), Some(""));
+    fn empty_value_for_group_rejected() {
+        let err = EndpointSpec::parse("udps:0.0.0.0:1?group=").unwrap_err();
+        assert!(
+            matches!(err, SpecError::InvalidQueryValue { key: "group", .. }),
+            "expected InvalidQueryValue on group, got {err:?}"
+        );
     }
 
     #[test]
-    fn value_with_embedded_equals_kept_intact() {
-        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1?group=a=b")).clone();
-        assert_eq!(endpoint.identity.group.as_deref(), Some("a=b"));
+    fn group_value_with_embedded_equals_rejected() {
+        let err = EndpointSpec::parse("udps:0.0.0.0:1?group=a=b").unwrap_err();
+        assert!(
+            matches!(err, SpecError::InvalidQueryValue { key: "group", .. }),
+            "expected InvalidQueryValue on group, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn group_value_accepts_allowed_characters() {
+        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1?group=Up-link_1")).clone();
+        assert_eq!(endpoint.identity.group.as_deref(), Some("Up-link_1"));
     }
 
     // -- comprehensive coverage --
