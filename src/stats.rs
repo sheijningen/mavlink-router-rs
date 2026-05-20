@@ -108,6 +108,7 @@ fn state_label(state: EndpointState) -> &'static str {
         EndpointState::Connected => "connected",
         EndpointState::Idle => "idle",
         EndpointState::Down => "down",
+        EndpointState::Unknown => "unknown",
     }
 }
 
@@ -484,6 +485,7 @@ mod tests {
         assert_eq!(state_label(EndpointState::Connected), "connected");
         assert_eq!(state_label(EndpointState::Idle), "idle");
         assert_eq!(state_label(EndpointState::Down), "down");
+        assert_eq!(state_label(EndpointState::Unknown), "unknown");
     }
 
     #[test]

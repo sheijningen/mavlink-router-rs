@@ -21,6 +21,10 @@ use crate::mavlink::framer::Framer;
 /// `Down`. Once an endpoint task observes the cancellation token it must
 /// not write `state` again so the router's `Down` write is guaranteed to
 /// be the last write to the slot.
+///
+/// `Unknown` is the safe fallback [`EndpointStats::load_state`] returns
+/// when the slot holds an out-of-range u8. It is not a value any writer
+/// ever stores; if it surfaces in stats output it indicates a bug.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EndpointState {
     #[default]
@@ -28,6 +32,7 @@ pub enum EndpointState {
     Connected,
     Idle,
     Down,
+    Unknown,
 }
 
 impl EndpointState {
@@ -38,6 +43,7 @@ impl EndpointState {
             Self::Connected => 1,
             Self::Idle => 2,
             Self::Down => 3,
+            Self::Unknown => 4,
         }
     }
 
@@ -48,6 +54,7 @@ impl EndpointState {
             1 => Some(Self::Connected),
             2 => Some(Self::Idle),
             3 => Some(Self::Down),
+            4 => Some(Self::Unknown),
             _ => None,
         }
     }
@@ -107,14 +114,14 @@ impl EndpointStats {
     }
 
     /// Read the current state. Cheap; intended for the stats task's interval
-    /// tick. Panics if the slot was written to an out-of-range value, which
-    /// would indicate a bug in a writer (all writers go through
-    /// [`EndpointStats::store_state`] or [`EndpointStats::new`]).
+    /// tick. An out-of-range u8 returns [`EndpointState::Unknown`] rather
+    /// than panicking — keeps the stats task alive if a future writer
+    /// stores a bad value, at the cost of one visible "unknown" line in
+    /// the JSON output that operators can grep for.
     #[inline]
     pub fn load_state(&self) -> EndpointState {
         let raw = self.state.load(Ordering::Relaxed);
-        EndpointState::from_u8(raw)
-            .unwrap_or_else(|| panic!("EndpointStats.state held an out-of-range u8: {raw}"))
+        EndpointState::from_u8(raw).unwrap_or(EndpointState::Unknown)
     }
 
     /// Overwrite the current state. The split-authority rule on
@@ -206,6 +213,7 @@ mod tests {
             EndpointState::Connected,
             EndpointState::Idle,
             EndpointState::Down,
+            EndpointState::Unknown,
         ] {
             assert_eq!(EndpointState::from_u8(state.as_u8()), Some(state));
         }
@@ -227,6 +235,7 @@ mod tests {
             EndpointState::Reconnecting,
             EndpointState::Idle,
             EndpointState::Down,
+            EndpointState::Unknown,
         ] {
             stats.store_state(state);
             assert_eq!(stats.load_state(), state);
@@ -237,18 +246,18 @@ mod tests {
     fn from_u8_rejects_out_of_range() {
         assert_eq!(EndpointState::from_u8(0), Some(EndpointState::Reconnecting));
         assert_eq!(EndpointState::from_u8(3), Some(EndpointState::Down));
-        assert_eq!(EndpointState::from_u8(4), None);
+        assert_eq!(EndpointState::from_u8(4), Some(EndpointState::Unknown));
+        assert_eq!(EndpointState::from_u8(5), None);
         assert_eq!(EndpointState::from_u8(255), None);
     }
 
     #[test]
-    #[should_panic(expected = "out-of-range u8")]
-    fn load_state_panics_on_out_of_range_raw_value() {
+    fn load_state_returns_unknown_on_out_of_range_raw_value() {
         let stats = EndpointStats::default();
         // Bypass store_state to simulate a hypothetical bug; load_state must
-        // panic rather than silently returning a junk variant.
+        // return Unknown rather than panicking so the stats task survives.
         stats.state.store(99, Ordering::Relaxed);
-        let _ = stats.load_state();
+        assert_eq!(stats.load_state(), EndpointState::Unknown);
     }
 
     #[test]
