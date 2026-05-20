@@ -172,19 +172,7 @@ fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
                             past_extensions = true;
                         }
                     }
-                    "field" => {
-                        if let Some(msg) = current_msg.as_mut() {
-                            let (type_name, field_name) = parse_field_attrs(&event);
-                            let (elem, len) = parse_array_suffix(&type_name)
-                                .unwrap_or_else(|err| panic!("{err}"));
-                            msg.fields.push(ParsedField {
-                                name: field_name,
-                                type_name: elem,
-                                array_length: len,
-                                is_extension: past_extensions,
-                            });
-                        }
-                    }
+                    "field" => push_field(&event, current_msg.as_mut(), past_extensions),
                     _ => {}
                 }
             }
@@ -198,19 +186,7 @@ fn parse_xml(content: &str) -> (Vec<String>, Vec<ParsedMessage>) {
                             past_extensions = true;
                         }
                     }
-                    "field" => {
-                        if let Some(msg) = current_msg.as_mut() {
-                            let (type_name, field_name) = parse_field_attrs(&event);
-                            let (elem, len) = parse_array_suffix(&type_name)
-                                .unwrap_or_else(|err| panic!("{err}"));
-                            msg.fields.push(ParsedField {
-                                name: field_name,
-                                type_name: elem,
-                                array_length: len,
-                                is_extension: past_extensions,
-                            });
-                        }
-                    }
+                    "field" => push_field(&event, current_msg.as_mut(), past_extensions),
                     _ => {}
                 }
             }
@@ -264,6 +240,23 @@ fn parse_msg_attrs(event: &BytesStart<'_>) -> (u32, String) {
         }
     }
     (id, name)
+}
+
+fn push_field(
+    event: &BytesStart<'_>,
+    current_msg: Option<&mut ParsedMessage>,
+    past_extensions: bool,
+) {
+    if let Some(msg) = current_msg {
+        let (type_name, field_name) = parse_field_attrs(event);
+        let (elem, len) = parse_array_suffix(&type_name).unwrap_or_else(|err| panic!("{err}"));
+        msg.fields.push(ParsedField {
+            name: field_name,
+            type_name: elem,
+            array_length: len,
+            is_extension: past_extensions,
+        });
+    }
 }
 
 fn parse_field_attrs(event: &BytesStart<'_>) -> (String, String) {
