@@ -233,6 +233,11 @@ pub async fn run<W>(
 /// (see [`crate::shutdown::PER_TASK_DRAIN`]). 1500 ms for processing
 /// in-flight Register/Finalize events leaves ~500 ms of slack for the
 /// final `drain_queue` writes to land before the harness aborts.
+///
+/// MUST stay strictly smaller than [`crate::shutdown::PER_TASK_DRAIN`] —
+/// if these two equal each other, the harness aborts before the final
+/// `drain_queue` writes get any wall-clock slack and authoritative
+/// synthetic lines vanish.
 const POST_CANCEL_DRAIN: Duration = Duration::from_millis(1500);
 
 /// Queued line tagged with its origin so the bypass path can preferentially
