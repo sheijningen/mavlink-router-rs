@@ -1,5 +1,7 @@
 //! Per-endpoint filter rules and the range types they carry.
 
+use std::fmt;
+
 use crate::mavlink::frame::NodeId;
 
 use super::spec::SpecError;
@@ -56,7 +58,7 @@ impl U8Range {
 /// Lives on [`super::identity_flags::IdentityFlags::filters`] alongside the
 /// rest of the per-endpoint identity (sniffer / group / capacities). Sub-
 /// endpoints inherit the parent listener's `Filters` by clone at spawn time.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct Filters {
     pub allow_msgid_in: Vec<MsgIdRange>,
     pub block_msgid_in: Vec<MsgIdRange>,
@@ -70,6 +72,32 @@ pub struct Filters {
     pub block_src_comp_in: Vec<U8Range>,
     pub allow_src_comp_out: Vec<U8Range>,
     pub block_src_comp_out: Vec<U8Range>,
+}
+
+impl fmt::Debug for Filters {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut entry = formatter.debug_struct("Filters");
+        let lists: &[(&str, &dyn fmt::Debug, bool)] = &[
+            ("allow_msgid_in", &self.allow_msgid_in, self.allow_msgid_in.is_empty()),
+            ("block_msgid_in", &self.block_msgid_in, self.block_msgid_in.is_empty()),
+            ("allow_msgid_out", &self.allow_msgid_out, self.allow_msgid_out.is_empty()),
+            ("block_msgid_out", &self.block_msgid_out, self.block_msgid_out.is_empty()),
+            ("allow_src_sys_in", &self.allow_src_sys_in, self.allow_src_sys_in.is_empty()),
+            ("block_src_sys_in", &self.block_src_sys_in, self.block_src_sys_in.is_empty()),
+            ("allow_src_sys_out", &self.allow_src_sys_out, self.allow_src_sys_out.is_empty()),
+            ("block_src_sys_out", &self.block_src_sys_out, self.block_src_sys_out.is_empty()),
+            ("allow_src_comp_in", &self.allow_src_comp_in, self.allow_src_comp_in.is_empty()),
+            ("block_src_comp_in", &self.block_src_comp_in, self.block_src_comp_in.is_empty()),
+            ("allow_src_comp_out", &self.allow_src_comp_out, self.allow_src_comp_out.is_empty()),
+            ("block_src_comp_out", &self.block_src_comp_out, self.block_src_comp_out.is_empty()),
+        ];
+        for (name, value, empty) in lists {
+            if !empty {
+                entry.field(name, value);
+            }
+        }
+        entry.finish()
+    }
 }
 
 impl Filters {

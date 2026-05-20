@@ -1,3 +1,4 @@
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use super::super::identity_flags::IdentityFlags;
@@ -41,9 +42,19 @@ impl EndpointKind {
 /// Plumbing knobs every endpoint type understands. Identity knobs (filters,
 /// sniffer, group) live on [`IdentityFlags`] alongside the structures that
 /// consume them.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct CommonQuery {
     pub tx_queue_frames: Option<usize>,
+}
+
+impl fmt::Debug for CommonQuery {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut entry = formatter.debug_struct("CommonQuery");
+        if let Some(value) = self.tx_queue_frames {
+            entry.field("tx_queue_frames", &value);
+        }
+        entry.finish()
+    }
 }
 
 /// Hardware flow-control mode for `serial:`. The query-key name
@@ -58,7 +69,7 @@ pub enum SerialFlowControl {
 }
 
 /// `serial:` endpoint config.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct SerialEndpoint {
     pub path: String,
     pub baud: u32,
@@ -67,15 +78,40 @@ pub struct SerialEndpoint {
     pub identity: IdentityFlags,
 }
 
+impl fmt::Debug for SerialEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut entry = formatter.debug_struct("SerialEndpoint");
+        entry.field("path", &self.path);
+        entry.field("baud", &self.baud);
+        if self.flow_control != SerialFlowControl::default() {
+            entry.field("flow_control", &self.flow_control);
+        }
+        debug_common_identity(&mut entry, &self.common, &self.identity);
+        entry.finish()
+    }
+}
+
 /// `udps:` endpoint config. `bind_addr` is fully resolved at parse time —
 /// CLAUDE.md "malformed addresses are fatal" rules out hostnames here, so
 /// every `udps:` reaches the spawner with a concrete `SocketAddr`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct UdpServerEndpoint {
     pub bind_addr: SocketAddr,
     pub idle_secs: Option<u64>,
     pub common: CommonQuery,
     pub identity: IdentityFlags,
+}
+
+impl fmt::Debug for UdpServerEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut entry = formatter.debug_struct("UdpServerEndpoint");
+        entry.field("bind_addr", &self.bind_addr);
+        if let Some(value) = self.idle_secs {
+            entry.field("idle_secs", &value);
+        }
+        debug_common_identity(&mut entry, &self.common, &self.identity);
+        entry.finish()
+    }
 }
 
 impl Default for UdpServerEndpoint {
@@ -93,7 +129,7 @@ impl Default for UdpServerEndpoint {
 }
 
 /// `udpc:` endpoint config.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct UdpClientEndpoint {
     pub host: String,
     pub port: u16,
@@ -102,14 +138,36 @@ pub struct UdpClientEndpoint {
     pub identity: IdentityFlags,
 }
 
+impl fmt::Debug for UdpClientEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut entry = formatter.debug_struct("UdpClientEndpoint");
+        entry.field("host", &self.host);
+        entry.field("port", &self.port);
+        if let Some(value) = self.latch_idle_secs {
+            entry.field("latch_idle_secs", &value);
+        }
+        debug_common_identity(&mut entry, &self.common, &self.identity);
+        entry.finish()
+    }
+}
+
 /// `tcps:` endpoint config. `bind_addr` is fully resolved at parse time —
 /// CLAUDE.md "malformed addresses are fatal" rules out hostnames here, so
 /// every `tcps:` reaches the spawner with a concrete `SocketAddr`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TcpServerEndpoint {
     pub bind_addr: SocketAddr,
     pub common: CommonQuery,
     pub identity: IdentityFlags,
+}
+
+impl fmt::Debug for TcpServerEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut entry = formatter.debug_struct("TcpServerEndpoint");
+        entry.field("bind_addr", &self.bind_addr);
+        debug_common_identity(&mut entry, &self.common, &self.identity);
+        entry.finish()
+    }
 }
 
 impl Default for TcpServerEndpoint {
@@ -126,10 +184,33 @@ impl Default for TcpServerEndpoint {
 }
 
 /// `tcpc:` endpoint config.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct TcpClientEndpoint {
     pub host: String,
     pub port: u16,
     pub common: CommonQuery,
     pub identity: IdentityFlags,
+}
+
+impl fmt::Debug for TcpClientEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut entry = formatter.debug_struct("TcpClientEndpoint");
+        entry.field("host", &self.host);
+        entry.field("port", &self.port);
+        debug_common_identity(&mut entry, &self.common, &self.identity);
+        entry.finish()
+    }
+}
+
+fn debug_common_identity(
+    entry: &mut fmt::DebugStruct<'_, '_>,
+    common: &CommonQuery,
+    identity: &IdentityFlags,
+) {
+    if *common != CommonQuery::default() {
+        entry.field("common", common);
+    }
+    if *identity != IdentityFlags::default() {
+        entry.field("identity", identity);
+    }
 }

@@ -1,6 +1,7 @@
 //! Per-endpoint identity bundle: filter rules, sniffer flag, optional group
 //! label. See [`IdentityFlags`].
 
+use std::fmt;
 use std::sync::Arc;
 
 use super::filters::Filters;
@@ -25,11 +26,27 @@ pub const SEQ_TRACKER_CAPACITY: usize = 32;
 /// knobs keep the CLAUDE.md defaults baked in by [`IdentityFlags::default`].
 /// Sub-endpoints inherit a clone of the parent's `IdentityFlags` at spawn
 /// time.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct IdentityFlags {
     pub filters: Filters,
     pub sniffer: bool,
     pub group: Option<Arc<str>>,
+}
+
+impl fmt::Debug for IdentityFlags {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut entry = formatter.debug_struct("IdentityFlags");
+        if self.filters != Filters::default() {
+            entry.field("filters", &self.filters);
+        }
+        if self.sniffer {
+            entry.field("sniffer", &self.sniffer);
+        }
+        if let Some(group) = &self.group {
+            entry.field("group", group);
+        }
+        entry.finish()
+    }
 }
 
 impl IdentityFlags {
