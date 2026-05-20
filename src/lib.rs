@@ -8,7 +8,7 @@ pub mod router;
 pub mod shutdown;
 pub mod stats;
 
-pub use error::Error;
+use error::Error;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -126,19 +126,6 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
     Ok(())
 }
 
-/// Short scheme label for log messages — matches the CLI prefix operators
-/// actually type, so an `endpoint registered` INFO line can be grepped against
-/// the same config file the operator hands the binary.
-fn endpoint_kind_label(kind: &EndpointKind) -> &'static str {
-    match kind {
-        EndpointKind::Serial(_) => "serial",
-        EndpointKind::UdpServer(_) => "udps",
-        EndpointKind::UdpClient(_) => "udpc",
-        EndpointKind::TcpServer(_) => "tcps",
-        EndpointKind::TcpClient(_) => "tcpc",
-    }
-}
-
 /// Emit one INFO event capturing every resolved global plus the per-endpoint
 /// table rendered via `Debug`, so every defaulted-in `?key=val` is visible
 /// in the line. Revisit if any future config field carries a secret.
@@ -156,20 +143,6 @@ fn log_merged_config(cfg: &Config) {
     );
 }
 
-/// Per-spec [`IdentityFlags`] borrow — every `EndpointKind` carries one on
-/// its inner struct, but at slightly different field paths. Centralising the
-/// match keeps callers like the group/dedup check from duplicating the
-/// arms.
-fn spec_identity(spec: &EndpointSpec) -> &IdentityFlags {
-    match &spec.kind {
-        EndpointKind::Serial(endpoint) => &endpoint.identity,
-        EndpointKind::UdpServer(endpoint) => &endpoint.identity,
-        EndpointKind::UdpClient(endpoint) => &endpoint.identity,
-        EndpointKind::TcpServer(endpoint) => &endpoint.identity,
-        EndpointKind::TcpClient(endpoint) => &endpoint.identity,
-    }
-}
-
 /// Return every group with two or more non-sniffer members when dedup is
 /// off. Sniffers are diagnostic taps, not redundant legs, so they don't
 /// count. `dedup_ms > 0` short-circuits to an empty `Vec`.
@@ -179,7 +152,7 @@ fn groups_needing_dedup_warning(specs: &[EndpointSpec], dedup_ms: u64) -> Vec<(A
     }
     let mut by_group: HashMap<Arc<str>, usize> = HashMap::new();
     for spec in specs {
-        let identity = spec_identity(spec);
+        let identity = spec.kind.identity();
         if identity.sniffer {
             continue;
         }
@@ -281,7 +254,7 @@ async fn spawn_endpoint(
     let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
     info!(
         endpoint_id = %endpoint_id,
-        scheme = endpoint_kind_label(&kind),
+        scheme = kind.scheme().as_str(),
         %name,
         "spawning endpoint"
     );

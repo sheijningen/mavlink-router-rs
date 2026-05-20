@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use super::super::identity_flags::IdentityFlags;
+use super::Scheme;
 
 /// Supported endpoint schemes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,6 +11,31 @@ pub enum EndpointKind {
     UdpClient(UdpClientEndpoint),
     TcpServer(TcpServerEndpoint),
     TcpClient(TcpClientEndpoint),
+}
+
+impl EndpointKind {
+    /// The [`Scheme`] this endpoint belongs to, without re-matching every variant.
+    pub fn scheme(&self) -> Scheme {
+        match self {
+            EndpointKind::Serial(_) => Scheme::Serial,
+            EndpointKind::UdpServer(_) => Scheme::UdpServer,
+            EndpointKind::UdpClient(_) => Scheme::UdpClient,
+            EndpointKind::TcpServer(_) => Scheme::TcpServer,
+            EndpointKind::TcpClient(_) => Scheme::TcpClient,
+        }
+    }
+
+    /// Borrow the identity knobs (filters, sniffer, group) every variant
+    /// carries on its inner struct at the same `identity` field path.
+    pub fn identity(&self) -> &IdentityFlags {
+        match self {
+            EndpointKind::Serial(endpoint) => &endpoint.identity,
+            EndpointKind::UdpServer(endpoint) => &endpoint.identity,
+            EndpointKind::UdpClient(endpoint) => &endpoint.identity,
+            EndpointKind::TcpServer(endpoint) => &endpoint.identity,
+            EndpointKind::TcpClient(endpoint) => &endpoint.identity,
+        }
+    }
 }
 
 /// Plumbing knobs every endpoint type understands. Identity knobs (filters,
