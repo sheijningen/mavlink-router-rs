@@ -80,7 +80,6 @@ use learn::LearnTable;
 /// and may be observed without coordination.
 struct RegisteredEndpoint {
     name: String,
-    is_top_level: bool,
     stats: Arc<EndpointStats>,
     /// `None` for parent listeners — they have no `TxQueue` and the hot
     /// frame-dispatch loop skips them at one branch. `Some(_)` carries the
@@ -197,7 +196,6 @@ async fn handle_event(
             });
             let entry = RegisteredEndpoint {
                 name: name.clone(),
-                is_top_level: true,
                 stats: stats.clone(),
                 routable: routable_state,
             };
@@ -221,7 +219,6 @@ async fn handle_event(
             }
             let entry = RegisteredEndpoint {
                 name: name.clone(),
-                is_top_level: false,
                 stats: stats.clone(),
                 routable: Some(RoutableState {
                     tx_queue,
@@ -398,7 +395,6 @@ async fn shutdown_sweep(
         trace!(
             %id,
             name = %entry.name,
-            top_level = entry.is_top_level,
             routable = entry.routable.is_some(),
             "router: shutdown finalize"
         );
