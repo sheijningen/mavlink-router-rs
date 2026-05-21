@@ -39,24 +39,6 @@ impl EndpointKind {
     }
 }
 
-/// Plumbing knobs every endpoint type understands. Identity knobs (filters,
-/// sniffer, group) live on [`IdentityFlags`] alongside the structures that
-/// consume them.
-#[derive(Clone, PartialEq, Eq, Default)]
-pub struct CommonQuery {
-    pub tx_queue_frames: Option<usize>,
-}
-
-impl fmt::Debug for CommonQuery {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut entry = formatter.debug_struct("CommonQuery");
-        if let Some(value) = self.tx_queue_frames {
-            entry.field("tx_queue_frames", &value);
-        }
-        entry.finish()
-    }
-}
-
 /// Hardware flow-control mode for `serial:`. The query-key name
 /// `?flow_control=rtscts|none` is locked (CLAUDE.md Phase 4 contract bullet)
 /// — `rtscts` over `hw` keeps the door open for adding DTR/DSR later without
@@ -74,7 +56,6 @@ pub struct SerialEndpoint {
     pub path: String,
     pub baud: u32,
     pub flow_control: SerialFlowControl,
-    pub common: CommonQuery,
     pub identity: IdentityFlags,
 }
 
@@ -86,7 +67,7 @@ impl fmt::Debug for SerialEndpoint {
         if self.flow_control != SerialFlowControl::default() {
             entry.field("flow_control", &self.flow_control);
         }
-        debug_common_identity(&mut entry, &self.common, &self.identity);
+        debug_identity(&mut entry, &self.identity);
         entry.finish()
     }
 }
@@ -98,7 +79,6 @@ impl fmt::Debug for SerialEndpoint {
 pub struct UdpServerEndpoint {
     pub bind_addr: SocketAddr,
     pub idle_secs: Option<u64>,
-    pub common: CommonQuery,
     pub identity: IdentityFlags,
 }
 
@@ -109,7 +89,7 @@ impl fmt::Debug for UdpServerEndpoint {
         if let Some(value) = self.idle_secs {
             entry.field("idle_secs", &value);
         }
-        debug_common_identity(&mut entry, &self.common, &self.identity);
+        debug_identity(&mut entry, &self.identity);
         entry.finish()
     }
 }
@@ -122,7 +102,6 @@ impl Default for UdpServerEndpoint {
             // override it before constructing a spec.
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             idle_secs: None,
-            common: CommonQuery::default(),
             identity: IdentityFlags::default(),
         }
     }
@@ -134,7 +113,6 @@ pub struct UdpClientEndpoint {
     pub host: String,
     pub port: u16,
     pub latch_idle_secs: Option<u64>,
-    pub common: CommonQuery,
     pub identity: IdentityFlags,
 }
 
@@ -146,7 +124,7 @@ impl fmt::Debug for UdpClientEndpoint {
         if let Some(value) = self.latch_idle_secs {
             entry.field("latch_idle_secs", &value);
         }
-        debug_common_identity(&mut entry, &self.common, &self.identity);
+        debug_identity(&mut entry, &self.identity);
         entry.finish()
     }
 }
@@ -157,7 +135,6 @@ impl fmt::Debug for UdpClientEndpoint {
 #[derive(Clone, PartialEq, Eq)]
 pub struct TcpServerEndpoint {
     pub bind_addr: SocketAddr,
-    pub common: CommonQuery,
     pub identity: IdentityFlags,
 }
 
@@ -165,7 +142,7 @@ impl fmt::Debug for TcpServerEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut entry = formatter.debug_struct("TcpServerEndpoint");
         entry.field("bind_addr", &self.bind_addr);
-        debug_common_identity(&mut entry, &self.common, &self.identity);
+        debug_identity(&mut entry, &self.identity);
         entry.finish()
     }
 }
@@ -177,7 +154,6 @@ impl Default for TcpServerEndpoint {
             // overwrite this field via `parse_listen_addr`; tests can
             // override it before constructing a spec.
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            common: CommonQuery::default(),
             identity: IdentityFlags::default(),
         }
     }
@@ -188,7 +164,6 @@ impl Default for TcpServerEndpoint {
 pub struct TcpClientEndpoint {
     pub host: String,
     pub port: u16,
-    pub common: CommonQuery,
     pub identity: IdentityFlags,
 }
 
@@ -197,19 +172,12 @@ impl fmt::Debug for TcpClientEndpoint {
         let mut entry = formatter.debug_struct("TcpClientEndpoint");
         entry.field("host", &self.host);
         entry.field("port", &self.port);
-        debug_common_identity(&mut entry, &self.common, &self.identity);
+        debug_identity(&mut entry, &self.identity);
         entry.finish()
     }
 }
 
-fn debug_common_identity(
-    entry: &mut fmt::DebugStruct<'_, '_>,
-    common: &CommonQuery,
-    identity: &IdentityFlags,
-) {
-    if *common != CommonQuery::default() {
-        entry.field("common", common);
-    }
+fn debug_identity(entry: &mut fmt::DebugStruct<'_, '_>, identity: &IdentityFlags) {
     if *identity != IdentityFlags::default() {
         entry.field("identity", identity);
     }

@@ -311,14 +311,15 @@ async fn tcpc_survives_repeated_flaps_under_sustained_ingress() {
 }
 
 /// Binary-driven flap-cycle test that asserts the CLAUDE.md "`dropped_tx`
-/// accounting" bullet at the wire level. Spawns `rmr --stats` with the
-/// `tcpc:` endpoint forced to a small (`tx_queue_frames=8`) writer queue
-/// so a burst of stale frames during a disconnect window overflows on the
-/// router-side `force_push` path on top of the writer-side
-/// `drain_and_discard` path on reconnect. After two flap cycles, parses
-/// stdout JSON-Lines and asserts the tcpc endpoint's `dropped_tx` counter
-/// climbed past a wide-margin floor. Unix-only — same signal-portability
-/// caveat as the binary shutdown_soak case.
+/// accounting" bullet at the wire level. Spawns `rmr --stats`, drops the
+/// downstream `tcps:` listener, and floods the `udps:` ingress with a
+/// >256-frame burst per cycle so the `tcpc:` writer queue (at the
+/// hardcoded `DEFAULT_TX_QUEUE_FRAMES = 256`) overflows on the router-side
+/// `force_push` path on top of the writer-side `drain_and_discard` path on
+/// reconnect. After two flap cycles, parses stdout JSON-Lines and asserts
+/// the tcpc endpoint's `dropped_tx` counter climbed past a wide-margin
+/// floor. Unix-only — same signal-portability caveat as the binary
+/// shutdown_soak case.
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {
@@ -362,13 +363,11 @@ async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {
             "--skip-config-log",
             "--log-level=warn",
             &format!("udps:127.0.0.1:{}#bus", udps_addr.port()),
-            // Small tx_queue_frames forces router-side force_push eviction
-            // on the burst during the disconnect window, on top of the
-            // writer-side drain-on-disconnect drops.
-            &format!(
-                "tcpc:127.0.0.1:{}#client?tx_queue_frames=8",
-                listen_addr.port()
-            ),
+            // Default `tx_queue_frames=256`. The during-disconnect burst
+            // below sends >256 frames per cycle so router-side force_push
+            // eviction fires on the latter half, on top of the writer-side
+            // drain-on-disconnect drops.
+            &format!("tcpc:127.0.0.1:{}#client", listen_addr.port()),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -393,10 +392,14 @@ async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {
     // -- Flap cycle 1 --
     drop(conn);
     drop(listener);
-    // Burst 30 stale frames into the udps while rmr can't reach the
-    // (gone) tcps listener — these queue in tcpc's TxQueue (cap 8) and
-    // then get drained-and-discarded on reconnect.
-    inject_burst(&injector, 99, 0..30).await;
+    // Burst >256 stale frames into the udps while rmr can't reach the
+    // (gone) tcps listener — the first ~256 fill tcpc's TxQueue, the
+    // overflow triggers router-side force_push eviction, and whatever is
+    // still in the queue at reconnect gets drained-and-discarded.
+    // `inject_burst` takes Range<u8>, so use two back-to-back bursts to
+    // exceed 256 (seq wraps; the router doesn't dedup here).
+    inject_burst(&injector, 99, 0..255).await;
+    inject_burst(&injector, 99, 0..50).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let listener2 = bind_reusable_listener(listen_addr);
     let (mut conn2, _) = timeout(Duration::from_secs(3), listener2.accept())
@@ -419,7 +422,8 @@ async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {
     // -- Flap cycle 2 --
     drop(conn2);
     drop(listener2);
-    inject_burst(&injector, 99, 50..80).await;
+    inject_burst(&injector, 99, 0..255).await;
+    inject_burst(&injector, 99, 0..50).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let listener3 = bind_reusable_listener(listen_addr);
     let (mut conn3, _) = timeout(Duration::from_secs(3), listener3.accept())
@@ -482,12 +486,13 @@ async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {
     let stdout = String::from_utf8(out).expect("stdout utf8");
     let stderr = String::from_utf8(err).expect("stderr utf8");
 
-    // Two flap cycles × 30 stale frames each = 60 inbound frames bound
-    // for tcpc that never reach the wire. With tx_queue_frames=8, at
-    // most 8 can survive in the queue at any moment; the rest are
-    // `force_push` evictions (router-side) or drain-on-disconnect drops
+    // Two flap cycles × ~305 stale frames each = ~610 inbound frames
+    // bound for tcpc that never reach the wire. With the default 256-
+    // deep queue, at most 256 survive in the queue at any moment; the
+    // rest hit `force_push` (router-side) or drain-on-disconnect
     // (writer-side). A floor of 20 leaves comfortable headroom against
-    // scheduling jitter while still proving the counter moved.
+    // scheduling jitter and any UDP-receive drops while still proving
+    // the counter moved.
     let mut max_dropped_client: u64 = 0;
     for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {

@@ -121,8 +121,6 @@ struct TomlEndpoint {
     #[serde(rename = "type")]
     scheme: String,
     name: Option<String>,
-    // common
-    tx_queue_frames: Option<usize>,
     // scheme-specific (only the subset for the chosen scheme is allowed)
     path: Option<String>,
     baud: Option<u32>,
@@ -239,9 +237,6 @@ impl TomlEndpoint {
 
     fn collect_pairs(&self) -> Vec<(String, String)> {
         let mut pairs = Vec::new();
-        if let Some(value) = self.tx_queue_frames {
-            pairs.push(("tx_queue_frames".to_string(), value.to_string()));
-        }
         if let Some(value) = self.flow_control.as_ref() {
             pairs.push(("flow_control".to_string(), value.clone()));
         }
@@ -381,7 +376,6 @@ path = "/dev/ttyUSB0"
 baud = 921600
 flow_control = "rtscts"
 name = "fc"
-tx_queue_frames = 512
 "#;
         let cfg = TomlConfig::parse_str(text).expect("must parse");
         assert_eq!(cfg.endpoints.len(), 1);
@@ -397,7 +391,6 @@ tx_queue_frames = 512
             ep.flow_control,
             crate::endpoint::spec::SerialFlowControl::RtsCts,
         );
-        assert_eq!(ep.common.tx_queue_frames, Some(512));
     }
 
     #[test]

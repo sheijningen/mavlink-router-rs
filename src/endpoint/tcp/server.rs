@@ -24,12 +24,15 @@ use super::super::wiring::{ClientWiring, ServerWiring};
 /// Inputs that distinguish one `tcps:` listener from another: where to bind
 /// and what to call it. The `reconnect_*_ms` fields are always the
 /// hardcoded `tcpc:` curve (CLAUDE.md "Hardcoded plumbing knobs"); the field
-/// stays on the Spec so bind-retry tests can shrink the curve. `identity`
-/// carries the filter / sniffer / group bundle — inherited by every accepted
-/// child at admission time (CLAUDE.md "Sub-endpoints inherit their parent's
-/// `IdentityFlags` by clone at spawn time"); the child reader applies the
-/// in-filter snapshot, the router applies out-filter / sniffer / group from
-/// the same bundle.
+/// stays on the Spec so bind-retry tests can shrink the curve.
+/// `tx_queue_frames` is always [`DEFAULT_TX_QUEUE_FRAMES`] at the
+/// user-facing layer; the field stays on the Spec so drop-oldest tests can
+/// shrink the per-child queue without standing up 256+ dummy frames.
+/// `identity` carries the filter / sniffer / group bundle — inherited by
+/// every accepted child at admission time (CLAUDE.md "Sub-endpoints inherit
+/// their parent's `IdentityFlags` by clone at spawn time"); the child
+/// reader applies the in-filter snapshot, the router applies out-filter /
+/// sniffer / group from the same bundle.
 pub struct TcpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,
@@ -41,10 +44,10 @@ pub struct TcpServerSpec {
 }
 
 impl TcpServerSpec {
-    /// Build a runtime `TcpServerSpec` from the parsed-but-not-defaulted
-    /// `TcpServerEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
-    /// defaults for any unset knob. The spawner supplies `parent_id` and
-    /// `parent_name` because the parser doesn't allocate IDs.
+    /// Build a runtime `TcpServerSpec` from the parsed `TcpServerEndpoint`,
+    /// stamping the hardcoded reconnect curve and per-child queue depth.
+    /// The spawner supplies `parent_id` and `parent_name` because the parser
+    /// doesn't allocate IDs.
     pub fn from_endpoint(
         ep: TcpServerEndpoint,
         parent_id: EndpointId,
@@ -54,7 +57,7 @@ impl TcpServerSpec {
             listen_addr: ep.bind_addr,
             parent_id,
             parent_name,
-            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
             identity: ep.identity,
@@ -245,30 +248,12 @@ async fn run_client_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::spec::CommonQuery;
 
     #[test]
     fn spec_defaults_when_endpoint_unset() {
         let ep = TcpServerEndpoint::default();
         let spec = TcpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
-        assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
-        assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
-    }
-
-    #[test]
-    fn spec_overrides_common_fields() {
-        let ep = TcpServerEndpoint {
-            common: CommonQuery {
-                tx_queue_frames: Some(8),
-            },
-            ..TcpServerEndpoint::default()
-        };
-        let spec = TcpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
-        assert_eq!(spec.tx_queue_frames, 8);
-        // Reconnect curve stays at the tcpc defaults — CLAUDE.md "TCP/UDP
-        // server bind reuses the `tcpc:` backoff curve" and tcps does not
-        // expose per-endpoint reconnect overrides in v1.
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     }

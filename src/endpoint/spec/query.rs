@@ -1,22 +1,16 @@
 use std::collections::BTreeSet;
 
-use super::super::defaults::{MAX_TX_QUEUE_FRAMES, MIN_TX_QUEUE_FRAMES};
 use super::super::filters::Filters;
 use super::super::identity_flags::IdentityFlags;
 use super::super::udp::client::{MAX_LATCH_IDLE_SECS, MIN_LATCH_IDLE_SECS};
 use super::super::udp::server::{MAX_IDLE_SECS, MIN_IDLE_SECS};
 use super::Scheme;
-use super::bounds::{check_u64_range, check_usize_range};
+use super::bounds::check_u64_range;
 use super::endpoint_kinds::{
-    CommonQuery, SerialEndpoint, SerialFlowControl, TcpClientEndpoint, TcpServerEndpoint,
-    UdpClientEndpoint, UdpServerEndpoint,
+    SerialEndpoint, SerialFlowControl, TcpClientEndpoint, TcpServerEndpoint, UdpClientEndpoint,
+    UdpServerEndpoint,
 };
 use super::error::SpecError;
-
-/// Plumbing keys handled by [`CommonQuery::apply`]. Identity-side keys live
-/// on [`IdentityFlags::KEYS`] and [`Filters::KEYS`]; the "did you mean"
-/// suggestion walks all three.
-pub const COMMON_KEYS: &[&str] = &["tx_queue_frames"];
 
 const SERIAL_EXTRA: &[&str] = &["flow_control"];
 const UDPS_EXTRA: &[&str] = &["idle_secs"];
@@ -61,45 +55,11 @@ pub fn parse_query_pairs(text: &str) -> Result<Vec<(String, String)>, SpecError>
     Ok(out)
 }
 
-impl CommonQuery {
-    /// Apply one key/value pair if it names a plumbing knob. Returns
-    /// `Ok(true)` when the key was consumed, `Ok(false)` when it isn't a
-    /// plumbing-key name (caller falls through to identity / scheme-specific
-    /// handling), or `Err` on a malformed value.
-    pub fn apply(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
-        match key {
-            "tx_queue_frames" => {
-                let count = parse_usize(value, "tx_queue_frames")?;
-                self.tx_queue_frames = Some(check_usize_range(
-                    count,
-                    "tx_queue_frames",
-                    MIN_TX_QUEUE_FRAMES,
-                    MAX_TX_QUEUE_FRAMES,
-                )?);
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
-    }
-}
-
 /// Per-scheme adapter that knows how to set scheme-specific knobs and then
-/// falls through to [`IdentityFlags::apply`] and [`CommonQuery::apply`] for
-/// shared knobs.
+/// falls through to [`IdentityFlags::apply`] for the shared identity bundle
+/// (filters, sniffer, group).
 pub trait QueryApplier {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError>;
-}
-
-fn apply_shared(
-    identity: &mut IdentityFlags,
-    common: &mut CommonQuery,
-    key: &str,
-    value: &str,
-) -> Result<bool, SpecError> {
-    if identity.apply(key, value)? {
-        return Ok(true);
-    }
-    common.apply(key, value)
 }
 
 pub struct SerialApplier<'a>(pub &'a mut SerialEndpoint);
@@ -110,7 +70,7 @@ impl QueryApplier for SerialApplier<'_> {
                 self.0.flow_control = parse_flow_control(value)?;
                 Ok(true)
             }
-            _ => apply_shared(&mut self.0.identity, &mut self.0.common, key, value),
+            _ => self.0.identity.apply(key, value),
         }
     }
 }
@@ -140,7 +100,7 @@ impl QueryApplier for UdpServerApplier<'_> {
                 )?);
                 Ok(true)
             }
-            _ => apply_shared(&mut self.0.identity, &mut self.0.common, key, value),
+            _ => self.0.identity.apply(key, value),
         }
     }
 }
@@ -158,21 +118,21 @@ impl QueryApplier for UdpClientApplier<'_> {
             )?);
             return Ok(true);
         }
-        apply_shared(&mut self.0.identity, &mut self.0.common, key, value)
+        self.0.identity.apply(key, value)
     }
 }
 
 pub struct TcpServerApplier<'a>(pub &'a mut TcpServerEndpoint);
 impl QueryApplier for TcpServerApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
-        apply_shared(&mut self.0.identity, &mut self.0.common, key, value)
+        self.0.identity.apply(key, value)
     }
 }
 
 pub struct TcpClientApplier<'a>(pub &'a mut TcpClientEndpoint);
 impl QueryApplier for TcpClientApplier<'_> {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
-        apply_shared(&mut self.0.identity, &mut self.0.common, key, value)
+        self.0.identity.apply(key, value)
     }
 }
 
@@ -198,9 +158,8 @@ pub fn apply_pairs(
 
 pub(crate) fn suggest_query_key(scheme: Scheme, unknown: &str) -> Option<&'static str> {
     let extras = known_keys_for(scheme);
-    COMMON_KEYS
+    IdentityFlags::KEYS
         .iter()
-        .chain(IdentityFlags::KEYS.iter())
         .chain(Filters::KEYS.iter())
         .chain(extras.iter())
         .map(|key| (*key, levenshtein(unknown, key)))
@@ -242,16 +201,9 @@ pub(crate) fn parse_u64(value: &str, key: &'static str) -> Result<u64, SpecError
     })
 }
 
-pub(crate) fn parse_usize(value: &str, key: &'static str) -> Result<usize, SpecError> {
-    value.parse().map_err(|_| SpecError::InvalidQueryValue {
-        key,
-        reason: format!("expected a non-negative integer, got '{value}'"),
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{COMMON_KEYS, levenshtein};
+    use super::levenshtein;
     use crate::endpoint::filters::{Filters, MsgIdRange, U8Range};
     use crate::endpoint::identity_flags::IdentityFlags;
     use crate::endpoint::spec::{
@@ -389,30 +341,6 @@ mod tests {
             1,
             86_400,
             86_401,
-        );
-    }
-
-    // -- tx_queue_frames (1..=65536) — CommonQuery on every scheme --
-
-    #[test]
-    fn tx_queue_frames_zero_rejected() {
-        assert_bounds_err(
-            "tcpc:h:1?tx_queue_frames=0",
-            "tx_queue_frames",
-            1,
-            65_536,
-            0,
-        );
-    }
-
-    #[test]
-    fn tx_queue_frames_above_max_rejected() {
-        assert_bounds_err(
-            "tcpc:h:1?tx_queue_frames=65537",
-            "tx_queue_frames",
-            1,
-            65_536,
-            65_537,
         );
     }
 
@@ -604,20 +532,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_query_key_with_near_match() {
-        match parse_err("udps:0.0.0.0:1?tx_queue_frame=10") {
-            SpecError::UnknownQueryKey {
-                key,
-                suggestion: Some("tx_queue_frames"),
-                ..
-            } => {
-                assert_eq!(key, "tx_queue_frame");
-            }
-            other => panic!("wrong error: {other:?}"),
-        }
-    }
-
-    #[test]
     fn unknown_query_key_no_suggestion_when_distant() {
         match parse_err("udps:0.0.0.0:1?xyz=1") {
             SpecError::UnknownQueryKey {
@@ -766,12 +680,6 @@ mod tests {
         assert_eq!(endpoint.identity, IdentityFlags::default());
     }
 
-    #[test]
-    fn plumbing_keys_typed() {
-        let endpoint = as_tcpc(&parse_ok("tcpc:x:1?tx_queue_frames=128")).clone();
-        assert_eq!(endpoint.common.tx_queue_frames, Some(128));
-    }
-
     // -- helpers / invariants --
 
     #[test]
@@ -782,22 +690,6 @@ mod tests {
         assert_eq!(levenshtein("abc", "abc"), 0);
         assert_eq!(levenshtein("kitten", "sitting"), 3);
         assert_eq!(levenshtein("snifer", "sniffer"), 1);
-    }
-
-    #[test]
-    fn common_keys_sorted_and_unique() {
-        let mut copy: Vec<&&str> = COMMON_KEYS.iter().collect();
-        copy.sort();
-        copy.dedup();
-        assert_eq!(copy.len(), COMMON_KEYS.len(), "duplicates present");
-        for window in COMMON_KEYS.windows(2) {
-            assert!(
-                window[0] < window[1],
-                "not sorted: {} >= {}",
-                window[0],
-                window[1]
-            );
-        }
     }
 
     #[test]

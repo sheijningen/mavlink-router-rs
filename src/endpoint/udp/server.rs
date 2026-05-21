@@ -69,11 +69,14 @@ struct PeerEntry {
 /// plumbing knobs"); the field stays on the Spec so bind-retry tests can
 /// shrink the curve. `peer_capacity` stays mutable for the same reason —
 /// production defaults it to [`DEFAULT_PEER_CAPACITY`], eviction tests
-/// shrink it. `identity` carries the filter / sniffer / group bundle —
-/// inherited by every learned peer at admission time (CLAUDE.md "Sub-
-/// endpoints inherit their parent's `IdentityFlags` by clone at spawn
-/// time"); the per-peer reader applies the in-filter snapshot, the router
-/// applies out-filter / sniffer / group from the same bundle.
+/// shrink it. `tx_queue_frames` is always [`DEFAULT_TX_QUEUE_FRAMES`] at
+/// the user-facing layer; the field stays on the Spec so drop-oldest tests
+/// can shrink the per-peer queue without 256+ dummy frames. `identity`
+/// carries the filter / sniffer / group bundle — inherited by every learned
+/// peer at admission time (CLAUDE.md "Sub-endpoints inherit their parent's
+/// `IdentityFlags` by clone at spawn time"); the per-peer reader applies
+/// the in-filter snapshot, the router applies out-filter / sniffer / group
+/// from the same bundle.
 pub struct UdpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,
@@ -87,10 +90,10 @@ pub struct UdpServerSpec {
 }
 
 impl UdpServerSpec {
-    /// Build a runtime `UdpServerSpec` from the parsed-but-not-defaulted
-    /// `UdpServerEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
-    /// defaults for any unset knob. The spawner supplies `parent_id` and
-    /// `parent_name` because the parser doesn't allocate IDs.
+    /// Build a runtime `UdpServerSpec` from the parsed `UdpServerEndpoint`,
+    /// stamping the hardcoded reconnect curve, peer capacity, and per-peer
+    /// queue depth. The spawner supplies `parent_id` and `parent_name`
+    /// because the parser doesn't allocate IDs.
     pub fn from_endpoint(
         ep: UdpServerEndpoint,
         parent_id: EndpointId,
@@ -102,7 +105,7 @@ impl UdpServerSpec {
             parent_name,
             idle_secs: ep.idle_secs.unwrap_or(DEFAULT_IDLE_SECS),
             peer_capacity: DEFAULT_PEER_CAPACITY,
-            tx_queue_frames: ep.common.tx_queue_frames.unwrap_or(DEFAULT_TX_QUEUE_FRAMES),
+            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
             identity: ep.identity,
@@ -403,7 +406,6 @@ mod tests {
     use super::*;
     use crate::endpoint::EndpointIdAllocator;
     use crate::endpoint::events::RouterFrame;
-    use crate::endpoint::spec::CommonQuery;
     use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
@@ -418,17 +420,13 @@ mod tests {
     }
 
     #[test]
-    fn spec_overrides_common_fields_but_not_reconnect_curve() {
+    fn spec_overrides_idle_secs_via_endpoint() {
         let ep = UdpServerEndpoint {
             idle_secs: Some(10),
-            common: CommonQuery {
-                tx_queue_frames: Some(8),
-            },
             ..UdpServerEndpoint::default()
         };
         let spec = UdpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.idle_secs, 10);
-        assert_eq!(spec.tx_queue_frames, 8);
         // Reconnect curve stays at the tcpc defaults — CLAUDE.md "udps: bind-
         // retry shares the tcpc: curve, no per-listener override".
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);

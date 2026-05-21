@@ -7,7 +7,9 @@ use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::super::EndpointId;
 use super::super::backoff::Backoff;
-use super::super::defaults::{DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS};
+use super::super::defaults::{
+    DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES,
+};
 use super::super::identity_flags::IdentityFlags;
 use super::super::session::{SessionOutcome, run_session};
 use super::super::socket::configure_tcp_stream;
@@ -22,10 +24,14 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// what to call it, and the reconnect curve. The `reconnect_*_ms` fields are
 /// always the hardcoded `tcpc:` curve at the user-facing layer (CLAUDE.md
 /// "Hardcoded plumbing knobs"); the field is exposed on the Spec so tests
-/// can shrink the curve to keep test runtimes tight. `identity` carries the
-/// filter / sniffer / group bundle (CLAUDE.md "Filters, group, sniffer
-/// travel with the `*Spec`"); the reader applies the in-filter snapshot,
-/// the router applies out-filter / sniffer / group from this same bundle.
+/// can shrink the curve to keep test runtimes tight. `tx_queue_frames` is
+/// likewise always [`DEFAULT_TX_QUEUE_FRAMES`] in production; the field
+/// stays on the Spec so drop-oldest tests can shrink the queue to exercise
+/// the `force_push` eviction branch without 256+ dummy frames. `identity`
+/// carries the filter / sniffer / group bundle (CLAUDE.md "Filters, group,
+/// sniffer travel with the `*Spec`"); the reader applies the in-filter
+/// snapshot, the router applies out-filter / sniffer / group from this same
+/// bundle.
 pub struct TcpClientSpec {
     pub host: String,
     pub port: u16,
@@ -33,15 +39,15 @@ pub struct TcpClientSpec {
     pub name: String,
     pub reconnect_initial_ms: u64,
     pub reconnect_max_ms: u64,
+    pub tx_queue_frames: usize,
     pub identity: IdentityFlags,
 }
 
 impl TcpClientSpec {
     /// Build a runtime `TcpClientSpec` from the parsed `TcpClientEndpoint`,
-    /// stamping the hardcoded reconnect curve. The spawner supplies
-    /// `endpoint_id` and `name` because the parser doesn't allocate IDs. The
-    /// TxQueue's depth (`tx_queue_frames`) is consumed by the spawner before
-    /// the spec is built — it sizes the queue and never appears here.
+    /// stamping the hardcoded reconnect curve and queue depth. The spawner
+    /// supplies `endpoint_id` and `name` because the parser doesn't allocate
+    /// IDs. Tests bypass this constructor when they need a smaller queue.
     pub fn from_endpoint(
         endpoint: TcpClientEndpoint,
         endpoint_id: EndpointId,
@@ -54,6 +60,7 @@ impl TcpClientSpec {
             name,
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
+            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
             identity: endpoint.identity,
         }
     }
@@ -78,6 +85,7 @@ async fn run_inner(spec: TcpClientSpec, wiring: ClientWiring) {
         name: _,
         reconnect_initial_ms,
         reconnect_max_ms,
+        tx_queue_frames: _,
         identity,
     } = spec;
     let ClientWiring {

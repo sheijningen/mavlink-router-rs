@@ -14,18 +14,12 @@
 pub const READ_BUF_BYTES: usize = 8192;
 
 /// Per-endpoint writer queue depth. Drop-oldest via `force_push` on
-/// overflow. Applies to every endpoint that owns a `TxQueue`.
+/// overflow. Applies to every endpoint that owns a `TxQueue`. Hardcoded
+/// at the user-facing layer (CLAUDE.md "Hardcoded plumbing knobs") —
+/// each leaf `*Spec` still exposes a `tx_queue_frames: usize` field that
+/// production initialises to this default and tests shrink to exercise
+/// the `force_push` eviction branch against a small queue.
 pub const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
-
-/// `tx_queue_frames` lower bound — 0 silently clamps to 1 inside
-/// `TxQueue::new`, but the parser rejects it so the operator gets a
-/// concrete bounds error instead of a hidden clamp.
-pub const MIN_TX_QUEUE_FRAMES: usize = 1;
-
-/// `tx_queue_frames` upper bound. At the default frame size (~280 B
-/// signed v2) a 65 K-deep queue is ~18 MiB per endpoint — already
-/// well past the "you should be reading the consumer faster" zone.
-pub const MAX_TX_QUEUE_FRAMES: usize = 65_536;
 
 /// Floor of the capped-exponential reconnect curve. Applies to `tcpc:`
 /// reconnects and to `tcps:` / `udps:` initial-bind retries (CLAUDE.md

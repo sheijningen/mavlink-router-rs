@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::EndpointId;
+use super::defaults::DEFAULT_TX_QUEUE_FRAMES;
 use super::identity_flags::IdentityFlags;
 use super::session::{SessionOutcome, run_session};
 use super::spec::{SerialEndpoint, SerialFlowControl};
@@ -23,25 +24,30 @@ const REOPEN_DELAY: Duration = Duration::from_millis(1000);
 
 /// Inputs that distinguish one `serial:` endpoint from another: which device
 /// to open at what baud (with optional hardware flow control) and what to
-/// call it. `identity` carries the filter / sniffer / group bundle
-/// (CLAUDE.md "Filters, group, sniffer travel with the `*Spec`"); the reader
-/// applies the in-filter snapshot, the router applies out-filter / sniffer /
-/// group from the same bundle.
+/// call it. `tx_queue_frames` is always `DEFAULT_TX_QUEUE_FRAMES` at the
+/// user-facing layer (CLAUDE.md "Hardcoded plumbing knobs"); the field stays
+/// on the Spec so drop-oldest tests can shrink the queue to exercise the
+/// `force_push` eviction branch without 256+ dummy frames. `identity`
+/// carries the filter / sniffer / group bundle (CLAUDE.md "Filters, group,
+/// sniffer travel with the `*Spec`"); the reader applies the in-filter
+/// snapshot, the router applies out-filter / sniffer / group from the same
+/// bundle.
 pub struct SerialSpec {
     pub path: String,
     pub baud: u32,
     pub flow_control: SerialFlowControl,
     pub endpoint_id: EndpointId,
     pub name: String,
+    pub tx_queue_frames: usize,
     pub identity: IdentityFlags,
 }
 
 impl SerialSpec {
-    /// Build a runtime `SerialSpec` from the parsed-but-not-defaulted
-    /// `SerialEndpoint` the CLI/TOML layer produced. The spawner supplies
-    /// `endpoint_id` and `name` because the parser doesn't allocate IDs. The
-    /// TxQueue's depth (`tx_queue_frames`) is consumed by the spawner before
-    /// the spec is built — it sizes the queue and never appears here.
+    /// Build a runtime `SerialSpec` from the parsed `SerialEndpoint`. The
+    /// spawner supplies `endpoint_id` and `name` because the parser doesn't
+    /// allocate IDs. `tx_queue_frames` is stamped from
+    /// [`DEFAULT_TX_QUEUE_FRAMES`]; tests bypass this constructor when they
+    /// need a smaller queue.
     pub fn from_endpoint(ep: SerialEndpoint, endpoint_id: EndpointId, name: String) -> Self {
         Self {
             path: ep.path,
@@ -49,6 +55,7 @@ impl SerialSpec {
             flow_control: ep.flow_control,
             endpoint_id,
             name,
+            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
             identity: ep.identity,
         }
     }
@@ -75,6 +82,7 @@ async fn run_inner(spec: SerialSpec, wiring: ClientWiring) {
         flow_control,
         endpoint_id,
         name: _,
+        tx_queue_frames: _,
         identity,
     } = spec;
     let ClientWiring {

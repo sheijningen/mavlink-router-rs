@@ -44,6 +44,7 @@ async fn assert_run_cancels_cleanly_with(flow_control: SerialFlowControl) {
         flow_control,
         endpoint_id,
         name: "test-serial".to_string(),
+        tx_queue_frames: 8,
         identity: IdentityFlags::default(),
     };
     let wiring = ClientWiring {
