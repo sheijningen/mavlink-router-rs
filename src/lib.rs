@@ -134,7 +134,11 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
 /// contributed values; otherwise just "config". Revisit if any future config
 /// field carries a secret.
 fn log_resolved_config(cfg: &Config) {
-    let msg = if cfg.merged { "merged config" } else { "config" };
+    let msg = if cfg.merged {
+        "merged config"
+    } else {
+        "config"
+    };
     info!(
         log_level = ?cfg.log_level,
         log_format = ?cfg.log_format,
