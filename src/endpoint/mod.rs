@@ -14,6 +14,7 @@ pub mod seq_tracker;
 pub mod serial;
 pub mod session;
 pub mod socket;
+pub mod spawn;
 pub mod spec;
 pub mod stats;
 pub mod tcp;
