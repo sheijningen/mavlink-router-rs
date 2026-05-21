@@ -76,6 +76,8 @@ pub struct Config {
     pub dedup_ms: u64,
     pub skip_config_log: bool,
     pub endpoints: Vec<EndpointSpec>,
+    /// True when both TOML and CLI actually contributed values
+    pub merged: bool,
 }
 
 impl Default for Config {
@@ -88,6 +90,7 @@ impl Default for Config {
             dedup_ms: DEFAULT_DEDUP_MS,
             skip_config_log: false,
             endpoints: Vec::new(),
+            merged: false,
         }
     }
 }
@@ -130,6 +133,8 @@ impl Config {
         check_unique_names(&toml.endpoints)?;
         check_unique_names(&cli.endpoints)?;
 
+        let merged = toml_has_values(&toml) && cli_has_values(&cli);
+
         let (endpoints, overridden_names) = merge_endpoints(toml.endpoints, cli.endpoints);
 
         let config = Config {
@@ -146,6 +151,7 @@ impl Config {
                 .or(toml.skip_config_log)
                 .unwrap_or(false),
             endpoints,
+            merged,
         };
         config.validate()?;
         Ok(MergeOutcome {
@@ -189,6 +195,35 @@ fn merge_endpoints(
     }
     endpoints.extend(cli_endpoints);
     (endpoints, overridden_names)
+}
+
+/// True if the TOML side actually provided any value worth merging — at
+/// least one global key was present in the file, or `[[endpoints]]` carried
+/// at least one entry. An empty TOML file (loaded via `-c` but containing no
+/// keys) returns `false` so the startup log doesn't claim "merged" for a
+/// run that was effectively CLI-only.
+fn toml_has_values(toml: &TomlConfig) -> bool {
+    toml.log_level.is_some()
+        || toml.log_format.is_some()
+        || toml.stats.is_some()
+        || toml.stats_interval_secs.is_some()
+        || toml.dedup_ms.is_some()
+        || toml.skip_config_log.is_some()
+        || !toml.endpoints.is_empty()
+}
+
+/// True if the CLI side actually provided any value worth merging — at least
+/// one global flag was passed, or any endpoint argv string was supplied.
+/// `--config <FILE>` is captured in the binary's `main` (not in `CliConfig`)
+/// so it doesn't count toward CLI contribution.
+fn cli_has_values(cli: &CliConfig) -> bool {
+    cli.log_level.is_some()
+        || cli.log_format.is_some()
+        || cli.stats.is_some()
+        || cli.stats_interval_secs.is_some()
+        || cli.dedup_ms.is_some()
+        || cli.skip_config_log.is_some()
+        || !cli.endpoints.is_empty()
 }
 
 /// Fail with [`Error::DuplicateName`] on the first repeated `#name` in
@@ -550,5 +585,74 @@ mod tests {
         };
         let outcome = Config::merge(toml, cli).expect("merge must succeed");
         assert!(outcome.overridden_names.is_empty());
+    }
+
+    // -- merge: merged flag --
+
+    #[test]
+    fn merge_flag_false_when_no_toml_loaded() {
+        let cli = CliConfig {
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
+            ..CliConfig::default()
+        };
+        let cfg = Config::merge(None, cli).expect("merge must succeed").config;
+        assert!(!cfg.merged);
+    }
+
+    #[test]
+    fn merge_flag_false_when_toml_loaded_but_empty() {
+        // Operator passed `-c empty.toml` (no keys, no endpoints). TOML
+        // contributed nothing of value — reporting "merged" would be a lie.
+        let toml = Some(TomlConfig::default());
+        let cli = CliConfig {
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
+            ..CliConfig::default()
+        };
+        let cfg = Config::merge(toml, cli).expect("merge must succeed").config;
+        assert!(!cfg.merged);
+    }
+
+    #[test]
+    fn merge_flag_false_when_cli_empty() {
+        // `--config <FILE>` is captured in `main` and never reaches
+        // `CliConfig`, so `rmr -c file.toml` with no other CLI flags or
+        // endpoints arrives here as a default `CliConfig`.
+        let toml = Some(TomlConfig {
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig::default();
+        let cfg = Config::merge(toml, cli).expect("merge must succeed").config;
+        assert!(!cfg.merged);
+    }
+
+    #[test]
+    fn merge_flag_true_when_both_sides_contribute_endpoints() {
+        let toml = Some(TomlConfig {
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig {
+            endpoints: vec![endpoint("tcpc:h:1#b")],
+            ..CliConfig::default()
+        };
+        let cfg = Config::merge(toml, cli).expect("merge must succeed").config;
+        assert!(cfg.merged);
+    }
+
+    #[test]
+    fn merge_flag_true_when_cli_only_contributes_a_global() {
+        // A single `--log-level=debug` on the CLI is enough to count as a
+        // contribution alongside a TOML-only endpoint set.
+        let toml = Some(TomlConfig {
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
+            ..TomlConfig::default()
+        });
+        let cli = CliConfig {
+            log_level: Some(LogLevel::Debug),
+            ..CliConfig::default()
+        };
+        let cfg = Config::merge(toml, cli).expect("merge must succeed").config;
+        assert!(cfg.merged);
     }
 }

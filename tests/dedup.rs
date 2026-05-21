@@ -27,6 +27,7 @@ fn config_with_endpoints_and_dedup(endpoints: Vec<String>, dedup_ms: u64) -> Con
         dedup_ms,
         skip_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
+        merged: false,
     };
     cfg.validate()
         .expect("test config must pass cross-endpoint validation");

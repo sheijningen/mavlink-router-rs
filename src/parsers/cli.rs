@@ -50,7 +50,7 @@ pub struct Cli {
     #[arg(long, value_name = "N")]
     pub dedup_ms: Option<u64>,
 
-    /// Suppress the INFO dump of the fully-merged config at startup
+    /// Suppress the INFO dump of the resolved config at startup
     #[arg(long)]
     pub skip_config_log: bool,
 

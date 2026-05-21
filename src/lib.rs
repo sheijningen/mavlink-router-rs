@@ -57,7 +57,7 @@ const DEFAULT_TCPS_PEER_BUDGET: usize = 64;
 /// responsible for installing the signal handler and initialising tracing.
 pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
     if !cfg.skip_config_log {
-        log_merged_config(&cfg);
+        log_resolved_config(&cfg);
     }
 
     // Exhaustive destructure: adding a Config field forces a touch here, so
@@ -71,6 +71,7 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
         log_level: _,
         log_format: _,
         skip_config_log: _,
+        merged: _,
     } = cfg;
 
     let endpoint_count = specs.len();
@@ -129,8 +130,11 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
 
 /// Emit one INFO event capturing every resolved global plus the per-endpoint
 /// table rendered via `Debug`, so every defaulted-in `?key=val` is visible
-/// in the line. Revisit if any future config field carries a secret.
-fn log_merged_config(cfg: &Config) {
+/// in the line. The message is "merged config" only when both TOML and CLI
+/// contributed values; otherwise just "config". Revisit if any future config
+/// field carries a secret.
+fn log_resolved_config(cfg: &Config) {
+    let msg = if cfg.merged { "merged config" } else { "config" };
     info!(
         log_level = ?cfg.log_level,
         log_format = ?cfg.log_format,
@@ -140,7 +144,7 @@ fn log_merged_config(cfg: &Config) {
         skip_config_log = cfg.skip_config_log,
         endpoint_count = cfg.endpoints.len(),
         endpoints = ?cfg.endpoints,
-        "merged config",
+        "{msg}",
     );
 }
 

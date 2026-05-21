@@ -43,6 +43,7 @@ fn config_with_endpoints(endpoints: Vec<String>) -> Config {
         dedup_ms: 0,
         skip_config_log: true,
         endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
+        merged: false,
     };
     config
         .validate()
