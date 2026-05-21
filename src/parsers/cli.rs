@@ -19,6 +19,81 @@ use crate::config::{LogFormat, LogLevel};
 use crate::endpoint::spec::EndpointSpec;
 use crate::error::Error;
 
+/// Endpoint mini-guide shown by `rmr --help` (clap's `after_long_help`).
+/// Documents the spec grammar, the five schemes, and the most-used query
+/// keys so the binary is self-documenting at the terminal without a man
+/// page or a separate hosted docs site. See the project README for the
+/// full design rationale.
+const ENDPOINT_GUIDE: &str = "Endpoints:
+  ENDPOINT := SCHEME:BODY[#name][?key1=val1&key2=val2&...]
+
+  scheme         body                         use for
+  serial:        path:baud (or path,baud)     UART to a flight controller
+  udps:          host:port                    UDP server (learns peers)
+  udpc:          host:port                    UDP client (dials, then latches)
+  tcps:          host:port                    TCP server (accepts many)
+  tcpc:          host:port                    TCP client (dials + reconnects)
+
+  Examples:
+    serial:/dev/ttyUSB0:921600
+    serial:COM3,115200
+    udps:0.0.0.0:14550
+    udpc:gcs.local:14550
+    tcps:[::]:5760
+    tcpc:192.168.55.1:5760
+
+  The `#name` is an optional identifier of the endpoint used for logs and stats.
+
+  Per-endpoint options are passed as a URL-style query string appended
+  to the spec: a leading `?`, then `key=val` pairs joined by `&`.
+
+Query keys — any scheme:
+  group=NAME              share a learn-set so members never forward
+                          to each other (e.g. redundant parallel links)
+  sniffer=true            receive every routed frame, bypassing target
+                          match, loop prevention, and out-filters
+
+Query keys — scheme-specific:
+  flow_control=rtscts     serial: only — enable RTS/CTS (default none)
+  idle_secs=N             udps: only — peer expiry on inactivity
+                          (default 60)
+  latch_idle_secs=N       udpc: only — revert to configured host after
+                          N s of silence from the latched peer
+                          (default 30)
+
+Filter query keys — any scheme:
+  Same `?key=val` syntax as the keys above. Values are comma-separated
+  decimal integers and inclusive `lo-hi` ranges:
+    allow_msgid_in     / block_msgid_in       ingress, by msgid
+    allow_msgid_out    / block_msgid_out      egress,  by msgid
+    allow_src_sys_in   / block_src_sys_in     ingress, by source sysid
+    allow_src_sys_out  / block_src_sys_out    egress,  by source sysid
+    allow_src_comp_in  / block_src_comp_in    ingress, by source compid
+    allow_src_comp_out / block_src_comp_out   egress,  by source compid
+
+  `allow_*` is a whitelist (empty = allow all; non-empty = only these
+  pass). `block_*` is a blacklist. Blacklist wins on overlap. `*_in`
+  is applied on incoming traffic at the source endpoint; `*_out`
+  is applied on outgoing traffic per destination endpoint.
+
+  Examples:
+    # Drop high-rate IMU/attitude msgids on a slow radio link:
+    tcpc:radio.local:5760?block_msgid_out=27,31,116
+    # Refuse to forward RC_CHANNELS_OVERRIDE (msgid 70) to the FC —
+    # keeps scripts and misbehaving GCSs from hijacking stick input:
+    serial:/dev/ttyACM0:921600?block_msgid_out=70
+    # GCS endpoint only sees frames from vehicle sysid 1:
+    tcps:0.0.0.0:5760?allow_src_sys_out=1
+    # Ground-side service: don't forward unknown traffic out the uplink:
+    tcpc:drone.local:5760?allow_src_sys_out=255
+    # Receive-only diagnostic tap — sees every routed frame but never
+    # injects anything back into the router:
+    tcps:0.0.0.0:5763#tap?sniffer=true&block_src_sys_in=0-255
+
+Full design doc and TOML config reference:
+  https://github.com/sheijningen/rmr
+";
+
 /// Parsed argv. Every global is `Option<T>` because clap has no
 /// `default_value_t` set on them — operator-omitted flags arrive as `None`
 /// and the merge step in [`crate::config::Config::merge`] picks the
@@ -284,5 +359,56 @@ mod tests {
     fn parse_specs_propagates_spec_error() {
         let raw = vec!["bogus-not-an-endpoint".to_string()];
         assert!(matches!(parse_specs(&raw), Err(Error::Spec(_))));
+    }
+
+    #[test]
+    fn version_string_starts_with_cargo_pkg_version() {
+        // build.rs emits RMR_VERSION_STRING — either bare `<X.Y.Z>` on a
+        // tagged-commit build, or `<X.Y.Z> (sha …, built …)` otherwise.
+        // Both shapes must start with the Cargo.toml version so callers
+        // can `cut -d' ' -f1` to recover the semver.
+        let version_string = env!("RMR_VERSION_STRING");
+        let pkg_version = env!("CARGO_PKG_VERSION");
+        assert!(
+            version_string.starts_with(pkg_version),
+            "RMR_VERSION_STRING={version_string:?} does not start with CARGO_PKG_VERSION={pkg_version:?}",
+        );
+    }
+
+    #[test]
+    fn version_flag_exposes_emitted_string() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let rendered = cmd.get_version().expect("version present");
+        assert_eq!(rendered, env!("RMR_VERSION_STRING"));
+    }
+
+    #[test]
+    fn long_help_contains_endpoint_guide() {
+        use clap::CommandFactory;
+
+        let mut cmd = Cli::command();
+        let mut buf = Vec::new();
+        cmd.write_long_help(&mut buf).expect("write_long_help");
+        let help = String::from_utf8(buf).expect("utf8 help");
+        assert!(help.contains("ENDPOINT := SCHEME:BODY"), "grammar missing");
+        for scheme in ["serial:", "udps:", "udpc:", "tcps:", "tcpc:"] {
+            assert!(help.contains(scheme), "{scheme} missing from help");
+        }
+        for key in [
+            "group=",
+            "sniffer=",
+            "flow_control=",
+            "idle_secs=",
+            "latch_idle_secs=",
+            "allow_msgid_in",
+            "block_msgid_in",
+        ] {
+            assert!(help.contains(key), "query key {key} missing");
+        }
+        assert!(
+            help.contains("github.com/sheijningen/rmr"),
+            "repo link missing"
+        );
     }
 }
