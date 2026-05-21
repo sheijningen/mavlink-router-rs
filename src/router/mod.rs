@@ -194,15 +194,21 @@ async fn handle_event(
                     learn: LearnTable::new(LEARN_CAPACITY),
                 }
             });
+            let routable = routable_state.is_some();
             let entry = RegisteredEndpoint {
                 name: name.clone(),
                 stats: stats.clone(),
                 routable: routable_state,
             };
-            debug!(%id, %name, routable = entry.routable.is_some(), "router: endpoint added");
+            debug!(%id, %name, routable = routable, "router: endpoint added");
             routing.insert(id, entry);
             let _ = stats_event_tx
-                .send(StatsEvent::Register { id, name, stats })
+                .send(StatsEvent::Register {
+                    id,
+                    name,
+                    stats,
+                    routable,
+                })
                 .await;
         }
         EndpointEvent::PeerAdded {
@@ -232,6 +238,7 @@ async fn handle_event(
                     id: child_id,
                     name,
                     stats,
+                    routable: true,
                 })
                 .await;
         }

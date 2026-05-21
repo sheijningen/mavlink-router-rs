@@ -1,11 +1,14 @@
 //! Dedicated stats task: registry mirror, interval timer, and JSON-Lines
 //! stdout sink.
 //!
-//! Owns the [`EndpointId → (name, Arc<EndpointStats>)`] registry mirror fed
-//! by the router over a [`StatsEvent`] channel. On each
+//! Owns the [`EndpointId → (name, Arc<EndpointStats>, routable: bool)`]
+//! registry mirror fed by the router over a [`StatsEvent`] channel. On each
 //! `stats_interval_secs` tick it walks the registry, builds one
 //! [`StatsLine`] per endpoint, and writes it as a single JSON object
 //! followed by `\n` to the supplied writer (production: `tokio::io::stdout`).
+//! The `routable` flag picks the line shape: routable endpoints emit the full
+//! counter schema; `tcps:` / `udps:` parent listeners emit only `ts`,
+//! `endpoint`, and `state` because their counters are structurally zero.
 //!
 //! Internally the task keeps a bounded `VecDeque` so a slow or broken stdout
 //! consumer cannot stall registry maintenance. Drop-oldest on overflow per
@@ -52,6 +55,12 @@ pub enum StatsEvent {
         id: EndpointId,
         name: String,
         stats: Arc<EndpointStats>,
+        /// `tcps:` / `udps:` parent listeners pass `false` — their counters
+        /// are structurally zero (no frames traverse them) and the emitted
+        /// JSON line carries only `ts`, `endpoint`, and `state`. Leaf
+        /// endpoints and learned children/peers pass `true` and get the
+        /// full counter schema.
+        routable: bool,
     },
     Finalize {
         id: EndpointId,
@@ -59,33 +68,57 @@ pub enum StatsEvent {
 }
 
 /// One row of the stats task's registry mirror — the name + stats handle
-/// the task snapshots on every interval tick.
+/// the task snapshots on every interval tick, plus the routable flag that
+/// picks the emitted line's schema.
 #[derive(Debug)]
 struct RegisteredEndpoint {
     name: String,
     stats: Arc<EndpointStats>,
+    routable: bool,
 }
 
-/// Per-endpoint stats emitted as one JSON-Lines object on stdout. Schema is
-/// pinned by CLAUDE.md's "Stats schema" example; every field corresponds 1:1
-/// to a counter on [`EndpointStats`], plus the timestamp and endpoint name.
+/// Per-endpoint stats emitted as one JSON-Lines object on stdout. The
+/// `Routable` shape is the full counter schema documented in CLAUDE.md's
+/// "Stats schema" example; the `NonRoutable` shape is the subset emitted for
+/// `tcps:` / `udps:` parent listeners — they accept connections but never
+/// carry frames, so the counter fields would all be zero forever. Untagged
+/// serialization means the JSON object has no discriminator key; consumers
+/// distinguish by the presence (or absence) of counter fields.
 #[derive(Debug, Serialize)]
-struct StatsLine {
-    ts: String,
-    endpoint: String,
-    state: &'static str,
-    rx_frames: u64,
-    tx_frames: u64,
-    rx_bytes: u64,
-    tx_bytes: u64,
-    dropped_tx: u64,
-    crc_errors: u64,
-    resync_bytes: u64,
-    rx_lost_est: u64,
-    in_filter_drops: u64,
-    out_filter_drops: u64,
-    dedup_drops: u64,
-    learn_entries: u64,
+#[serde(untagged)]
+enum StatsLine {
+    Routable {
+        ts: String,
+        endpoint: String,
+        state: &'static str,
+        rx_frames: u64,
+        tx_frames: u64,
+        rx_bytes: u64,
+        tx_bytes: u64,
+        dropped_tx: u64,
+        crc_errors: u64,
+        resync_bytes: u64,
+        rx_lost_est: u64,
+        in_filter_drops: u64,
+        out_filter_drops: u64,
+        dedup_drops: u64,
+        learn_entries: u64,
+    },
+    NonRoutable {
+        ts: String,
+        endpoint: String,
+        state: &'static str,
+    },
+}
+
+impl StatsLine {
+    fn endpoint(&self) -> &str {
+        match self {
+            StatsLine::Routable { endpoint, .. } | StatsLine::NonRoutable { endpoint, .. } => {
+                endpoint
+            }
+        }
+    }
 }
 
 /// Knobs handed to [`run`] by the spawner — `enabled` mirrors `--stats`,
@@ -122,11 +155,20 @@ fn rfc3339_now() -> String {
         .expect("Rfc3339 format succeeds for any OffsetDateTime")
 }
 
-fn build_line(name: &str, stats: &EndpointStats, ts: String) -> StatsLine {
-    StatsLine {
+fn build_line(name: &str, stats: &EndpointStats, ts: String, routable: bool) -> StatsLine {
+    let state = state_label(stats.load_state());
+    let endpoint = name.to_string();
+    if !routable {
+        return StatsLine::NonRoutable {
+            ts,
+            endpoint,
+            state,
+        };
+    }
+    StatsLine::Routable {
         ts,
-        endpoint: name.to_string(),
-        state: state_label(stats.load_state()),
+        endpoint,
+        state,
         rx_frames: stats.rx_frames.load(Ordering::Relaxed),
         tx_frames: stats.tx_frames.load(Ordering::Relaxed),
         rx_bytes: stats.rx_bytes.load(Ordering::Relaxed),
@@ -268,9 +310,21 @@ fn handle_event(
     event: StatsEvent,
 ) {
     match event {
-        StatsEvent::Register { id, name, stats } => {
-            trace!(%id, %name, "stats: register");
-            registry.insert(id, RegisteredEndpoint { name, stats });
+        StatsEvent::Register {
+            id,
+            name,
+            stats,
+            routable,
+        } => {
+            trace!(%id, %name, routable, "stats: register");
+            registry.insert(
+                id,
+                RegisteredEndpoint {
+                    name,
+                    stats,
+                    routable,
+                },
+            );
         }
         StatsEvent::Finalize { id } => {
             trace!(%id, "stats: finalize");
@@ -285,7 +339,7 @@ fn handle_event(
             if !emit_lines {
                 return;
             }
-            let line = build_line(&entry.name, &entry.stats, rfc3339_now());
+            let line = build_line(&entry.name, &entry.stats, rfc3339_now(), entry.routable);
             enqueue_synthetic(queue, queue_capacity, line, total_dropped);
         }
     }
@@ -302,7 +356,7 @@ fn emit_interval_lines(
     }
     let ts = rfc3339_now();
     for entry in registry.values() {
-        let line = build_line(&entry.name, &entry.stats, ts.clone());
+        let line = build_line(&entry.name, &entry.stats, ts.clone(), entry.routable);
         enqueue_regular(queue, queue_capacity, line, total_dropped);
     }
 }
@@ -343,7 +397,7 @@ fn enqueue_synthetic(
 ) {
     if queue_capacity == 0 {
         warn!(
-            endpoint = %line.endpoint,
+            endpoint = %line.endpoint(),
             "stats Finalize line dropped: queue capacity is zero"
         );
         *total_dropped = total_dropped.saturating_add(1);
@@ -355,8 +409,8 @@ fn enqueue_synthetic(
             *total_dropped = total_dropped.saturating_add(1);
         } else if let Some(evicted) = queue.pop_front() {
             warn!(
-                evicted_endpoint = %evicted.line.endpoint,
-                replacing_endpoint = %line.endpoint,
+                evicted_endpoint = %evicted.line.endpoint(),
+                replacing_endpoint = %line.endpoint(),
                 "stats Finalize line evicted by another Finalize line; terminal state lost"
             );
             *total_dropped = total_dropped.saturating_add(1);
@@ -428,6 +482,16 @@ mod tests {
             id,
             name: name.to_string(),
             stats,
+            routable: true,
+        }
+    }
+
+    fn make_register_listener(id: EndpointId, name: &str, stats: Arc<EndpointStats>) -> StatsEvent {
+        StatsEvent::Register {
+            id,
+            name: name.to_string(),
+            stats,
+            routable: false,
         }
     }
 
@@ -464,7 +528,7 @@ mod tests {
         stats.learn_entries.store(18, Ordering::Relaxed);
         stats.store_state(EndpointState::Connected);
 
-        let line = build_line("vehicle", &stats, "2026-05-15T19:00:00Z".to_string());
+        let line = build_line("vehicle", &stats, "2026-05-15T19:00:00Z".to_string(), true);
         let json: serde_json::Value =
             serde_json::from_slice(&serde_json::to_vec(&line).unwrap()).unwrap();
         assert_eq!(json["ts"], "2026-05-15T19:00:00Z");
@@ -482,6 +546,45 @@ mod tests {
         assert_eq!(json["out_filter_drops"], 16);
         assert_eq!(json["dedup_drops"], 17);
         assert_eq!(json["learn_entries"], 18);
+    }
+
+    #[test]
+    fn build_line_for_listener_omits_counter_fields() {
+        // Parent listeners (`routable = false`) emit only ts/endpoint/state;
+        // every counter field must be absent from the JSON.
+        let stats = EndpointStats::default();
+        stats.rx_frames.fetch_add(99, Ordering::Relaxed);
+        stats.store_state(EndpointState::Connected);
+
+        let line = build_line("input", &stats, "2026-05-15T19:00:00Z".to_string(), false);
+        let value: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&line).unwrap()).unwrap();
+        let object = value
+            .as_object()
+            .expect("NonRoutable line serializes as a JSON object");
+        assert_eq!(object.len(), 3);
+        assert_eq!(object["ts"], "2026-05-15T19:00:00Z");
+        assert_eq!(object["endpoint"], "input");
+        assert_eq!(object["state"], "connected");
+        for counter in [
+            "rx_frames",
+            "tx_frames",
+            "rx_bytes",
+            "tx_bytes",
+            "dropped_tx",
+            "crc_errors",
+            "resync_bytes",
+            "rx_lost_est",
+            "in_filter_drops",
+            "out_filter_drops",
+            "dedup_drops",
+            "learn_entries",
+        ] {
+            assert!(
+                !object.contains_key(counter),
+                "listener line must not carry `{counter}`"
+            );
+        }
     }
 
     #[test]
@@ -503,14 +606,11 @@ mod tests {
     }
 
     fn make_line(endpoint: &str) -> StatsLine {
-        build_line(endpoint, &EndpointStats::default(), "t".to_string())
+        build_line(endpoint, &EndpointStats::default(), "t".to_string(), true)
     }
 
     fn entry_endpoints(queue: &VecDeque<QueueEntry>) -> Vec<&str> {
-        queue
-            .iter()
-            .map(|entry| entry.line.endpoint.as_str())
-            .collect()
+        queue.iter().map(|entry| entry.line.endpoint()).collect()
     }
 
     #[test]
@@ -759,6 +859,55 @@ mod tests {
         // Drop the sender so the post-cancel drain exits via `Ok(None)`
         // immediately. Under `start_paused`, the alternative (timeout
         // expiry) would require manual `tokio::time::advance` calls.
+        drop(tx);
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("stats task did not exit")
+            .expect("stats task panicked");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn enabled_task_emits_state_only_line_for_listener_endpoint() {
+        // Parent listeners (`routable = false`) emit JSON without counter
+        // fields — only `ts`, `endpoint`, and `state`. Verifies the
+        // interval-tick path picks the NonRoutable variant.
+        let (tx, rx) = mpsc::channel::<StatsEvent>(8);
+        let cancel = CancellationToken::new();
+        let (writer, mut reader) = duplex(4096);
+        let cfg = enabled_config(100, 32);
+        let handle = tokio::spawn(run(rx, cancel.clone(), cfg, writer));
+
+        let alloc = EndpointIdAllocator::new();
+        let id = alloc.alloc();
+        let stats = Arc::new(EndpointStats::default());
+        stats.store_state(EndpointState::Connected);
+        // Bump a counter that must NOT appear in the listener's emitted line.
+        stats.rx_frames.fetch_add(42, Ordering::Relaxed);
+        tx.send(make_register_listener(id, "input", stats))
+            .await
+            .expect("register listener");
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let mut buf = vec![0u8; 4096];
+        let bytes_read = tokio::time::timeout(Duration::from_secs(1), reader.read(&mut buf))
+            .await
+            .expect("reader timeout")
+            .expect("reader read");
+        let text = std::str::from_utf8(&buf[..bytes_read]).unwrap();
+        let line = text.lines().next().expect("at least one line");
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        let object = value.as_object().expect("object");
+        assert_eq!(
+            object.len(),
+            3,
+            "listener line had unexpected fields: {object:?}"
+        );
+        assert_eq!(object["endpoint"], "input");
+        assert_eq!(object["state"], "connected");
+        assert!(!object.contains_key("rx_frames"));
+
         drop(tx);
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(2), handle)
