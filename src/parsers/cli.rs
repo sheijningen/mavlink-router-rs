@@ -24,7 +24,12 @@ use crate::error::Error;
 /// and the merge step in [`crate::config::Config::merge`] picks the
 /// fall-through value (TOML, then default).
 #[derive(Parser, Debug)]
-#[command(name = "rmr", version, about = "Rust MAVLink Router")]
+#[command(
+    name = "rmr",
+    version = env!("RMR_VERSION_STRING"),
+    about = "Rust MAVLink Router",
+    after_long_help = ENDPOINT_GUIDE,
+)]
 pub struct Cli {
     /// TOML config file with endpoints and globals
     #[arg(short, long, value_name = "FILE")]

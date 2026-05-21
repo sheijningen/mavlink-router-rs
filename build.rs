@@ -26,9 +26,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 const DIALECTS: &[&str] = &["common.xml", "ardupilotmega.xml"];
 
@@ -38,6 +41,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build_support/crc_extra.rs");
     println!("cargo:rerun-if-changed=build_support/xml_loader.rs");
     println!("cargo:rerun-if-changed=build_support/dialect_parse.rs");
+
+    emit_version_string();
 
     let xml_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("vendor")
@@ -310,4 +315,88 @@ fn compute_offsets(fields: &[ParsedField]) -> (Option<u8>, Option<u8>) {
             .unwrap_or_else(|| panic!("payload overflow for field '{}'", field.name));
     }
     (tsys, tcomp)
+}
+
+/// Compute the value of `RMR_VERSION_STRING` and emit it as a cargo env
+/// var consumed by `clap`'s `#[command(version = env!(...))]`.
+///
+/// Two shapes per the CLAUDE.md "Release strategy" locked decision:
+///   - `<X.Y.Z>` when HEAD is exactly the release tag `v<X.Y.Z>` (so
+///     `rmr --version` on a tagged-commit build prints just the version).
+///   - `<X.Y.Z> (sha <short>, built <RFC 3339 UTC>)` otherwise — a main
+///     build between releases disambiguates against the GitHub Release
+///     via the short SHA, and the timestamp narrows things further when
+///     two unreleased builds share a parent commit.
+///
+/// Falls back to bare `<X.Y.Z>` when git is not available (cargo install
+/// from a source tarball, sandboxed build environments).
+fn emit_version_string() {
+    let pkg_version = env!("CARGO_PKG_VERSION");
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let in_git = manifest_dir.join(".git").exists();
+    let tagged = in_git && head_matches_release_tag(pkg_version);
+
+    let version_string = if !in_git || tagged {
+        pkg_version.to_string()
+    } else {
+        let short_sha = git_short_sha().unwrap_or_else(|| "unknown".to_string());
+        let built = build_timestamp_utc();
+        format!("{pkg_version} (sha {short_sha}, built {built})")
+    };
+
+    println!("cargo:rustc-env=RMR_VERSION_STRING={version_string}");
+
+    // Rerun when the git ref or working-tree HEAD moves. Best-effort:
+    // .git/refs is a directory, so the watch is shallow — fresh commits
+    // on the current branch update .git/refs/heads/<branch>, which the
+    // shallow watch catches. Packed-refs cases (cloned repos that have
+    // packed historical refs) update .git/packed-refs.
+    if in_git {
+        println!("cargo:rerun-if-changed=.git/HEAD");
+        println!("cargo:rerun-if-changed=.git/refs");
+        println!("cargo:rerun-if-changed=.git/packed-refs");
+    }
+}
+
+fn head_matches_release_tag(pkg_version: &str) -> bool {
+    let tag = format!("v{pkg_version}");
+    let Ok(out) = Command::new("git")
+        .args(["describe", "--tags", "--exact-match", "HEAD"])
+        .output()
+    else {
+        return false;
+    };
+    out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == tag
+}
+
+fn git_short_sha() -> Option<String> {
+    // Match the SHA width in CLAUDE.md's "Release strategy" example
+    // (`sha abc1234, built …`). Git's `--short` default is 7; setting it
+    // explicitly documents the intent and survives any future
+    // `core.abbrev` config drift.
+    let out = Command::new("git")
+        .args(["rev-parse", "--short=7", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let trimmed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// UTC build timestamp formatted as RFC 3339 with second precision (e.g.
+/// `2026-05-21T20:15:32Z`). Matches the `ts` field on stats JSON-Lines so
+/// the two timestamps can be eyeballed side-by-side.
+fn build_timestamp_utc() -> String {
+    OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .unwrap_or_else(|_| OffsetDateTime::now_utc())
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string())
 }
