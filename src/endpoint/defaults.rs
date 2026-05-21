@@ -15,10 +15,11 @@ pub const READ_BUF_BYTES: usize = 8192;
 
 /// Per-endpoint writer queue depth. Drop-oldest via `force_push` on
 /// overflow. Applies to every endpoint that owns a `TxQueue`. Hardcoded
-/// at the user-facing layer (CLAUDE.md "Hardcoded plumbing knobs") —
-/// each leaf `*Spec` still exposes a `tx_queue_frames: usize` field that
-/// production initialises to this default and tests shrink to exercise
-/// the `force_push` eviction branch against a small queue.
+/// at the user-facing layer (CLAUDE.md "Hardcoded plumbing knobs"); the
+/// spawner sizes every leaf and per-child queue directly from this
+/// const. Tests that need a smaller queue construct `TxQueue::new(N,
+/// ...)` and inject it via `ClientWiring`, so no `*Spec` field exists
+/// for it.
 pub const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
 
 /// Floor of the capped-exponential reconnect curve. Applies to `tcpc:`

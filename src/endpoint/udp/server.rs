@@ -69,21 +69,17 @@ struct PeerEntry {
 /// plumbing knobs"); the field stays on the Spec so bind-retry tests can
 /// shrink the curve. `peer_capacity` stays mutable for the same reason —
 /// production defaults it to [`DEFAULT_PEER_CAPACITY`], eviction tests
-/// shrink it. `tx_queue_frames` is always [`DEFAULT_TX_QUEUE_FRAMES`] at
-/// the user-facing layer; the field stays on the Spec so drop-oldest tests
-/// can shrink the per-peer queue without 256+ dummy frames. `identity`
-/// carries the filter / sniffer / group bundle — inherited by every learned
-/// peer at admission time (CLAUDE.md "Sub-endpoints inherit their parent's
-/// `IdentityFlags` by clone at spawn time"); the per-peer reader applies
-/// the in-filter snapshot, the router applies out-filter / sniffer / group
-/// from the same bundle.
+/// shrink it. `identity` carries the filter / sniffer / group bundle —
+/// inherited by every learned peer at admission time (CLAUDE.md "Sub-
+/// endpoints inherit their parent's `IdentityFlags` by clone at spawn
+/// time"); the per-peer reader applies the in-filter snapshot, the router
+/// applies out-filter / sniffer / group from the same bundle.
 pub struct UdpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,
     pub parent_name: String,
     pub idle_secs: u64,
     pub peer_capacity: usize,
-    pub tx_queue_frames: usize,
     pub reconnect_initial_ms: u64,
     pub reconnect_max_ms: u64,
     pub identity: IdentityFlags,
@@ -91,9 +87,9 @@ pub struct UdpServerSpec {
 
 impl UdpServerSpec {
     /// Build a runtime `UdpServerSpec` from the parsed `UdpServerEndpoint`,
-    /// stamping the hardcoded reconnect curve, peer capacity, and per-peer
-    /// queue depth. The spawner supplies `parent_id` and `parent_name`
-    /// because the parser doesn't allocate IDs.
+    /// stamping the hardcoded reconnect curve and peer capacity. The spawner
+    /// supplies `parent_id` and `parent_name` because the parser doesn't
+    /// allocate IDs.
     pub fn from_endpoint(
         ep: UdpServerEndpoint,
         parent_id: EndpointId,
@@ -105,7 +101,6 @@ impl UdpServerSpec {
             parent_name,
             idle_secs: ep.idle_secs.unwrap_or(DEFAULT_IDLE_SECS),
             peer_capacity: DEFAULT_PEER_CAPACITY,
-            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
             identity: ep.identity,
@@ -218,7 +213,7 @@ async fn handle_packet(
         // learned peer, so the Arc lands in Connected before it reaches the
         // router.
         let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
-        let tx_queue = TxQueue::new(ctx.spec.tx_queue_frames, stats.clone());
+        let tx_queue = TxQueue::new(DEFAULT_TX_QUEUE_FRAMES, stats.clone());
         let writer_cancel = ctx.wiring.cancel.child_token();
         let name = peer_endpoint_name(&ctx.spec.parent_name, src);
         let writer_span = info_span!("udps_peer", name = %name);
@@ -414,7 +409,6 @@ mod tests {
         let spec = UdpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.idle_secs, DEFAULT_IDLE_SECS);
         assert_eq!(spec.peer_capacity, DEFAULT_PEER_CAPACITY);
-        assert_eq!(spec.tx_queue_frames, DEFAULT_TX_QUEUE_FRAMES);
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     }
@@ -534,7 +528,6 @@ mod tests {
             parent_name: "test".to_string(),
             idle_secs: DEFAULT_IDLE_SECS,
             peer_capacity: 3,
-            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
             identity: IdentityFlags::default(),
@@ -618,7 +611,6 @@ mod tests {
             parent_name: "test".to_string(),
             idle_secs: DEFAULT_IDLE_SECS,
             peer_capacity: 2,
-            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
             identity: IdentityFlags::default(),

@@ -21,7 +21,7 @@ use tracing::{debug, info, warn};
 use crate::config::Config;
 use crate::endpoint::EndpointId;
 use crate::endpoint::EndpointIdAllocator;
-use crate::endpoint::defaults::DEFAULT_DEDUP_WINDOW_CAPACITY;
+use crate::endpoint::defaults::{DEFAULT_DEDUP_WINDOW_CAPACITY, DEFAULT_TX_QUEUE_FRAMES};
 use crate::endpoint::events::{EndpointEvent, Routable, RouterFrame};
 use crate::endpoint::identity_flags::IdentityFlags;
 use crate::endpoint::serial::SerialSpec;
@@ -276,7 +276,6 @@ async fn spawn_endpoint(
                 endpoint_id,
                 &name,
                 stats.clone(),
-                spec.tx_queue_frames,
                 spec.identity.clone(),
             )
             .await
@@ -300,7 +299,6 @@ async fn spawn_endpoint(
                 endpoint_id,
                 &name,
                 stats.clone(),
-                spec.tx_queue_frames,
                 spec.identity.clone(),
             )
             .await
@@ -324,7 +322,6 @@ async fn spawn_endpoint(
                 endpoint_id,
                 &name,
                 stats.clone(),
-                spec.tx_queue_frames,
                 spec.identity.clone(),
             )
             .await
@@ -388,10 +385,9 @@ async fn prepare_leaf(
     id: EndpointId,
     name: &str,
     stats: Arc<EndpointStats>,
-    tx_queue_frames: usize,
     identity: IdentityFlags,
 ) -> Option<TxQueue> {
-    let tx_queue = TxQueue::new(tx_queue_frames, stats.clone());
+    let tx_queue = TxQueue::new(DEFAULT_TX_QUEUE_FRAMES, stats.clone());
     if event_tx
         .send(EndpointEvent::EndpointAdded {
             id,

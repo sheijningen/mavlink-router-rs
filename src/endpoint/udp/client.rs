@@ -12,7 +12,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use super::super::EndpointId;
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
-    DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES, READ_BUF_BYTES,
+    DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, READ_BUF_BYTES,
 };
 use super::super::events::RouterFrame;
 use super::super::filters::Filters;
@@ -41,13 +41,10 @@ const REVERT_TICK: Duration = Duration::from_secs(1);
 /// what to call it, and the latch-idle threshold. The `reconnect_*_ms`
 /// fields are always the hardcoded `tcpc:` curve (CLAUDE.md "Hardcoded
 /// plumbing knobs"); `udpc:` reuses the curve for its local-bind retry.
-/// `tx_queue_frames` is likewise always [`DEFAULT_TX_QUEUE_FRAMES`] in
-/// production; the field stays on the Spec so drop-oldest tests can shrink
-/// the queue to exercise the `force_push` eviction branch without 256+
-/// dummy frames. `identity` carries the filter / sniffer / group bundle
-/// (CLAUDE.md "Filters, group, sniffer travel with the `*Spec`"); the
-/// reader applies the in-filter snapshot, the router applies out-filter /
-/// sniffer / group from the same bundle.
+/// `identity` carries the filter / sniffer / group bundle (CLAUDE.md
+/// "Filters, group, sniffer travel with the `*Spec`"); the reader applies
+/// the in-filter snapshot, the router applies out-filter / sniffer / group
+/// from the same bundle.
 pub struct UdpClientSpec {
     pub host: String,
     pub port: u16,
@@ -56,7 +53,6 @@ pub struct UdpClientSpec {
     pub latch_idle_secs: u64,
     pub reconnect_initial_ms: u64,
     pub reconnect_max_ms: u64,
-    pub tx_queue_frames: usize,
     pub identity: IdentityFlags,
 }
 
@@ -64,8 +60,7 @@ impl UdpClientSpec {
     /// Build a runtime `UdpClientSpec` from the parsed-but-not-defaulted
     /// `UdpClientEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
     /// defaults for any unset knob. The spawner supplies `endpoint_id` and
-    /// `name` because the parser doesn't allocate IDs. Tests bypass this
-    /// constructor when they need a smaller queue.
+    /// `name` because the parser doesn't allocate IDs.
     pub fn from_endpoint(
         endpoint: UdpClientEndpoint,
         endpoint_id: EndpointId,
@@ -79,7 +74,6 @@ impl UdpClientSpec {
             latch_idle_secs: endpoint.latch_idle_secs.unwrap_or(DEFAULT_LATCH_IDLE_SECS),
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
-            tx_queue_frames: DEFAULT_TX_QUEUE_FRAMES,
             identity: endpoint.identity,
         }
     }
@@ -209,7 +203,6 @@ async fn run_inner(spec: UdpClientSpec, wiring: ClientWiring) {
         latch_idle_secs,
         reconnect_initial_ms,
         reconnect_max_ms,
-        tx_queue_frames: _,
         identity,
     } = spec;
     let ClientWiring {
