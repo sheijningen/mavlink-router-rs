@@ -1,0 +1,34 @@
+# Simple example: UDP server (listener) with multi-peer learning
+#
+# `udps:` binds a UDP socket and accepts datagrams from many peers in
+# parallel — each unique source address is admitted as its own *routing
+# endpoint* (own learn-set, own stats line, own loop-prevention scope).
+# This is the right scheme for the bus-style topology where a GCS, a
+# logger, and a couple of SBCs all share one well-known port.
+#
+# Bind address forms:
+#   bind = "0.0.0.0:14550"   # IPv4 only
+#   bind = "[::]:14550"       # dual-stack on Windows + Linux (forced
+#                             # IPV6_V6ONLY=0 via socket2 for parity)
+# Pick `[::]` unless you specifically need IPv4-only.
+#
+# `idle_secs` controls per-peer expiry on inactivity (default 60 s). A
+# peer that goes silent for longer is reaped; its routing-endpoint state
+# (learn-set, stats, queue) is torn down. The parent listener stays up.
+#
+# Stats output is split into two shapes:
+#   - the parent `udps:` listener emits only `ts`, `endpoint`, `state`
+#     (no counters — no frames traverse the parent itself)
+#   - each learned peer emits the full counter schema (`rx_frames`,
+#     `tx_frames`, `dropped_tx`, `crc_errors`, ...)
+# Consumers distinguish the two by the presence of counter fields.
+
+[[endpoints]]
+type = "udps"
+name = "bus"
+bind = "[::]:14550"
+idle_secs = 60
+
+# Equivalent CLI invocation:
+#
+# rmr udps:[::]:14550#bus?idle_secs=60

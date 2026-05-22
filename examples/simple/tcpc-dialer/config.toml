@@ -1,0 +1,33 @@
+# Simple example: TCP client dialling an upstream
+#
+# `tcpc:` opens an outbound TCP connection and keeps it open. If the
+# remote refuses the connection, the host disappears, or the link drops
+# mid-stream, RMR reconnects automatically — the router stays up the
+# whole time and other endpoints keep routing.
+#
+# **Reconnect backoff** is a capped-exponential curve: starts at
+# 250 ms, doubles up to 30 s, with ±20 % jitter per attempt to avoid
+# thundering-herd against a recovering server. The curve is hardcoded
+# (it's a plumbing constant, not policy) and applies identically to
+# `tcps:` initial bind retries and `udps:` bind retries.
+#
+# **DNS is re-resolved on every reconnect attempt.** Survives container
+# orchestration (k8s service migration), dynamic DNS, VPN routing
+# changes, and the like — at the cost of one resolver call per attempt.
+#
+# **Queue drain-on-disconnect.** When the link drops, RMR does *not*
+# replay the buffered TX queue when it comes back. Stale telemetry is
+# discarded (incrementing `dropped_tx` by the drained count) and only
+# fresh frames travel the fresh link. A GCS seeing 30-second-old
+# positions before current ones is actively misleading; we'd rather
+# the operator see the loss in stats.
+
+[[endpoints]]
+type = "tcpc"
+name = "vehicle"
+host = "companion.local"
+port = 5760
+
+# Equivalent CLI invocation:
+#
+# rmr tcpc:companion.local:5760#vehicle

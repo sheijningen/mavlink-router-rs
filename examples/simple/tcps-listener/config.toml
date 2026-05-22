@@ -1,0 +1,36 @@
+# Simple example: TCP server (listener) accepting many clients
+#
+# `tcps:` binds a TCP socket and accepts any number of client
+# connections in parallel. **Each accepted client is its own routing
+# endpoint** — own learn-set, own stats line, own loop-prevention
+# scope. The parent listener exists only to accept new connections; no
+# frames traverse it.
+#
+# Filter inheritance is by reference: filters declared on the parent
+# (e.g. `block_msgid_in = "33,100-150"`) apply uniformly to every
+# accepted child. There's no per-child filter override — if two clients
+# need different filter policies, run two `tcps:` listeners on
+# different ports.
+#
+# Bind address: prefer `[::]:5760` for dual-stack on both Windows and
+# Linux (RMR forces `IPV6_V6ONLY=0` via socket2 for parity).
+#
+# **Keepalive defaults to OS values.** `SO_KEEPALIVE` is enabled but
+# the idle / interval / probe params are left at the kernel defaults —
+# on Linux that's ~2 hours of idle before the first probe, so
+# dead-peer detection is *not* aggressive. If you need faster
+# detection, set the kernel-wide `tcp_keepalive_*` sysctls.
+#
+# Sub-endpoint stats names look like `<parent-name>/<ip>-<port>` — e.g.
+# accepting `127.0.0.1:54321` on this listener produces a stats line
+# with `endpoint = "gcs/127.0.0.1-54321"`. Names are not stable across
+# reconnects (each new ephemeral port produces a new sub-endpoint).
+
+[[endpoints]]
+type = "tcps"
+name = "gcs"
+bind = "[::]:5760"
+
+# Equivalent CLI invocation:
+#
+# rmr tcps:[::]:5760#gcs

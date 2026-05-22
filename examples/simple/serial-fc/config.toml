@@ -1,0 +1,31 @@
+# Simple example: serial to a flight controller
+#
+# RMR forwards MAVLink frames between a UART-attached flight controller
+# and any other endpoint you add. This example shows just the serial
+# leg so the focus is on the `serial:` configuration surface — `path`,
+# `baud`, optional hardware flow control, and the hot-replug behaviour
+# RMR ships by default.
+#
+# Body grammar: `serial:PATH:BAUD` (or `serial:PATH,BAUD`). Either
+# separator is accepted; the baud is parsed as a u32. Real device paths
+# (Linux `/dev/*`, Windows `COM*`, `/dev/serial/by-id/...`) never
+# contain `:` or `,`, so the split is unambiguous.
+#
+# Hardware flow control is opt-in. Set `flow_control = "rtscts"` if your
+# wiring exposes RTS/CTS lines and your FC expects them; the default
+# (`"none"`) is what almost every USB-CDC flight controller wants.
+#
+# Hot-replug: if the device disappears mid-stream (USB unplug, host
+# rebooted, gimbal swap), the endpoint enters a reopen loop and polls
+# the path at a fixed 1 s interval. No manual reconnect needed.
+
+[[endpoints]]
+type = "serial"
+name = "fc"
+path = "/dev/ttyACM0"
+baud = 921600
+flow_control = "none"
+
+# Equivalent CLI invocation:
+#
+# rmr serial:/dev/ttyACM0:921600#fc?flow_control=none
