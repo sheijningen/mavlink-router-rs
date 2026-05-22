@@ -1,0 +1,41 @@
+# Advanced example: NAT traversal via VPS rendezvous — VEHICLE side
+#
+# Topology (this is the vehicle side; see vps.toml for the broker):
+#
+#   ┌──────────┐                          ┌────────────────────┐
+#   │ Vehicle  │   tcpc dial-out          │       VPS          │
+#   │   FC ─►  ├───────────────────────►──┤  tcps :5760        │
+#   │   RMR    │   (over carrier NAT)     │  ┌─────────────┐   │
+#   │          │                          │  │ RMR forwards │   │
+#   └──────────┘                          │  └─────────────┘   │
+#                                         │  tcps :5761  ◄─────┤ ◄── remote GCS
+#                                         └────────────────────┘
+#
+# The vehicle is behind carrier-grade NAT (LTE / 4G / 5G modem,
+# Starlink) — incoming connections to it are impossible. The fix is
+# to flip the direction: the vehicle dials *out* to a reachable VPS,
+# and the GCS connects *in* to the same VPS on a separate port.
+# The VPS-side RMR (see vps.toml) plays connection broker.
+#
+# Vehicle-side configuration is intentionally boring — a serial leg
+# to the FC and a `tcpc:` leg to the rendezvous host. RMR's standard
+# reconnect-with-backoff handles modem dropouts and VPS restarts
+# transparently; DNS re-resolves on every reconnect, which is exactly
+# what you want for a VPS behind dynamic DNS.
+
+[[endpoints]]
+type = "serial"
+name = "fc"
+path = "/dev/ttyACM0"
+baud = 921600
+
+[[endpoints]]
+type = "tcpc"
+name = "rendezvous"
+host = "rendezvous.example.com"
+port = 5760
+
+# Equivalent CLI invocation:
+#
+# rmr serial:/dev/ttyACM0:921600#fc \
+#     tcpc:rendezvous.example.com:5760#rendezvous

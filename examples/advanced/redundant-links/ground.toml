@@ -1,0 +1,49 @@
+# Advanced example: paired RMR for redundant uplinks — GROUND side
+#
+# Companion file to drone.toml. See drone.toml for the full topology
+# diagram.
+#
+# This side terminates both uplinks (the LTE TCP server and the RFD900
+# radio's ground-side modem) and exposes a single TCP server for the
+# GCS. The global `dedup_ms` window suppresses whichever copy of each
+# vehicle frame arrives second — saving the GCS from duplicate
+# HEARTBEATs, doubled telemetry rates, and the parameter-fetch
+# confusion that comes with seeing every reply twice.
+#
+# Dedup TTL choice: set `dedup_ms` to roughly the worst-case
+# inter-link arrival skew you expect. A radio-modem leg with ~150 ms
+# latency and an LTE leg with ~80 ms means duplicates land within
+# ~100 ms of each other — set `dedup_ms = 250` to comfortably catch
+# them. Too low and duplicates leak through; too high and a fast
+# retransmit of a *new* frame with the same bytes (rare in practice)
+# could be suppressed.
+#
+# The dedup window is **global** to this RMR instance — one window
+# covering frames arriving on any ingress endpoint. That's exactly
+# what catches the cross-leg duplicates a per-endpoint window would
+# miss.
+
+dedup_ms = 250
+
+[[endpoints]]
+type = "tcps"
+name = "lte"
+bind = "[::]:5760"
+
+[[endpoints]]
+type = "serial"
+name = "rfd900"
+path = "/dev/serial/by-id/usb-FTDI-1"
+baud = 57600
+
+[[endpoints]]
+type = "tcps"
+name = "gcs"
+bind = "[::]:5761"
+
+# Equivalent CLI invocation:
+#
+# rmr --dedup-ms 250 \
+#     tcps:[::]:5760#lte \
+#     serial:/dev/serial/by-id/usb-FTDI-1:57600#rfd900 \
+#     tcps:[::]:5761#gcs

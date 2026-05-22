@@ -1,0 +1,51 @@
+# Advanced example: drone-side companion computer, with internal
+# microservice MAVLink that must not leak to the GCS over a slow radio
+#
+# Topology (companion computer running RMR):
+#
+#                                  ┌──────────────┐
+#                  FC (UART) ─────►│              │
+#                                  │              │
+#   on-board services (UDP) ──────►│     RMR      │──► remote GCS
+#       sysid 200 (planner)        │              │     over TCP
+#       sysid 201 (logger)         │              │     (LTE / SATCOM)
+#       sysid 202 (vision)         └──────────────┘
+#
+# The on-board services chat with each other and the FC at MAVLink-rate
+# over `udps:0.0.0.0:14550`. **None of that traffic should reach the
+# remote GCS** — it would burn radio bandwidth and confuse the operator.
+#
+# The filter that does the work is on the GCS leg (the `tcpc:`
+# endpoint): `block_src_sys_out` rejects any frame whose source sysid
+# is one of the microservice sysids when egressing to the GCS. The
+# microservices still see each other (their frames traverse the
+# on-board `udps:` leg normally) and they still see the FC (its sysid
+# is not in the block list); the FC still reaches the GCS.
+#
+# Filter grammar uses integer sysids only — see the
+# `radio-bandwidth-shaping` example for the same trade-off applied to
+# msgids.
+
+[[endpoints]]
+type = "serial"
+name = "fc"
+path = "/dev/ttyACM0"
+baud = 921600
+
+[[endpoints]]
+type = "udps"
+name = "services"
+bind = "127.0.0.1:14550"
+
+[[endpoints]]
+type = "tcpc"
+name = "gcs"
+host = "gcs.example.com"
+port = 5760
+block_src_sys_out = "200-202"
+
+# Equivalent CLI invocation:
+#
+# rmr serial:/dev/ttyACM0:921600#fc \
+#     udps:127.0.0.1:14550#services \
+#     tcpc:gcs.example.com:5760#gcs?block_src_sys_out=200-202

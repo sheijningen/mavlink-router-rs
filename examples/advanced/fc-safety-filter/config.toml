@@ -1,0 +1,50 @@
+# Advanced example: refuse to forward command msgids to the FC
+#
+# Topology:
+#
+#                ┌──────────────┐
+#   GCS ───────► │              │ ─► FC (UART)
+#                │     RMR      │    block_msgid_out on the FC leg
+#                │              │    drops dangerous msgids before
+#                └──────────────┘    they reach the UART
+#
+# The filter sits on the side you're protecting (the FC's `serial:`
+# endpoint) on the `*_out` axis: "don't forward these msgids out
+# *to* the FC." Commands from the GCS traverse the router normally
+# but are silently dropped just before they'd be written to the
+# UART, with `out_filter_drops` incremented on the FC's stats line
+# so you can see the guardrail working.
+#
+# The msgids blocked in this example, with their canonical names:
+#
+#   70   RC_CHANNELS_OVERRIDE  RC stick override — flight-critical
+#   75   COMMAND_INT           int-coordinate command frame
+#   76   COMMAND_LONG          generic command frame
+#
+# A misbehaving GCS script or a compromised laptop can no longer push
+# those msgids to the FC. Targeted telemetry replies and status
+# updates still flow normally.
+#
+# Threat-model caveat: this is a routing-layer guardrail. It is not a
+# substitute for authenticated commands (signed MAVLink, end-to-end
+# transport authentication via WireGuard / SSH / mTLS, or vehicle-
+# side allowlists). A clever attacker who can run code on a host with
+# legitimate FC access can still issue the blocked msgids by talking
+# directly to the FC's UART — they just can't do it *through* RMR.
+
+[[endpoints]]
+type = "tcps"
+name = "gcs"
+bind = "[::]:5760"
+
+[[endpoints]]
+type = "serial"
+name = "fc"
+path = "/dev/ttyACM0"
+baud = 921600
+block_msgid_out = "70,75,76"
+
+# Equivalent CLI invocation:
+#
+# rmr tcps:[::]:5760#gcs \
+#     serial:/dev/ttyACM0:921600#fc?block_msgid_out=70,75,76

@@ -1,0 +1,55 @@
+# Advanced example: drop high-rate msgids on a slow radio link
+#
+# Topology:
+#
+#                ┌──────────────┐  fast LAN    ┌─────────┐
+#                │              │ ────────────►│  GCS-A  │
+#                │     RMR      │              └─────────┘
+#   FC ────────► │              │
+#                │              │  slow SiK    ┌─────────┐
+#                │              │ ────────────►│  GCS-B  │
+#                └──────────────┘  radio       └─────────┘
+#
+# The fast LAN leg (`tcps:`) sees the full firehose. The slow SiK
+# radio leg (`serial:`) gets the *same* frames minus the chatty,
+# operator-irrelevant ones — IMU streams the human pilot never looks
+# at but which dominate the byte budget.
+#
+# **Filter grammar is integer msgids only** — symbolic names like
+# `RAW_IMU` are intentionally not accepted (keeps the parser tiny and
+# decouples CLI/TOML grammar from whichever dialect is baked in).
+# Operators audit the integers against MAVLink reference docs. The
+# msgids in this example, with their canonical names:
+#
+#   27   RAW_IMU              uncalibrated IMU, raw counts
+#   31   ATTITUDE_QUATERNION  attitude as a quaternion
+#   116  SCALED_IMU2          secondary IMU, scaled units
+#
+# All three are typically emitted at 50–100 Hz; a 57 600-baud SiK
+# radio cannot keep up. Strip them at the radio leg's `*_out` filter
+# and the operator gets a usable HEARTBEAT / status / position stream
+# over the radio while still seeing everything on the LAN GCS.
+
+[[endpoints]]
+type = "serial"
+name = "fc"
+path = "/dev/ttyACM0"
+baud = 921600
+
+[[endpoints]]
+type = "tcps"
+name = "lan"
+bind = "[::]:5760"
+
+[[endpoints]]
+type = "serial"
+name = "radio"
+path = "/dev/serial/by-id/usb-FTDI-1"
+baud = 57600
+block_msgid_out = "27,31,116"
+
+# Equivalent CLI invocation:
+#
+# rmr serial:/dev/ttyACM0:921600#fc \
+#     tcps:[::]:5760#lan \
+#     serial:/dev/serial/by-id/usb-FTDI-1:57600#radio?block_msgid_out=27,31,116

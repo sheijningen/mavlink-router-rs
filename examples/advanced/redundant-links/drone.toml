@@ -1,0 +1,52 @@
+# Advanced example: paired RMR for redundant uplinks — DRONE side
+#
+# Shared topology (this is the drone side; see ground.toml for the
+# ground side):
+#
+#          drone-side RMR                 ground-side RMR
+#          ──────────────                 ───────────────
+#                              LTE / 4G
+#   FC ─► RMR ─► tcpc:lte... ───── ► ◄── tcps:0.0.0.0  ─► RMR ─► tcps:0.0.0.0 ─► GCS
+#             ╲                                       ╱
+#              ╲ serial:RFD900                       ╱ serial:RFD900
+#               ╲───────── radio modem ─────────────╱
+#                          (parallel link)
+#
+# Every frame the FC produces goes out **both** uplinks in parallel
+# (full duplication, no per-link policy). The ground side runs the
+# same architecture in reverse and uses RMR's global dedup window
+# (`--dedup-ms`) to suppress whichever copy arrives second. Result:
+# the GCS sees one stream, but the system survives losing either link.
+#
+# Why dedup must be **global** (not per-endpoint): the two uplinks
+# arrive on *different* ingress endpoints on the ground side. A
+# per-endpoint window would never compare a frame on the LTE leg
+# against the same frame on the radio leg. RMR's single global dedup
+# window is exactly the right tool.
+#
+# This side does NOT need dedup — the drone is the source, not a
+# consumer of two parallel feeds.
+
+[[endpoints]]
+type = "serial"
+name = "fc"
+path = "/dev/ttyACM0"
+baud = 921600
+
+[[endpoints]]
+type = "tcpc"
+name = "lte"
+host = "ground.example.com"
+port = 5760
+
+[[endpoints]]
+type = "serial"
+name = "rfd900"
+path = "/dev/serial/by-id/usb-FTDI-1"
+baud = 57600
+
+# Equivalent CLI invocation:
+#
+# rmr serial:/dev/ttyACM0:921600#fc \
+#     tcpc:ground.example.com:5760#lte \
+#     serial:/dev/serial/by-id/usb-FTDI-1:57600#rfd900

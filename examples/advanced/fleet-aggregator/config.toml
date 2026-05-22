@@ -1,0 +1,61 @@
+# Advanced example: aggregate N drones to a single GCS
+#
+# Topology (ground-station computer running RMR):
+#
+#   drone1.local:5760 ───── tcpc ───►┐
+#   drone2.local:5760 ───── tcpc ───►├──► RMR ──► tcps:0.0.0.0:5760 ──► GCS
+#   drone3.local:5760 ───── tcpc ───►┘
+#
+# Each drone has a distinct sysid (the operator's job — RMR doesn't
+# assign sysids). RMR learns each `(sysid, compid)` on the leg it
+# arrived on; targeted commands from the GCS reach only the correct
+# drone leg, broadcasts fan out to the GCS as one merged stream.
+#
+# **No filters needed.** This works out-of-the-box because:
+#   - Each drone leg's learn-set picks up its own drone's `(sysid,
+#     compid)`. Cross-drone targeted frames (drone-A commanding
+#     drone-B) never happen in practice; if they did, they'd route
+#     correctly to the right leg via the learn table.
+#   - Loop-prevention drops drone-A's HEARTBEAT before it's forwarded
+#     back to drone-A.
+#   - The GCS endpoint learns every drone's `(sysid, compid)` from
+#     the inbound commands it sends; loop-prevention on each drone leg
+#     keeps the GCS-originated frames from looping back, and the
+#     learn-set on each drone leg routes targeted commands to the
+#     correct drone.
+#
+# Scale notes:
+#   - RMR has no built-in cap on N drone legs; the OS-level FD limit
+#     and the ground machine's CPU are the real ceilings.
+#   - If the GCS connects via UDP instead, swap the GCS leg for
+#     `udps:[::]:14550#gcs`.
+
+[[endpoints]]
+type = "tcpc"
+name = "drone1"
+host = "drone1.local"
+port = 5760
+
+[[endpoints]]
+type = "tcpc"
+name = "drone2"
+host = "drone2.local"
+port = 5760
+
+[[endpoints]]
+type = "tcpc"
+name = "drone3"
+host = "drone3.local"
+port = 5760
+
+[[endpoints]]
+type = "tcps"
+name = "gcs"
+bind = "[::]:5760"
+
+# Equivalent CLI invocation:
+#
+# rmr tcpc:drone1.local:5760#drone1 \
+#     tcpc:drone2.local:5760#drone2 \
+#     tcpc:drone3.local:5760#drone3 \
+#     tcps:[::]:5760#gcs

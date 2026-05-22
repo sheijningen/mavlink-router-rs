@@ -1,0 +1,53 @@
+# Advanced example: ground-side RMR with a local service whose traffic
+# stays on the ground (mirror of the companion-microservices example)
+#
+# Topology (ground-station computer running RMR):
+#
+#   ┌────────────────────────┐         ┌──────────────┐
+#   │  ground service        ├────────►│              │
+#   │  (e.g. map ingestor)   │  UDP    │              │
+#   │  sysid 250             │         │              │
+#   └────────────────────────┘         │     RMR      │ ──► GCS over TCP
+#                                      │              │     (local LAN)
+#   ┌────────────────────────┐         │              │
+#   │  drone-side RMR over   ├────────►│              │
+#   │  radio link            │ TCP/IP  │              │
+#   └────────────────────────┘         └──────────────┘
+#
+# The ground service emits frames the GCS wants (custom annotations,
+# overlays, etc.). They must reach the GCS — but they must **not** be
+# forwarded out the radio leg back to the drone, where they would burn
+# uplink bandwidth and arrive too late to matter.
+#
+# The filter that does the work is on the **radio leg** (the `tcpc:`
+# endpoint pointing at the drone): `block_src_sys_out` drops the
+# service's sysid on its way out the radio. The service's frames still
+# reach the GCS over `tcps:`; the drone's frames still reach the GCS
+# over `tcps:`; the GCS's commands still reach the drone over the
+# radio.
+#
+# Compare with `companion-microservices` — same shape, opposite side of
+# the radio. The filter always lives on the leg you want to protect.
+
+[[endpoints]]
+type = "udps"
+name = "ground-service"
+bind = "127.0.0.1:14555"
+
+[[endpoints]]
+type = "tcps"
+name = "gcs"
+bind = "[::]:5760"
+
+[[endpoints]]
+type = "tcpc"
+name = "radio"
+host = "drone-radio.local"
+port = 5760
+block_src_sys_out = "250"
+
+# Equivalent CLI invocation:
+#
+# rmr udps:127.0.0.1:14555#ground-service \
+#     tcps:[::]:5760#gcs \
+#     tcpc:drone-radio.local:5760#radio?block_src_sys_out=250
