@@ -235,6 +235,16 @@ async fn run_inner(spec: UdpClientSpec, wiring: ClientWiring) {
     // event per CLAUDE.md), but the task does flip back to Reconnecting on
     // send_to errors and DNS-resolve failures that leave us with no target —
     // see `send_frame` for the recovery / failure writes.
+    let local_addr = socket
+        .local_addr()
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|err| format!("unknown ({err})"));
+    info!(
+        %local_addr,
+        host = %dest.host,
+        port = dest.port,
+        "udpc bound and ready"
+    );
     stats.store_state(EndpointState::Connected);
 
     let mut framer = Framer::with_capacity(READ_BUF_BYTES);
