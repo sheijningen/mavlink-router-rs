@@ -1,50 +1,29 @@
-# Advanced example: refuse to forward command msgids to the FC
+# Filter out all stick-injection msgids to the FC.
+# This setup assumes the FC has its own RC receiver.
 #
-# Topology:
-#
-#                ┌──────────────┐
-#   GCS ───────► │              │ ─► FC (UART)
-#                │     RMR      │    block_msgid_out on the FC leg
-#                │              │    drops dangerous msgids before
-#                └──────────────┘    they reach the UART
-#
-# The filter sits on the side you're protecting (the FC's `serial:`
-# endpoint) on the `*_out` axis: "don't forward these msgids out
-# *to* the FC." Commands from the GCS traverse the router normally
-# but are silently dropped just before they'd be written to the
-# UART, with `out_filter_drops` incremented on the FC's stats line
-# so you can see the guardrail working.
-#
-# The msgids blocked in this example, with their canonical names:
-#
-#   70   RC_CHANNELS_OVERRIDE  RC stick override — flight-critical
-#   75   COMMAND_INT           int-coordinate command frame
-#   76   COMMAND_LONG          generic command frame
-#
-# A misbehaving GCS script or a compromised laptop can no longer push
-# those msgids to the FC. Targeted telemetry replies and status
-# updates still flow normally.
-#
-# Threat-model caveat: this is a routing-layer guardrail. It is not a
-# substitute for authenticated commands (signed MAVLink, end-to-end
-# transport authentication via WireGuard / SSH / mTLS, or vehicle-
-# side allowlists). A clever attacker who can run code on a host with
-# legitimate FC access can still issue the blocked msgids by talking
-# directly to the FC's UART — they just can't do it *through* RMR.
+#   ┌────────── Drone ───────────┐
+#   │                 ┌──────┐   │
+#   │ FC (UART) ◄───► │ RMR  │◄──┼───────────────────► GCS
+#   │                 └──────┘   │
+#   └────────────────────────────┘
 
-[[endpoints]]
-type = "tcps"
-name = "gcs"
-bind = "[::]:5760"
-
+# Flight controller. Block stick-injection msgids so nothing
+# arriving from the network can overwrite the RC controller.
 [[endpoints]]
 type = "serial"
 name = "fc"
 path = "/dev/ttyACM0"
-baud = 921600
-block_msgid_out = "70,75,76"
+baud = 115200
+block_msgid_out = "69,70"  # MANUAL_CONTROL, RC_CHANNELS_OVERRIDE
+
+# GCS.
+[[endpoints]]
+type = "udpc"
+name = "gcs"
+host = "10.223.0.10"
+port = 14550
 
 # Equivalent CLI invocation:
 #
-# rmr tcps:[::]:5760#gcs \
-#     serial:/dev/ttyACM0:921600#fc?block_msgid_out=70,75,76
+# rmr serial:/dev/ttyACM0:115200#fc?block_msgid_out=69,70 \
+#     udpc:10.223.0.10:14550#gcs

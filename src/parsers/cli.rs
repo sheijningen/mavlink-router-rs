@@ -30,17 +30,9 @@ const ENDPOINT_GUIDE: &str = "Endpoints:
   scheme         body                         use for
   serial:        path:baud (or path,baud)     UART to a flight controller
   udps:          host:port                    UDP server (learns peers)
-  udpc:          host:port                    UDP client (dials, then latches)
+  udpc:          host:port                    UDP client (latches on reply)
   tcps:          host:port                    TCP server (accepts many)
   tcpc:          host:port                    TCP client (dials + reconnects)
-
-  Examples:
-    serial:/dev/ttyUSB0:921600
-    serial:COM3,115200
-    udps:0.0.0.0:14550
-    udpc:gcs.local:14550
-    tcps:[::]:5760
-    tcpc:192.168.55.1:5760
 
   The `#name` is an optional identifier of the endpoint used for logs and stats.
 
@@ -76,21 +68,7 @@ Filter query keys — any scheme:
   is applied on incoming traffic at the source endpoint; `*_out`
   is applied on outgoing traffic per destination endpoint.
 
-  Examples:
-    # Drop high-rate IMU/attitude msgids on a slow radio link:
-    tcpc:radio.local:5760?block_msgid_out=27,31,116
-    # Refuse to forward RC_CHANNELS_OVERRIDE (msgid 70) to the FC —
-    # keeps scripts and misbehaving GCSs from hijacking stick input:
-    serial:/dev/ttyACM0:921600?block_msgid_out=70
-    # GCS endpoint only sees frames from vehicle sysid 1:
-    tcps:0.0.0.0:5760?allow_src_sys_out=1
-    # Ground-side service: don't forward unknown traffic out the uplink:
-    tcpc:drone.local:5760?allow_src_sys_out=255
-    # Receive-only diagnostic tap — sees every routed frame but never
-    # injects anything back into the router:
-    tcps:0.0.0.0:5763#tap?sniffer=true&block_src_sys_in=0-255
-
-Full design doc and TOML config reference:
+Worked examples, design doc, and full TOML config reference:
   https://github.com/sheijningen/rmr
 ";
 

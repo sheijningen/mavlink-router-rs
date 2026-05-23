@@ -1,0 +1,45 @@
+# Connect to a flight controller (UART) and expose it to the network on
+# three endpoints: a UDP client dialling a primary GCS, a UDP server for ad-hoc
+# peers, and a TCP server for many GCS clients.
+#
+#   ┌─────────── Drone ────────────┐
+#   │                  ┌──────┐    │
+#   │                  │      │◄───┼──► GCS
+#   │  FC (UART) ◄───► │ RMR  │◄───┼──► ad-hoc UDP clients
+#   │                  │      │◄───┼──► ad-hoc TCP clients
+#   │                  └──────┘    │
+#   └──────────────────────────────┘
+
+# Flight controller over UART. Set `flow_control = "rtscts"` if your wiring
+# exposes RTS/CTS.
+[[endpoints]]
+type = "serial"
+name = "fc"
+path = "/dev/ttyACM0"
+baud = 115200
+
+# UDP client with outbound traffic for a primary GCS.
+[[endpoints]]
+type = "udpc"
+name = "gcs"
+host = "192.168.144.15"
+port = 14550
+
+# UDP server for ad-hoc clients.
+[[endpoints]]
+type = "udps"
+name = "bus"
+bind = "0.0.0.0:14550"
+
+# TCP server for many GCS clients.
+[[endpoints]]
+type = "tcps"
+name = "gcs-clients"
+bind = "0.0.0.0:5760"
+
+# Equivalent CLI invocation:
+#
+# rmr serial:/dev/ttyACM0:115200#fc \
+#     udpc:192.168.144.15:14550#gcs \
+#     udps:0.0.0.0:14550#bus \
+#     tcps:0.0.0.0:5760#gcs-clients

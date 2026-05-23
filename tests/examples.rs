@@ -46,18 +46,14 @@ fn every_example_toml_matches_its_cli_block() {
 #[test]
 fn all_expected_examples_are_populated() {
     let single: &[(&str, &str)] = &[
-        ("simple", "serial-fc"),
-        ("simple", "udps-listener"),
-        ("simple", "udpc-dialer"),
-        ("simple", "tcps-listener"),
-        ("simple", "tcpc-dialer"),
-        ("simple", "stats-enabled"),
-        ("advanced", "serial-fc-network"),
+        ("simple", "fc-network"),
+        ("simple", "fc-network-windows"),
+        ("simple", "fc-sniffer"),
+        ("simple", "ipv6-and-hostname"),
         ("advanced", "companion-microservices"),
         ("advanced", "ground-side-local-service"),
         ("advanced", "fleet-aggregator"),
-        ("advanced", "sniffer-tap"),
-        ("advanced", "radio-bandwidth-shaping"),
+        ("advanced", "egress-bandwidth-shaping"),
         ("advanced", "fc-safety-filter"),
     ];
     for (tier, name) in single {
@@ -67,18 +63,11 @@ fn all_expected_examples_are_populated() {
             .join("config.toml");
         assert!(path.exists(), "expected example {}", path.display());
     }
-    let paired: &[(&str, &str, &[&str])] = &[
-        (
-            "advanced",
-            "redundant-links",
-            &["drone.toml", "ground.toml"],
-        ),
-        (
-            "advanced",
-            "nat-vps-rendezvous",
-            &["vehicle.toml", "vps.toml"],
-        ),
-    ];
+    let paired: &[(&str, &str, &[&str])] = &[(
+        "advanced",
+        "redundant-links",
+        &["drone.toml", "ground.toml"],
+    )];
     for (tier, name, files) in paired {
         for file in *files {
             let path = Path::new("examples").join(tier).join(name).join(file);

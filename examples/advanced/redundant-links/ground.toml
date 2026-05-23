@@ -1,49 +1,52 @@
-# Advanced example: paired RMR for redundant uplinks — GROUND side
+# Paired RMR for redundant uplinks — GROUND side.
 #
-# Companion file to drone.toml. See drone.toml for the full topology
-# diagram.
+# Two parallel uplinks (LTE over UDP, RFD900 over serial) carry every
+# frame in both directions. The ground-side RMR fans each GCS command
+# across both links; the drone-side RMR dedups whichever copy arrives
+# second. Same in reverse for FC telemetry.
 #
-# This side terminates both uplinks (the LTE TCP server and the RFD900
-# radio's ground-side modem) and exposes a single TCP server for the
-# GCS. The global `dedup_ms` window suppresses whichever copy of each
-# vehicle frame arrives second — saving the GCS from duplicate
-# HEARTBEATs, doubled telemetry rates, and the parameter-fetch
-# confusion that comes with seeing every reply twice.
+#   ┌────────── Drone ───────────┐                ┌────────── Ground ───────────┐
+#   │                 ┌──────┐   │                │   ┌──────┐                  │
+#   │                 │      │◄──┼────────────────┼──►│      │                  │
+#   │ FC (UART) ◄───► │ RMR  │   │                │   │ RMR  │ ◄───► GCS        │
+#   │                 │      │◄──┼────────────────┼──►│      │                  │
+#   │                 └──────┘   │                │   └──────┘                  │
+#   └────────────────────────────┘                └─────────────────────────────┘
 #
-# Dedup TTL choice: set `dedup_ms` to roughly the worst-case
-# inter-link arrival skew you expect. A radio-modem leg with ~150 ms
-# latency and an LTE leg with ~80 ms means duplicates land within
-# ~100 ms of each other — set `dedup_ms = 250` to comfortably catch
-# them. Too low and duplicates leak through; too high and a fast
-# retransmit of a *new* frame with the same bytes (rare in practice)
-# could be suppressed.
-#
-# The dedup window is **global** to this RMR instance — one window
-# covering frames arriving on any ingress endpoint. That's exactly
-# what catches the cross-leg duplicates a per-endpoint window would
-# miss.
+# Both LTE and RFD900 are in `group = "links"`. Endpoints sharing
+# the same group act as one logical link for routing — a device that
+# appears on either endpoint is considered reachable via both.
 
+# Global `dedup_ms = 250`: if an identical frame arrives within 250 ms
+# of a previous one, the duplicate is dropped. Prevents FC telemetry
+# from arriving twice to the GCS. Increase if more significant latency
+# differences between links are expected.
 dedup_ms = 250
 
+# LTE downlink.
 [[endpoints]]
-type = "tcps"
+type = "udps"
 name = "lte"
-bind = "[::]:5760"
+bind = "0.0.0.0:14550"
+group = "links"
 
+# RFD900 telemetry radio on a USB-serial dongle.
 [[endpoints]]
 type = "serial"
 name = "rfd900"
-path = "/dev/serial/by-id/usb-FTDI-1"
+path = "/dev/ttyUSB0"
 baud = 57600
+group = "links"
 
+# GCS.
 [[endpoints]]
 type = "tcps"
 name = "gcs"
-bind = "[::]:5761"
+bind = "0.0.0.0:5760"
 
 # Equivalent CLI invocation:
 #
 # rmr --dedup-ms 250 \
-#     tcps:[::]:5760#lte \
-#     serial:/dev/serial/by-id/usb-FTDI-1:57600#rfd900 \
-#     tcps:[::]:5761#gcs
+#     udps:0.0.0.0:14550#lte?group=links \
+#     serial:/dev/ttyUSB0:57600#rfd900?group=links \
+#     tcps:0.0.0.0:5760#gcs

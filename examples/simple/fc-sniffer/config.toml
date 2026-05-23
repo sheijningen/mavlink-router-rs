@@ -1,0 +1,43 @@
+# Connect to a flight controller, expose it on a UDP server, and add a
+# loopback-only diagnostic sniffer endpoint reserved for an on-drone
+# `.tlog` recorder.
+#
+#   ┌───────────────── Drone ──────────────────┐
+#   │                    ┌──────┐              │
+#   │                    │      │◄─────────────┼──► ad-hoc UDP bus
+#   │  FC (UART) ◄────►  │ RMR  │              │
+#   │                    │      │◄───► sniffer │
+#   │                    └──────┘              │
+#   └──────────────────────────────────────────┘
+
+# Flight controller over UART.
+[[endpoints]]
+type = "serial"
+name = "fc"
+path = "/dev/ttyACM0"
+baud = 115200
+
+# UDP server for ad-hoc clients (the GCS bus).
+[[endpoints]]
+type = "udps"
+name = "bus"
+bind = "0.0.0.0:14550"
+
+# Diagnostic sniffer endpoint. `sniffer = true` bypasses loop-prevention,
+# target-match, and out-filters so this endpoint receives every frame
+# the router accepted — frames dropped at ingress (bad CRC, In-filter
+# rejection, deduplication with `dedup_ms`) never reach a sniffer.
+# In-filters restrict what the recorder may send *into* RMR — only a HEARTBEAT.
+[[endpoints]]
+type = "udps"
+name = "sniffer"
+bind = "127.0.0.1:14551"
+sniffer = true
+allow_msgid_in = "0"  # HEARTBEAT
+allow_src_comp_in = "155"  # MAV_COMP_ID_LOG
+
+# Equivalent CLI invocation:
+#
+# rmr serial:/dev/ttyACM0:115200#fc \
+#     udps:0.0.0.0:14550#bus \
+#     udps:127.0.0.1:14551#sniffer?sniffer=true&allow_msgid_in=0&allow_src_comp_in=155

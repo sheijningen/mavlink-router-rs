@@ -1,0 +1,45 @@
+# Comparable topology to `fc-network`, but with RMR on a Windows PC and the
+# FC reached over a COM port. Demonstrates that the `serial:` configuration
+# surface is cross-platform.
+#
+#   ┌── Drone ──┐                ┌─────────────── PC ────────────────┐
+#   │           │                │                                   │
+#   │           │                │                 ┌──────┐          │
+#   │           │                │                 │      │◄─────────┼──► GCS
+#   │   FC      │◄────(COM3)─────┼────────────────►│ RMR  │◄─────────┼──► ad-hoc UDP clients
+#   │           │                │                 │      │◄─────────┼──► ad-hoc TCP clients
+#   │           │                │                 └──────┘          │
+#   └───────────┘                └───────────────────────────────────┘
+
+# Flight controller on a Windows COM port.
+[[endpoints]]
+type = "serial"
+name = "fc"
+path = "COM3"
+baud = 115200
+
+# UDP client with outbound traffic for a primary GCS.
+[[endpoints]]
+type = "udpc"
+name = "gcs"
+host = "192.168.144.15"
+port = 14550
+
+# UDP server for ad-hoc clients.
+[[endpoints]]
+type = "udps"
+name = "bus"
+bind = "0.0.0.0:14550"
+
+# TCP server for many GCS clients.
+[[endpoints]]
+type = "tcps"
+name = "gcs-clients"
+bind = "0.0.0.0:5760"
+
+# Equivalent CLI invocation:
+#
+# rmr serial:COM3:115200#fc \
+#     udpc:192.168.144.15:14550#gcs \
+#     udps:0.0.0.0:14550#bus \
+#     tcps:0.0.0.0:5760#gcs-clients
