@@ -124,7 +124,7 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
 /// in the line. The message is "merged config" only when both TOML and CLI
 /// contributed values; otherwise just "config". Revisit if any future config
 /// field carries a secret.
-fn log_resolved_config(cfg: &Config) {
+pub fn log_resolved_config(cfg: &Config) {
     let msg = if cfg.merged {
         "merged config"
     } else {

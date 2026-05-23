@@ -112,6 +112,12 @@ pub struct Cli {
     #[arg(long)]
     pub skip_config_log: bool,
 
+    /// Print the fully-resolved config (after CLI+TOML merge) to stdout and
+    /// exit without binding any sockets. For verifying a setup before
+    /// running it.
+    #[arg(long)]
+    pub dry_run: bool,
+
     /// One or more endpoint specifications (scheme:body[#name][?key=val&...])
     #[arg(value_name = "ENDPOINT")]
     pub endpoints: Vec<String>,
@@ -316,6 +322,16 @@ mod tests {
         assert!(cfg.stats_interval_secs.is_none());
         assert!(cfg.dedup_ms.is_none());
         assert!(cfg.skip_config_log.is_none());
+    }
+
+    #[test]
+    fn dry_run_flag_parses() {
+        // --dry-run is a binary-only flag (handled by main, not merged into
+        // CliConfig), so the test stays on the `Cli` struct.
+        let cli = Cli::try_parse_from(["rmr", "--dry-run", "udps:0.0.0.0:1#a"]).unwrap();
+        assert!(cli.dry_run);
+        let absent = Cli::try_parse_from(["rmr", "udps:0.0.0.0:1#a"]).unwrap();
+        assert!(!absent.dry_run);
     }
 
     #[test]

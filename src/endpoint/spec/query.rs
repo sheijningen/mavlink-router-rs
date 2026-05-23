@@ -47,10 +47,11 @@ pub fn parse_query_pairs(text: &str) -> Result<Vec<(String, String)>, SpecError>
         if key.is_empty() {
             return Err(SpecError::MalformedQuery(format!("empty key in '{pair}'")));
         }
-        if !seen.insert(key.to_string()) {
-            return Err(SpecError::DuplicateQueryKey(key.to_string()));
+        let key = key.to_ascii_lowercase();
+        if !seen.insert(key.clone()) {
+            return Err(SpecError::DuplicateQueryKey(key));
         }
-        out.push((key.to_string(), value.to_string()));
+        out.push((key, value.to_string()));
     }
     Ok(out)
 }
@@ -163,7 +164,7 @@ pub(crate) fn suggest_query_key(scheme: Scheme, unknown: &str) -> Option<&'stati
         .chain(Filters::KEYS.iter())
         .chain(extras.iter())
         .map(|key| (*key, levenshtein(unknown, key)))
-        .filter(|(_, distance)| *distance <= 3)
+        .filter(|(_, distance)| *distance <= 4)
         .min_by_key(|(_, distance)| *distance)
         .map(|(key, _)| key)
 }
@@ -549,6 +550,30 @@ mod tests {
     fn duplicate_query_key_fails() {
         assert!(matches!(
             parse_err("udps:0.0.0.0:1?sniffer=true&sniffer=false"),
+            SpecError::DuplicateQueryKey(k) if k == "sniffer"
+        ));
+    }
+
+    #[test]
+    fn query_keys_case_insensitive() {
+        // `parse_query_pairs` lowercases keys so `?SNIFFER=true`,
+        // `?Sniffer=true`, and `?sniffer=true` all reach the same applier
+        // branch. Values keep their case.
+        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1?SNIFFER=true")).clone();
+        assert!(endpoint.identity.sniffer);
+        let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1?Sniffer=true")).clone();
+        assert!(endpoint.identity.sniffer);
+        let endpoint = as_tcpc(&parse_ok("tcpc:gcs.local:5760?Group=Up-link")).clone();
+        // Key was uppercase; value retains its original case verbatim.
+        assert_eq!(endpoint.identity.group.as_deref(), Some("Up-link"));
+    }
+
+    #[test]
+    fn duplicate_query_key_detected_across_cases() {
+        // Lowercasing happens before the dedup check, so `Sniffer` and
+        // `SNIFFER` collide on the canonical `sniffer`.
+        assert!(matches!(
+            parse_err("udps:0.0.0.0:1?Sniffer=true&SNIFFER=false"),
             SpecError::DuplicateQueryKey(k) if k == "sniffer"
         ));
     }
