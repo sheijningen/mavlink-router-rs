@@ -46,6 +46,11 @@ async fn main() -> ExitCode {
         }
     };
 
+    if cfg.endpoints.is_empty() {
+        eprintln!("{NO_ENDPOINT_MESSAGE}");
+        return ExitCode::FAILURE;
+    }
+
     init_tracing(cfg.log_level, cfg.log_format);
 
     for name in &overrides {
@@ -69,3 +74,13 @@ async fn main() -> ExitCode {
         }
     }
 }
+
+const NO_ENDPOINT_MESSAGE: &str = "\
+error: no endpoint specified
+
+Usage:
+  rmr [GLOBAL OPTS] ENDPOINT [ENDPOINT ...]    # one or more endpoints on the CLI
+  rmr -c rmr.toml                              # or load them from a TOML config
+
+Run `rmr --help` for the endpoint grammar and per-scheme query keys.
+";

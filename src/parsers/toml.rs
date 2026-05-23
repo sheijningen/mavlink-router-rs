@@ -150,7 +150,7 @@ struct TomlEndpoint {
 
 impl TomlEndpoint {
     fn into_spec(self, index: usize) -> Result<EndpointSpec, Error> {
-        let scheme = scheme_from_toml_type(&self.scheme, index)?;
+        let scheme = scheme_from_toml_type(&self.scheme, index, self.name.as_deref())?;
 
         // Reject wrong-scheme fields *before* synthesising the body so that an
         // entry carrying both `path` and `bind` surfaces "field 'bind' is not
@@ -160,32 +160,41 @@ impl TomlEndpoint {
         let body = self.synthesize_body(index, scheme)?;
         let pairs = self.collect_pairs();
         let name_opt = self.name.as_deref();
-        EndpointSpec::build(scheme, &body, name_opt, &pairs).map_err(Error::from)
+        EndpointSpec::build(scheme, &body, name_opt, &pairs).map_err(|source| Error::SpecInToml {
+            index,
+            name: self.name.clone(),
+            source,
+        })
     }
 
     fn synthesize_body(&self, index: usize, scheme: Scheme) -> Result<String, Error> {
+        let name = self.name.as_deref();
         match scheme {
             Scheme::Serial => {
                 let path = self
                     .path
                     .as_ref()
-                    .ok_or_else(|| missing(index, scheme, "path"))?;
-                let baud = self.baud.ok_or_else(|| missing(index, scheme, "baud"))?;
+                    .ok_or_else(|| missing(index, name, scheme, "path"))?;
+                let baud = self
+                    .baud
+                    .ok_or_else(|| missing(index, name, scheme, "baud"))?;
                 Ok(format!("{path}:{baud}"))
             }
             Scheme::UdpServer | Scheme::TcpServer => {
                 let bind = self
                     .bind
                     .as_ref()
-                    .ok_or_else(|| missing(index, scheme, "bind"))?;
+                    .ok_or_else(|| missing(index, name, scheme, "bind"))?;
                 Ok(bind.clone())
             }
             Scheme::UdpClient | Scheme::TcpClient => {
                 let host = self
                     .host
                     .as_ref()
-                    .ok_or_else(|| missing(index, scheme, "host"))?;
-                let port = self.port.ok_or_else(|| missing(index, scheme, "port"))?;
+                    .ok_or_else(|| missing(index, name, scheme, "host"))?;
+                let port = self
+                    .port
+                    .ok_or_else(|| missing(index, name, scheme, "port"))?;
                 // IPv6 literal hosts must be bracketed in the body grammar so
                 // the rsplit(':') boundary lands at the port colon, not the
                 // last `::` inside the address. Bracketing here is harmless for
@@ -226,9 +235,13 @@ impl TomlEndpoint {
 
         for (field, present) in provided {
             if present && !allowed.contains(&field) {
+                let allowed_list = allowed.join(", ");
                 return Err(Error::ConfigSchema {
                     index,
-                    reason: format!("field '{field}' is not valid for type '{scheme}'"),
+                    name: self.name.clone(),
+                    reason: format!(
+                        "field '{field}' is not valid for type '{scheme}' (allowed fields: {allowed_list})"
+                    ),
                 });
             }
         }
@@ -314,9 +327,10 @@ fn push_str_pair(pairs: &mut Vec<(String, String)>, key: &str, val: Option<&str>
     }
 }
 
-fn missing(index: usize, scheme: Scheme, field: &'static str) -> Error {
+fn missing(index: usize, name: Option<&str>, scheme: Scheme, field: &'static str) -> Error {
     Error::ConfigSchema {
         index,
+        name: name.map(str::to_string),
         reason: format!("type '{scheme}' requires field '{field}'"),
     }
 }
@@ -325,9 +339,10 @@ fn missing(index: usize, scheme: Scheme, field: &'static str) -> Error {
 /// [`Scheme::try_from_str`] with the `Error::ConfigSchema` shape the TOML
 /// path is contracted to produce (pinned by
 /// `toml_unknown_endpoint_type_rejected`).
-fn scheme_from_toml_type(raw: &str, index: usize) -> Result<Scheme, Error> {
+fn scheme_from_toml_type(raw: &str, index: usize, name: Option<&str>) -> Result<Scheme, Error> {
     Scheme::try_from_str(raw).ok_or_else(|| Error::ConfigSchema {
         index,
+        name: name.map(str::to_string),
         reason: format!("unknown endpoint type '{raw}' (valid: serial, udps, udpc, tcps, tcpc)"),
     })
 }
@@ -525,7 +540,7 @@ totally_made_up = 1
     ) {
         let text = format!("[[endpoints]]\ntype = \"{type_name}\"\n{wrong_field} = {toml_value}\n");
         match TomlConfig::parse_str(&text) {
-            Err(Error::ConfigSchema { index, reason }) => {
+            Err(Error::ConfigSchema { index, reason, .. }) => {
                 assert_eq!(index, 0);
                 assert!(
                     reason.contains(&format!("'{wrong_field}'")),
@@ -563,7 +578,7 @@ totally_made_up = 1
     ) {
         let text = format!("[[endpoints]]\ntype = \"{type_name}\"\n{other_fields}\n");
         match TomlConfig::parse_str(&text) {
-            Err(Error::ConfigSchema { index, reason }) => {
+            Err(Error::ConfigSchema { index, reason, .. }) => {
                 assert_eq!(index, 0);
                 assert!(
                     reason.contains(&format!("'{missing_field}'")),
@@ -611,19 +626,23 @@ block_msgid_in = [33, 100, 150]
 
     #[test]
     fn propagates_spec_errors_for_invalid_query_value() {
-        // Invalid range (lo > hi) is caught by the existing filter parser,
-        // which we reuse via EndpointSpec::build — so an out-of-shape filter
-        // surfaces as a SpecError, not a ConfigSchema.
+        // Invalid range (lo > hi) surfaces as a SpecError from the filter
+        // parser; the TOML loader must wrap it in `SpecInToml` so the
+        // entry name + index reach the operator.
         let text = r#"
 [[endpoints]]
 type = "tcpc"
 host = "gcs.local"
 port = 5760
+name = "vehicle"
 block_msgid_in = "10-5"
 "#;
         match TomlConfig::parse_str(text) {
-            Err(Error::Spec(_)) => {}
-            other => panic!("expected Spec, got {other:?}"),
+            Err(Error::SpecInToml { index, name, .. }) => {
+                assert_eq!(index, 0);
+                assert_eq!(name.as_deref(), Some("vehicle"));
+            }
+            other => panic!("expected SpecInToml, got {other:?}"),
         }
     }
 
@@ -670,8 +689,8 @@ port = 5760
     #[test]
     fn invalid_explicit_name_rejected() {
         // CLAUDE.md "`#name` validation": names outside [A-Za-z0-9_-]{1,64}
-        // are fatal. TOML routes through `EndpointSpec::build` which calls
-        // `validate_name`, so we should see a SpecError from there.
+        // are fatal. The offending name is surfaced verbatim in both the
+        // wrapper's locator suffix and the inner `SpecError::InvalidName`.
         let text = r#"
 [[endpoints]]
 type = "udps"
@@ -679,8 +698,11 @@ bind = "0.0.0.0:14550"
 name = "has spaces"
 "#;
         match TomlConfig::parse_str(text) {
-            Err(Error::Spec(_)) => {}
-            other => panic!("expected Spec (invalid name), got {other:?}"),
+            Err(Error::SpecInToml { index, name, .. }) => {
+                assert_eq!(index, 0);
+                assert_eq!(name.as_deref(), Some("has spaces"));
+            }
+            other => panic!("expected SpecInToml (invalid name), got {other:?}"),
         }
     }
 
@@ -925,5 +947,70 @@ bind = "0.0.0.0:14550"
             }
             other => panic!("expected ConfigSchema mentioning 'bind' first, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn config_schema_error_carries_endpoint_name() {
+        let text = r#"
+[[endpoints]]
+type = "udps"
+bind = "0.0.0.0:14550"
+name = "fleet-bus"
+host = "192.168.1.1"
+"#;
+        match TomlConfig::parse_str(text) {
+            Err(Error::ConfigSchema { name, .. }) => {
+                assert_eq!(name.as_deref(), Some("fleet-bus"));
+            }
+            other => panic!("expected ConfigSchema, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_message_quotes_endpoint_name_and_position() {
+        let text = r#"
+[[endpoints]]
+type = "udps"
+bind = "0.0.0.0:14550"
+
+[[endpoints]]
+type = "udps"
+name = "fleet-bus"
+host = "drone.local"
+"#;
+        let err = TomlConfig::parse_str(text).expect_err("must fail");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("[[endpoints]] #2"),
+            "expected 1-based position: {rendered}"
+        );
+        assert!(
+            rendered.contains("'fleet-bus'"),
+            "expected verbatim name: {rendered}"
+        );
+        assert!(
+            rendered.contains("allowed fields:"),
+            "expected allowed-fields hint: {rendered}"
+        );
+    }
+
+    #[test]
+    fn error_message_omits_name_when_unset() {
+        // No `''` should appear for an entry without `name`.
+        let text = r#"
+[[endpoints]]
+type = "udps"
+host = "drone.local"
+"#;
+        let err = TomlConfig::parse_str(text).expect_err("must fail");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("[[endpoints]] #1"),
+            "expected bare position: {rendered}"
+        );
+        assert!(
+            !rendered.contains("''"),
+            "no empty-quoted-name should appear: {rendered}"
+        );
     }
 }

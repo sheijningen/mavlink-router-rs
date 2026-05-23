@@ -103,12 +103,15 @@ pub fn parse_kind(
     }
 }
 
+const SERIAL_GRAMMAR: &str =
+    "expected 'serial:<path>:<baud>' or 'serial:<path>,<baud>', e.g. 'serial:/dev/ttyUSB0:115200'";
+
 pub(crate) fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> {
     if body.is_empty() {
         return Err(SpecError::MalformedBody {
             scheme: Scheme::Serial,
             body: body.to_string(),
-            reason: "empty body".to_string(),
+            reason: format!("empty body ({SERIAL_GRAMMAR})"),
         });
     }
     let last_colon = body.rfind(':');
@@ -123,7 +126,7 @@ pub(crate) fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> 
         return Err(SpecError::MalformedBody {
             scheme: Scheme::Serial,
             body: body.to_string(),
-            reason: "expected '<path>:<baud>' or '<path>,<baud>'".to_string(),
+            reason: format!("no ':' or ',' separator between path and baud ({SERIAL_GRAMMAR})"),
         });
     };
     let path = &body[..pos];
@@ -132,22 +135,34 @@ pub(crate) fn parse_serial_body(body: &str) -> Result<(String, u32), SpecError> 
         return Err(SpecError::MalformedBody {
             scheme: Scheme::Serial,
             body: body.to_string(),
-            reason: "empty device path".to_string(),
+            reason: format!("empty device path ({SERIAL_GRAMMAR})"),
         });
     }
     let baud: u32 = baud_str.parse().map_err(|_| SpecError::MalformedBody {
         scheme: Scheme::Serial,
         body: body.to_string(),
-        reason: format!("baud '{baud_str}' is not a valid u32"),
+        reason: format!("baud '{baud_str}' is not a valid u32 ({SERIAL_GRAMMAR})"),
     })?;
     if baud == 0 {
         return Err(SpecError::MalformedBody {
             scheme: Scheme::Serial,
             body: body.to_string(),
-            reason: "baud must be > 0".to_string(),
+            reason: format!("baud must be > 0 ({SERIAL_GRAMMAR})"),
         });
     }
     Ok((path.to_string(), baud))
+}
+
+fn host_port_grammar(scheme: Scheme) -> &'static str {
+    match scheme {
+        Scheme::UdpServer | Scheme::TcpServer => {
+            "expected '<ip>:<port>', e.g. '0.0.0.0:14550' or '[::]:5760' (hostnames are not resolved for listen-side endpoints)"
+        }
+        Scheme::UdpClient | Scheme::TcpClient => {
+            "expected '<host>:<port>', e.g. '192.168.1.5:14550' or 'gcs.example:5760'"
+        }
+        Scheme::Serial => SERIAL_GRAMMAR,
+    }
 }
 
 /// Listen-side parser used by `tcps:` and `udps:`: same `host:port` grammar
@@ -167,11 +182,12 @@ pub(crate) fn parse_listen_addr(body: &str, scheme: Scheme) -> Result<SocketAddr
 }
 
 pub(crate) fn parse_host_port(body: &str, scheme: Scheme) -> Result<(String, u16), SpecError> {
+    let grammar = host_port_grammar(scheme);
     if body.is_empty() {
         return Err(SpecError::MalformedBody {
             scheme,
             body: body.to_string(),
-            reason: "empty body".to_string(),
+            reason: format!("empty body ({grammar})"),
         });
     }
     let (host, port_str) = if let Some(rest) = body.strip_prefix('[') {
@@ -179,7 +195,7 @@ pub(crate) fn parse_host_port(body: &str, scheme: Scheme) -> Result<(String, u16
             return Err(SpecError::MalformedBody {
                 scheme,
                 body: body.to_string(),
-                reason: "unclosed '[' in IPv6 literal".to_string(),
+                reason: format!("unclosed '[' in IPv6 literal ({grammar})"),
             });
         };
         let host = &rest[..end];
@@ -188,7 +204,7 @@ pub(crate) fn parse_host_port(body: &str, scheme: Scheme) -> Result<(String, u16
             return Err(SpecError::MalformedBody {
                 scheme,
                 body: body.to_string(),
-                reason: "expected ':<port>' after ']'".to_string(),
+                reason: format!("expected ':<port>' after ']' ({grammar})"),
             });
         };
         (host.to_string(), port_str.to_string())
@@ -197,7 +213,7 @@ pub(crate) fn parse_host_port(body: &str, scheme: Scheme) -> Result<(String, u16
             return Err(SpecError::MalformedBody {
                 scheme,
                 body: body.to_string(),
-                reason: "expected '<host>:<port>'".to_string(),
+                reason: format!("no ':' between host and port ({grammar})"),
             });
         };
         (host.to_string(), port_str.to_string())
@@ -206,13 +222,13 @@ pub(crate) fn parse_host_port(body: &str, scheme: Scheme) -> Result<(String, u16
         return Err(SpecError::MalformedBody {
             scheme,
             body: body.to_string(),
-            reason: "empty host".to_string(),
+            reason: format!("empty host ({grammar})"),
         });
     }
     let port: u16 = port_str.parse().map_err(|_| SpecError::MalformedBody {
         scheme,
         body: body.to_string(),
-        reason: format!("port '{port_str}' is not a valid u16"),
+        reason: format!("port '{port_str}' is not a valid u16 ({grammar})"),
     })?;
     Ok((host, port))
 }

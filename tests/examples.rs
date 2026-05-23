@@ -97,6 +97,21 @@ fn help_renders_endpoint_mini_guide() {
         .stdout(predicate::str::contains("latch_idle_secs=N"));
 }
 
+/// Negative case for the friendly-no-endpoint intercept: an unknown
+/// flag is a different clap `ErrorKind`, so the intercept must not fire
+/// and clap's native rendering must survive.
+#[test]
+fn unknown_flag_keeps_clap_native_error() {
+    Command::cargo_bin("rmr")
+        .expect("cargo bin")
+        .arg("--no-such-flag")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument"))
+        .stderr(predicate::str::contains("--no-such-flag"))
+        .stderr(predicate::str::contains("no endpoint specified").not());
+}
+
 fn verify_one(path: &Path) {
     let text = std::fs::read_to_string(path)
         .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));

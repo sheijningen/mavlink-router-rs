@@ -4,7 +4,9 @@ use super::Scheme;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SpecError {
-    #[error("missing scheme in '{0}'")]
+    #[error(
+        "missing scheme in '{0}' (expected one of: 'serial:', 'udps:', 'udpc:', 'tcps:', 'tcpc:')"
+    )]
     MissingScheme(String),
     #[error("unknown scheme '{0}' (valid: serial, udps, udpc, tcps, tcpc)")]
     UnknownScheme(String),

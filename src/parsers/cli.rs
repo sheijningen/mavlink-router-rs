@@ -113,7 +113,7 @@ pub struct Cli {
     pub skip_config_log: bool,
 
     /// One or more endpoint specifications (scheme:body[#name][?key=val&...])
-    #[arg(value_name = "ENDPOINT", required_unless_present = "config")]
+    #[arg(value_name = "ENDPOINT")]
     pub endpoints: Vec<String>,
 }
 
@@ -125,8 +125,9 @@ pub struct Cli {
 ///
 /// `Default` produces a `CliConfig` with every global `None` and no endpoints
 /// — useful for test fixtures and the "operator only passed `--config <FILE>`"
-/// branch (clap's `required_unless_present = "config"` rule lets the endpoint
-/// Vec be empty when `--config` is set).
+/// branch. An empty endpoint Vec is accepted at parse time; the "must have at
+/// least one endpoint" check runs post-merge in [`crate::main`] so a TOML
+/// file that defines no endpoints fails the same way as `rmr` with no args.
 #[derive(Debug, Clone, Default)]
 pub struct CliConfig {
     pub log_level: Option<LogLevel>,
@@ -172,12 +173,19 @@ impl Cli {
 
 /// Turn a slice of CLI-style endpoint strings into typed [`EndpointSpec`]s
 /// via [`EndpointSpec::parse`] — the same parser the TOML side eventually
-/// reaches via [`EndpointSpec::build`]. Duplicate-name detection is left to
+/// reaches via [`EndpointSpec::build`]. Spec errors are wrapped in
+/// [`Error::SpecInArg`] so the operator sees which positional argument
+/// failed. Duplicate-name detection is left to
 /// [`crate::config::Config::validate`] after the merge runs.
 pub fn parse_specs(raw: &[String]) -> Result<Vec<EndpointSpec>, Error> {
     let mut specs = Vec::with_capacity(raw.len());
-    for text in raw {
-        specs.push(EndpointSpec::parse(text)?);
+    for (index, text) in raw.iter().enumerate() {
+        let spec = EndpointSpec::parse(text).map_err(|source| Error::SpecInArg {
+            index,
+            arg: text.clone(),
+            source,
+        })?;
+        specs.push(spec);
     }
     Ok(specs)
 }
@@ -243,8 +251,13 @@ mod tests {
     }
 
     #[test]
-    fn no_endpoints_no_config_fails() {
-        assert!(Cli::try_parse_from(["rmr"]).is_err());
+    fn no_endpoints_no_config_parses_ok() {
+        // Clap accepts zero positional endpoints without `--config`; the
+        // "at least one endpoint" gate runs post-merge in `main` so the
+        // empty-CLI and empty-TOML paths share one error surface.
+        let cli = Cli::try_parse_from(["rmr"]).unwrap();
+        assert!(cli.endpoints.is_empty());
+        assert!(cli.config.is_none());
     }
 
     #[test]
@@ -318,7 +331,13 @@ mod tests {
     #[test]
     fn into_cli_config_propagates_spec_error() {
         let cli = Cli::try_parse_from(["rmr", "bogus-not-an-endpoint"]).unwrap();
-        assert!(matches!(cli.into_cli_config(), Err(Error::Spec(_))));
+        match cli.into_cli_config() {
+            Err(Error::SpecInArg { index, arg, .. }) => {
+                assert_eq!(index, 0);
+                assert_eq!(arg, "bogus-not-an-endpoint");
+            }
+            other => panic!("expected SpecInArg, got {other:?}"),
+        }
     }
 
     #[test]
@@ -336,7 +355,41 @@ mod tests {
     #[test]
     fn parse_specs_propagates_spec_error() {
         let raw = vec!["bogus-not-an-endpoint".to_string()];
-        assert!(matches!(parse_specs(&raw), Err(Error::Spec(_))));
+        match parse_specs(&raw) {
+            Err(Error::SpecInArg { index, arg, .. }) => {
+                assert_eq!(index, 0);
+                assert_eq!(arg, "bogus-not-an-endpoint");
+            }
+            other => panic!("expected SpecInArg, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_specs_reports_offending_arg_position() {
+        let raw = vec![
+            "udps:0.0.0.0:14550".to_string(),
+            "tcpc:bad-no-port".to_string(),
+            "serial:/dev/ttyUSB0:115200".to_string(),
+        ];
+        match parse_specs(&raw) {
+            Err(Error::SpecInArg { index, arg, .. }) => {
+                assert_eq!(index, 1);
+                assert_eq!(arg, "tcpc:bad-no-port");
+            }
+            other => panic!("expected SpecInArg at index 1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spec_in_arg_message_includes_position_and_raw_arg() {
+        let raw = vec!["tcpc:bad-no-port".to_string()];
+        let err = parse_specs(&raw).expect_err("must fail");
+        let rendered = err.to_string();
+        assert!(rendered.contains("#1"), "missing position: {rendered}");
+        assert!(
+            rendered.contains("'tcpc:bad-no-port'"),
+            "missing raw arg: {rendered}"
+        );
     }
 
     #[test]
