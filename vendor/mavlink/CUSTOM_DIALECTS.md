@@ -14,7 +14,7 @@ Otherwise use the upstream binaries unmodified.
 
 ## Recipe
 
-1. Fork [https://github.com/sheijningen/rmr](https://github.com/sheijningen/rmr)
+1. Fork [https://github.com/sheijningen/mavlink-router-rs](https://github.com/sheijningen/mavlink-router-rs)
    and clone your fork.
 2. Copy your dialect XML (plus anything it `<include>`s) into
    [`vendor/mavlink/`](.).

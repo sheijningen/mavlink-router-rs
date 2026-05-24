@@ -72,7 +72,7 @@ Filter query keys — any scheme:
   is applied on outgoing traffic per destination endpoint.
 
 Worked examples, design doc, and full TOML config reference:
-  https://github.com/sheijningen/rmr
+  https://github.com/sheijningen/mavlink-router-rs
 ";
 
 /// Parsed argv. Every global is `Option<T>` because clap has no
@@ -457,7 +457,7 @@ mod tests {
             assert!(help.contains(key), "query key {key} missing");
         }
         assert!(
-            help.contains("github.com/sheijningen/rmr"),
+            help.contains("github.com/sheijningen/mavlink-router-rs"),
             "repo link missing"
         );
     }

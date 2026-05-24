@@ -3,9 +3,14 @@ name = "rmr"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+authors = ["Stefan Alexander van Heijningen"]
 license = "Apache-2.0"
-description = "Rust MAVLink Router — transparent, dialect-agnostic forwarder of MAVLink frames"
-repository = "https://github.com/sheijningen/rmr"
+description = "Rust MAVLink Router — transparent MAVLink forwarder"
+repository = "https://github.com/sheijningen/mavlink-router-rs"
+readme = "README.md"
+keywords = ["mavlink", "router", "drone", "uav", "telemetry"]
+categories = ["command-line-utilities", "network-programming", "aerospace::drones"]
+publish = false
 
 [lib]
 name = "rmr"

@@ -1,10 +1,12 @@
-# RMR — Rust MAVLink Router
+# mavlink-router-rs — Rust MAVLink Router
 
 A minimal, high-throughput MAVLink router. Forwards MAVLink traffic
 between serial, UDP, and TCP endpoints with a learned routing table that
 improves targeted delivery over pure broadcast. Bytes in, bytes out —
 RMR owns no MAVLink identity, never emits a message of its own, and
 parses no more of each message than it needs to in order to route it.
+("RMR" is the short-form alias used throughout the docs; the binary
+operators run is also called `rmr`.)
 
 ## Install
 
@@ -19,7 +21,9 @@ and Windows (`x86_64`) to the GitHub Release. Verify with the attached
 
 Multi-arch images (`linux/amd64`, `linux/arm64`) are published per
 release to `ghcr.io/sheijningen/rmr` with tags `:<X.Y.Z>`, `:<X.Y>`, and
-`:latest`. Pin to `:<X.Y.Z>` in production.
+`:latest`. Pin to `:<X.Y.Z>` in production. (Image and binary share the
+short name; the longer `mavlink-router-rs` lives at the GitHub repo and
+README title for discoverability.)
 
 ```sh
 docker run --rm -i -p 14550:14550/udp --device /dev/ttyAMA0 \
@@ -273,8 +277,8 @@ crates.io.
 Edition 2024, MSRV `1.85`.
 
 ```sh
-git clone https://github.com/sheijningen/rmr
-cd rmr
+git clone https://github.com/sheijningen/mavlink-router-rs
+cd mavlink-router-rs
 cargo build --release
 # binary at target/release/rmr
 ```
