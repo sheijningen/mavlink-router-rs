@@ -48,14 +48,13 @@ impl EndpointState {
     }
 
     #[inline]
-    pub const fn from_u8(value: u8) -> Option<Self> {
+    pub const fn from_u8(value: u8) -> Self {
         match value {
-            0 => Some(Self::Reconnecting),
-            1 => Some(Self::Connected),
-            2 => Some(Self::Idle),
-            3 => Some(Self::Down),
-            4 => Some(Self::Unknown),
-            _ => None,
+            0 => Self::Reconnecting,
+            1 => Self::Connected,
+            2 => Self::Idle,
+            3 => Self::Down,
+            _ => Self::Unknown,
         }
     }
 }
@@ -120,8 +119,7 @@ impl EndpointStats {
     /// the JSON output that operators can grep for.
     #[inline]
     pub fn load_state(&self) -> EndpointState {
-        let raw = self.state.load(Ordering::Relaxed);
-        EndpointState::from_u8(raw).unwrap_or(EndpointState::Unknown)
+        EndpointState::from_u8(self.state.load(Ordering::Relaxed))
     }
 
     /// Overwrite the current state. The split-authority rule on
@@ -215,7 +213,7 @@ mod tests {
             EndpointState::Down,
             EndpointState::Unknown,
         ] {
-            assert_eq!(EndpointState::from_u8(state.as_u8()), Some(state));
+            assert_eq!(EndpointState::from_u8(state.as_u8()), state);
         }
     }
 
@@ -243,12 +241,12 @@ mod tests {
     }
 
     #[test]
-    fn from_u8_rejects_out_of_range() {
-        assert_eq!(EndpointState::from_u8(0), Some(EndpointState::Reconnecting));
-        assert_eq!(EndpointState::from_u8(3), Some(EndpointState::Down));
-        assert_eq!(EndpointState::from_u8(4), Some(EndpointState::Unknown));
-        assert_eq!(EndpointState::from_u8(5), None);
-        assert_eq!(EndpointState::from_u8(255), None);
+    fn from_u8_falls_back_to_unknown_out_of_range() {
+        assert_eq!(EndpointState::from_u8(0), EndpointState::Reconnecting);
+        assert_eq!(EndpointState::from_u8(3), EndpointState::Down);
+        assert_eq!(EndpointState::from_u8(4), EndpointState::Unknown);
+        assert_eq!(EndpointState::from_u8(5), EndpointState::Unknown);
+        assert_eq!(EndpointState::from_u8(255), EndpointState::Unknown);
     }
 
     #[test]
