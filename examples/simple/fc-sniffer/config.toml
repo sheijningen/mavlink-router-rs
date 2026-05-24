@@ -24,9 +24,9 @@ name = "bus"
 bind = "0.0.0.0:14550"
 
 # Diagnostic sniffer endpoint. `sniffer = true` bypasses loop-prevention,
-# target-match, and out-filters so this endpoint receives every frame
-# the router accepted — frames dropped at ingress (bad CRC, In-filter
-# rejection, deduplication with `dedup_ms`) never reach a sniffer.
+# target-match, and out-filters so this endpoint receives all traffic
+# the router accepted — traffic dropped at ingress (bad CRC, In-filter
+# rejection, deduplication with `dedup_ms`) never reaches a sniffer.
 # In-filters restrict what the recorder may send *into* RMR — only a HEARTBEAT.
 [[endpoints]]
 type = "udps"

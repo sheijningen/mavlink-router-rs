@@ -45,7 +45,7 @@ Example:
 Query keys — any scheme:
   group=NAME              share a learn-set so members never forward
                           to each other (e.g. redundant parallel links)
-  sniffer=true            receive every routed frame, bypassing target
+  sniffer=true            receive all routed traffic, bypassing target
                           match, loop prevention, and out-filters
 
 Query keys — scheme-specific:

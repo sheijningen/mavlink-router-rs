@@ -1,9 +1,10 @@
 # RMR — Rust MAVLink Router
 
-A minimal, high-throughput MAVLink router. Forwards MAVLink frames between
-serial, UDP, and TCP endpoints with a learned routing table that improves
-targeted delivery over pure broadcast. Bytes in, bytes out — RMR owns no
-MAVLink identity, never emits a message of its own, and parses no more of a frame than it needs to in order to route it.
+A minimal, high-throughput MAVLink router. Forwards MAVLink traffic
+between serial, UDP, and TCP endpoints with a learned routing table that
+improves targeted delivery over pure broadcast. Bytes in, bytes out —
+RMR owns no MAVLink identity, never emits a message of its own, and
+parses no more of each message than it needs to in order to route it.
 
 ## Install
 
@@ -60,13 +61,13 @@ aggregation, safety filters — under [`examples/`](examples/README.md).
 
 RMR has no MAVLink identity. It learns which endpoint each `(sysid,
 compid)` lives behind by watching traffic, then forwards every
-accepted frame to every other endpoint — skipping a destination on
+accepted message to every other endpoint — skipping a destination on
 loop-prevention (it has already seen the source), `*_out` filter
-rejection, or target mismatch (the frame's `(target_sys, target_comp)`
-isn't in the destination's learn-set; broadcast frames skip this
-check). Source endpoints muzzle their own ingress via `*_in` filters.
-A `?sniffer=true` destination skips the three per-destination checks
-and sees every frame the router accepts.
+rejection, or target mismatch (the message's `(target_sys,
+target_comp)` isn't in the destination's learn-set; broadcast traffic
+skips this check). Source endpoints muzzle their own ingress via
+`*_in` filters. A `?sniffer=true` destination skips the three
+per-destination checks and sees all accepted traffic.
 
 See [Routing pipeline](#routing-pipeline) for per-step semantics and
 the stats counter each drop maps to.
@@ -102,7 +103,7 @@ Most-used query keys:
 | Key                       | Default | Notes                                                |
 |---------------------------|---------|------------------------------------------------------|
 | `group=NAME`              | —       | Share learn-set across endpoints in `NAME`           |
-| `sniffer=true`            | `false` | Diagnostic endpoint (sees every accepted frame)      |
+| `sniffer=true`            | `false` | Diagnostic endpoint (sees all accepted traffic)      |
 | `flow_control=rtscts`     | `none`  | `serial:` hardware flow control                      |
 | `idle_secs=N`             | 60      | `udps:` peer expiry on inactivity                    |
 | `latch_idle_secs=N`       | 30      | `udpc:` revert to configured host after silence      |
@@ -219,6 +220,11 @@ target offsets and always land at the broadcast branch of step 4.
 `--stats` emits one JSON-Lines object per endpoint per
 `--stats-interval-secs` (default 5s) on **stdout**. Logs (`tracing`) go
 to stderr — the two streams never interleave.
+
+The schema doubles as a debug guide: when traffic isn't reaching where
+you expect, the counter that did (or didn't) move points at the stage
+that rejected it. The "Non-zero indicates" column below is meant to be
+read in that mode.
 
 Routable endpoint:
 

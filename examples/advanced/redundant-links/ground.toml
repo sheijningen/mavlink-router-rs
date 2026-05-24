@@ -1,7 +1,7 @@
 # Paired RMR for redundant uplinks — GROUND side.
 #
-# Two parallel uplinks (LTE over UDP, RFD900 over serial) carry every
-# frame in both directions. The ground-side RMR fans each GCS command
+# Two parallel uplinks (LTE over UDP, RFD900 over serial) carry all
+# traffic in both directions. The ground-side RMR fans each GCS command
 # across both links; the drone-side RMR dedups whichever copy arrives
 # second. Same in reverse for FC telemetry.
 #
@@ -17,7 +17,7 @@
 # the same group act as one logical link for routing — a device that
 # appears on either endpoint is considered reachable via both.
 
-# Global `dedup_ms = 250`: if an identical frame arrives within 250 ms
+# Global `dedup_ms = 250`: if an identical message arrives within 250 ms
 # of a previous one, the duplicate is dropped. Prevents FC telemetry
 # from arriving twice to the GCS. Increase if more significant latency
 # differences between links are expected.
