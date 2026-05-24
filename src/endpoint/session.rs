@@ -1,6 +1,5 @@
 use std::io;
 use std::ops::ControlFlow;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
@@ -35,6 +34,56 @@ pub enum SessionOutcome {
     Disconnected,
 }
 
+/// Ingress-pipeline context used by every endpoint's reader-side
+pub struct SessionCtx<'a> {
+    pub endpoint_id: EndpointId,
+    pub stats: &'a EndpointStats,
+    pub frame_tx: &'a mpsc::Sender<RouterFrame>,
+    pub filters: &'a Filters,
+}
+
+impl SessionCtx<'_> {
+    pub(crate) async fn forward_inbound_frames(
+        &self,
+        framer: &mut Framer,
+        seq_tracker: &mut SeqTracker,
+    ) -> ControlFlow<()> {
+        while let Some((header, frame)) = framer.try_next_frame() {
+            self.stats.add_rx_frame(frame.len());
+            let lost = seq_tracker.observe(header.source, header.seq, Instant::now());
+            if lost > 0 {
+                self.stats
+                    .rx_lost_est
+                    .fetch_add(lost as u64, Ordering::Relaxed);
+            }
+            if !self.filters.passes_in_filter(header.msgid, header.source) {
+                self.stats.in_filter_drops.fetch_add(1, Ordering::Relaxed);
+                trace!(
+                    msgid = header.msgid,
+                    sysid = header.source.sys,
+                    compid = header.source.comp,
+                    "in-filter dropped frame at ingress"
+                );
+                continue;
+            }
+            if self
+                .frame_tx
+                .send(RouterFrame {
+                    endpoint_id: self.endpoint_id,
+                    frame,
+                    header,
+                })
+                .await
+                .is_err()
+            {
+                debug!("router channel closed; stopping frame forwarding");
+                return ControlFlow::Break(());
+            }
+        }
+        ControlFlow::Continue(())
+    }
+}
+
 /// Read inbound bytes through a fresh `Framer` and write outbound frames
 /// from the TxQueue until cancellation, EOF, or transport I/O error. Shared
 /// by `serial:` (one session per re-open), `tcpc:` (one session per
@@ -42,15 +91,11 @@ pub enum SessionOutcome {
 /// life of the connection). The tracing span set by each caller (`serial`,
 /// `tcpc`, `tcps_child`) disambiguates log lines without needing transport
 /// prefixes inside this loop.
-#[allow(clippy::too_many_arguments)]
 pub async fn run_session<S>(
     stream: S,
-    endpoint_id: EndpointId,
-    stats: &Arc<EndpointStats>,
-    frame_tx: &mpsc::Sender<RouterFrame>,
+    ctx: &SessionCtx<'_>,
     tx_queue: &TxQueue,
     cancel: &CancellationToken,
-    filters: &Filters,
 ) -> SessionOutcome
 where
     S: AsyncRead + AsyncWrite,
@@ -66,20 +111,17 @@ where
             _ = cancel.cancelled() => return SessionOutcome::Terminated,
             res = read_half.read_buf(framer.buffer_mut()) => {
                 if let ControlFlow::Break(outcome) = handle_read_result(
+                    ctx,
                     res,
                     &mut framer,
                     &mut framer_counters,
-                    stats,
-                    endpoint_id,
-                    frame_tx,
-                    filters,
                     &mut seq_tracker,
                 ).await {
                     return outcome;
                 }
             }
             frame = tx_queue.pop_or_wait() => {
-                if let ControlFlow::Break(outcome) = write_outbound_frame(&mut write_half, frame, stats).await {
+                if let ControlFlow::Break(outcome) = write_outbound_frame(&mut write_half, frame, ctx.stats).await {
                     return outcome;
                 }
             }
@@ -87,15 +129,11 @@ where
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_read_result(
+    ctx: &SessionCtx<'_>,
     res: io::Result<usize>,
     framer: &mut Framer,
     framer_counters: &mut FramerCounters,
-    stats: &EndpointStats,
-    endpoint_id: EndpointId,
-    frame_tx: &mpsc::Sender<RouterFrame>,
-    filters: &Filters,
     seq_tracker: &mut SeqTracker,
 ) -> ControlFlow<SessionOutcome> {
     match res {
@@ -109,69 +147,14 @@ async fn handle_read_result(
         }
         Ok(_) => {}
     }
-    if forward_inbound_frames(framer, stats, endpoint_id, seq_tracker, filters, frame_tx)
+    if ctx
+        .forward_inbound_frames(framer, seq_tracker)
         .await
         .is_break()
     {
         return ControlFlow::Break(SessionOutcome::Terminated);
     }
-    framer_counters.sync(framer, stats);
-    ControlFlow::Continue(())
-}
-
-/// CLAUDE.md ingress pipeline (steps 1–3 in the reader task): for every
-/// complete frame currently in the framer, count rx, account for seq-loss,
-/// evaluate the In-filter snapshot, and forward admitted frames to the
-/// router. Ordering matters: rx counting runs first (so rx_frames reflects
-/// link rate even on policy rejection), then seq-loss (so rx_lost_est
-/// reflects link quality, not policy), then In-filter, then send. CRC ran
-/// inside `framer.try_next_frame()` ahead of us.
-///
-/// Shared by `run_session` (`serial:` / `tcpc:` / `tcps:` children), the
-/// `udps:` per-peer reader, and the `udpc:` client reader. Callers are
-/// responsible for `FramerCounters::sync` after this returns — the
-/// parser-state counters move at a coarser granularity than per-frame.
-///
-/// Returns `ControlFlow::Break(())` when the router channel closes — each
-/// caller maps that to its own terminal outcome (a session task returns
-/// [`SessionOutcome::Terminated`]; the UDP tasks return from their handler).
-pub(crate) async fn forward_inbound_frames(
-    framer: &mut Framer,
-    stats: &EndpointStats,
-    endpoint_id: EndpointId,
-    seq_tracker: &mut SeqTracker,
-    filters: &Filters,
-    frame_tx: &mpsc::Sender<RouterFrame>,
-) -> ControlFlow<()> {
-    while let Some((header, frame)) = framer.try_next_frame() {
-        stats.add_rx_frame(frame.len());
-        let lost = seq_tracker.observe(header.source, header.seq, Instant::now());
-        if lost > 0 {
-            stats.rx_lost_est.fetch_add(lost as u64, Ordering::Relaxed);
-        }
-        if !filters.passes_in_filter(header.msgid, header.source) {
-            stats.in_filter_drops.fetch_add(1, Ordering::Relaxed);
-            trace!(
-                msgid = header.msgid,
-                sysid = header.source.sys,
-                compid = header.source.comp,
-                "in-filter dropped frame at ingress"
-            );
-            continue;
-        }
-        if frame_tx
-            .send(RouterFrame {
-                endpoint_id,
-                frame,
-                header,
-            })
-            .await
-            .is_err()
-        {
-            debug!("router channel closed; stopping frame forwarding");
-            return ControlFlow::Break(());
-        }
-    }
+    framer_counters.sync(framer, ctx.stats);
     ControlFlow::Continue(())
 }
 
@@ -197,6 +180,7 @@ mod tests {
     use crate::mavlink::frame::STX_V1;
     use bytes::BufMut;
     use std::pin::Pin;
+    use std::sync::Arc;
     use std::sync::atomic::Ordering;
     use std::task::{Context, Poll};
 
@@ -237,15 +221,19 @@ mod tests {
         let mut counters = FramerCounters::new();
         let stats = Arc::new(EndpointStats::default());
         let (tx, _rx) = mpsc::channel(8);
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
         let out = handle_read_result(
+            &ctx,
             Ok(0),
             &mut framer,
             &mut counters,
-            &stats,
-            fresh_id(),
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
         )
         .await;
@@ -258,15 +246,19 @@ mod tests {
         let mut counters = FramerCounters::new();
         let stats = Arc::new(EndpointStats::default());
         let (tx, _rx) = mpsc::channel(8);
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
         let out = handle_read_result(
+            &ctx,
             Err(io_err()),
             &mut framer,
             &mut counters,
-            &stats,
-            fresh_id(),
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
         )
         .await;
@@ -280,15 +272,19 @@ mod tests {
         let mut counters = FramerCounters::new();
         let stats = Arc::new(EndpointStats::default());
         let (tx, mut rx) = mpsc::channel(8);
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
         let out = handle_read_result(
+            &ctx,
             Ok(3),
             &mut framer,
             &mut counters,
-            &stats,
-            fresh_id(),
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
         )
         .await;
@@ -305,16 +301,20 @@ mod tests {
         let mut counters = FramerCounters::new();
         let stats = Arc::new(EndpointStats::default());
         let (tx, mut rx) = mpsc::channel(8);
+        let filters = no_filter();
         let id = fresh_id();
+        let ctx = SessionCtx {
+            endpoint_id: id,
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
         let out = handle_read_result(
+            &ctx,
             Ok(bytes.len()),
             &mut framer,
             &mut counters,
-            &stats,
-            id,
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
         )
         .await;
@@ -338,15 +338,19 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, rx) = mpsc::channel(8);
         drop(rx);
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
         let out = handle_read_result(
+            &ctx,
             Ok(bytes.len()),
             &mut framer,
             &mut counters,
-            &stats,
-            fresh_id(),
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
         )
         .await;
@@ -367,15 +371,19 @@ mod tests {
         let mut counters = FramerCounters::new();
         let stats = Arc::new(EndpointStats::default());
         let (tx, _rx) = mpsc::channel(8);
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
         let out = handle_read_result(
+            &ctx,
             Ok(buf.len()),
             &mut framer,
             &mut counters,
-            &stats,
-            fresh_id(),
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
         )
         .await;
@@ -399,15 +407,19 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, rx) = mpsc::channel(8);
         drop(rx);
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
         let out = handle_read_result(
+            &ctx,
             Ok(buf.len()),
             &mut framer,
             &mut counters,
-            &stats,
-            fresh_id(),
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
         )
         .await;
@@ -426,15 +438,19 @@ mod tests {
         let mut counters = FramerCounters::new();
         let stats = Arc::new(EndpointStats::default());
         let (tx, mut rx) = mpsc::channel(8);
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
         let out = handle_read_result(
+            &ctx,
             Ok(frame.len()),
             &mut framer,
             &mut counters,
-            &stats,
-            fresh_id(),
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
         )
         .await;
@@ -455,15 +471,19 @@ mod tests {
         let mut counters = FramerCounters::new();
         let stats = Arc::new(EndpointStats::default());
         let (tx, mut rx) = mpsc::channel(8);
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
         let out = handle_read_result(
+            &ctx,
             Ok(buf.len()),
             &mut framer,
             &mut counters,
-            &stats,
-            fresh_id(),
-            &tx,
-            &no_filter(),
             &mut fresh_tracker(),
         )
         .await;
@@ -483,16 +503,17 @@ mod tests {
         let mut framer = Framer::with_capacity(64);
         let stats = Arc::new(EndpointStats::default());
         let (tx, mut rx) = mpsc::channel(8);
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
-        let out = forward_inbound_frames(
-            &mut framer,
-            &stats,
-            fresh_id(),
-            &mut fresh_tracker(),
-            &no_filter(),
-            &tx,
-        )
-        .await;
+        let out = ctx
+            .forward_inbound_frames(&mut framer, &mut fresh_tracker())
+            .await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_err());
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 0);
@@ -506,16 +527,17 @@ mod tests {
         framer.buffer_mut().put_slice(&bytes);
         let stats = Arc::new(EndpointStats::default());
         let (tx, mut rx) = mpsc::channel(8);
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
-        let out = forward_inbound_frames(
-            &mut framer,
-            &stats,
-            fresh_id(),
-            &mut fresh_tracker(),
-            &no_filter(),
-            &tx,
-        )
-        .await;
+        let out = ctx
+            .forward_inbound_frames(&mut framer, &mut fresh_tracker())
+            .await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_ok());
@@ -535,16 +557,17 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, rx) = mpsc::channel(8);
         drop(rx);
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
-        let out = forward_inbound_frames(
-            &mut framer,
-            &stats,
-            fresh_id(),
-            &mut fresh_tracker(),
-            &no_filter(),
-            &tx,
-        )
-        .await;
+        let out = ctx
+            .forward_inbound_frames(&mut framer, &mut fresh_tracker())
+            .await;
         assert_eq!(out, ControlFlow::Break(()));
     }
 
@@ -563,16 +586,16 @@ mod tests {
             block_msgid_in: vec![MsgIdRange::single(0)],
             ..Filters::default()
         };
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
-        let out = forward_inbound_frames(
-            &mut framer,
-            &stats,
-            fresh_id(),
-            &mut fresh_tracker(),
-            &filters,
-            &tx,
-        )
-        .await;
+        let out = ctx
+            .forward_inbound_frames(&mut framer, &mut fresh_tracker())
+            .await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_err(), "frame must not reach router");
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 1);
@@ -590,16 +613,16 @@ mod tests {
             allow_msgid_in: vec![MsgIdRange::single(0)],
             ..Filters::default()
         };
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
-        let out = forward_inbound_frames(
-            &mut framer,
-            &stats,
-            fresh_id(),
-            &mut fresh_tracker(),
-            &filters,
-            &tx,
-        )
-        .await;
+        let out = ctx
+            .forward_inbound_frames(&mut framer, &mut fresh_tracker())
+            .await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_ok());
         assert_eq!(stats.in_filter_drops.load(Ordering::Relaxed), 0);
@@ -628,16 +651,15 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, _rx) = mpsc::channel(8);
         let mut tracker = fresh_tracker();
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
-        let out = forward_inbound_frames(
-            &mut framer,
-            &stats,
-            fresh_id(),
-            &mut tracker,
-            &no_filter(),
-            &tx,
-        )
-        .await;
+        let out = ctx.forward_inbound_frames(&mut framer, &mut tracker).await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 2);
         assert_eq!(stats.rx_lost_est.load(Ordering::Relaxed), 2);
@@ -660,10 +682,14 @@ mod tests {
             ..Filters::default()
         };
         let mut tracker = fresh_tracker();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
-        let out =
-            forward_inbound_frames(&mut framer, &stats, fresh_id(), &mut tracker, &filters, &tx)
-                .await;
+        let out = ctx.forward_inbound_frames(&mut framer, &mut tracker).await;
         assert_eq!(out, ControlFlow::Continue(()));
         assert!(rx.try_recv().is_err());
         assert_eq!(stats.in_filter_drops.load(Ordering::Relaxed), 2);
@@ -680,16 +706,15 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, _rx) = mpsc::channel(16);
         let mut tracker = fresh_tracker();
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
-        let _ = forward_inbound_frames(
-            &mut framer,
-            &stats,
-            fresh_id(),
-            &mut tracker,
-            &no_filter(),
-            &tx,
-        )
-        .await;
+        let _ = ctx.forward_inbound_frames(&mut framer, &mut tracker).await;
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 5);
         assert_eq!(stats.rx_lost_est.load(Ordering::Relaxed), 0);
     }
@@ -704,16 +729,15 @@ mod tests {
         let stats = Arc::new(EndpointStats::default());
         let (tx, _rx) = mpsc::channel(8);
         let mut tracker = fresh_tracker();
+        let filters = no_filter();
+        let ctx = SessionCtx {
+            endpoint_id: fresh_id(),
+            stats: &stats,
+            frame_tx: &tx,
+            filters: &filters,
+        };
 
-        let _ = forward_inbound_frames(
-            &mut framer,
-            &stats,
-            fresh_id(),
-            &mut tracker,
-            &no_filter(),
-            &tx,
-        )
-        .await;
+        let _ = ctx.forward_inbound_frames(&mut framer, &mut tracker).await;
         assert_eq!(stats.rx_frames.load(Ordering::Relaxed), 2);
         assert_eq!(stats.rx_lost_est.load(Ordering::Relaxed), 0);
     }

@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::net::{UdpSocket, lookup_host};
-use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 use tracing::{Instrument, debug, info, info_span, warn};
 
@@ -14,11 +13,9 @@ use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, READ_BUF_BYTES,
 };
-use super::super::events::RouterFrame;
-use super::super::filters::Filters;
 use super::super::identity_flags::{IdentityFlags, SEQ_TRACKER_CAPACITY};
 use super::super::seq_tracker::SeqTracker;
-use super::super::session::forward_inbound_frames;
+use super::super::session::SessionCtx;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpClientEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
@@ -258,6 +255,12 @@ async fn run_inner(spec: UdpClientSpec, wiring: ClientWiring) {
     // revert check doesn't run before we've had a chance to latch.
     let _ = revert_tick.tick().await;
 
+    let session_ctx = SessionCtx {
+        endpoint_id,
+        stats: &stats,
+        frame_tx: &frame_tx,
+        filters: &identity.filters,
+    };
     loop {
         tokio::select! {
             biased;
@@ -278,10 +281,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: ClientWiring) {
                             &mut framer,
                             &mut framer_counters,
                             &mut seq_tracker,
-                            endpoint_id,
-                            &stats,
-                            &frame_tx,
-                            &identity.filters,
+                            &session_ctx,
                         )
                         .await;
                     }
@@ -297,7 +297,6 @@ async fn run_inner(spec: UdpClientSpec, wiring: ClientWiring) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_inbound(
     data: &[u8],
     src: SocketAddr,
@@ -305,14 +304,14 @@ async fn handle_inbound(
     framer: &mut Framer,
     framer_counters: &mut FramerCounters,
     seq_tracker: &mut SeqTracker,
-    endpoint_id: EndpointId,
-    stats: &Arc<EndpointStats>,
-    frame_tx: &mpsc::Sender<RouterFrame>,
-    filters: &Filters,
+    session_ctx: &SessionCtx<'_>,
 ) {
     match classify_inbound(dest, src.ip()) {
         InboundDecision::Reject => {
-            stats.in_filter_drops.fetch_add(1, Ordering::Relaxed);
+            session_ctx
+                .stats
+                .in_filter_drops
+                .fetch_add(1, Ordering::Relaxed);
             debug!(%src, "udpc inbound from unexpected source dropped");
             return;
         }
@@ -334,20 +333,20 @@ async fn handle_inbound(
     // the state out of any prior Reconnecting (a previous send_to may have
     // failed before the peer responded over this same path). Idempotent on
     // the common already-Connected case.
-    stats.store_state(EndpointState::Connected);
+    session_ctx.stats.store_state(EndpointState::Connected);
 
     framer.buffer_mut().extend_from_slice(data);
     // `in_filter_drops` here is the union counter: the same slot bumped by
     // the wrong-source-IP rejection above (CLAUDE.md "In-filter evaluation
     // in the reader task" — `in_filter_drops` is the union of all
     // ingress-side drops).
-    let pipeline =
-        forward_inbound_frames(framer, stats, endpoint_id, seq_tracker, filters, frame_tx)
-            .instrument(tracing::trace_span!("udpc_ingress", %src));
+    let pipeline = session_ctx
+        .forward_inbound_frames(framer, seq_tracker)
+        .instrument(tracing::trace_span!("udpc_ingress", %src));
     if pipeline.await.is_break() {
         return;
     }
-    framer_counters.sync(framer, stats);
+    framer_counters.sync(framer, session_ctx.stats);
 }
 
 async fn send_frame(
@@ -410,10 +409,12 @@ async fn check_latch_idle(dest: &mut Destination, idle: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::endpoint::events::RouterFrame;
     use crate::endpoint::filters::{Filters, MsgIdRange};
     use crate::mavlink::crc::Crc16;
     use crate::mavlink::frame::STX_V1;
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4};
+    use tokio::sync::mpsc;
 
     fn make_dest(ips: &[IpAddr], port: u16) -> Destination {
         Destination {
@@ -688,6 +689,13 @@ mod tests {
         let mut framer_counters = FramerCounters::new();
         let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
         let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
+        let filters = crate::endpoint::filters::Filters::default();
+        let session_ctx = SessionCtx {
+            endpoint_id: EndpointId(0),
+            stats: &stats,
+            frame_tx: &frame_tx,
+            filters: &filters,
+        };
 
         let src = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 50000));
         // Empty data so try_next_frame yields nothing; we're testing the
@@ -699,10 +707,7 @@ mod tests {
             &mut framer,
             &mut framer_counters,
             &mut SeqTracker::new(8),
-            EndpointId(0),
-            &stats,
-            &frame_tx,
-            &crate::endpoint::filters::Filters::default(),
+            &session_ctx,
         )
         .await;
         assert_eq!(stats.load_state(), EndpointState::Connected);
@@ -719,6 +724,13 @@ mod tests {
         let mut framer_counters = FramerCounters::new();
         let stats = Arc::new(EndpointStats::new(EndpointState::Reconnecting));
         let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
+        let filters = crate::endpoint::filters::Filters::default();
+        let session_ctx = SessionCtx {
+            endpoint_id: EndpointId(0),
+            stats: &stats,
+            frame_tx: &frame_tx,
+            filters: &filters,
+        };
 
         // Source IP not in resolved_ips, no latch — classify returns Reject.
         let src = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 9), 50000));
@@ -729,10 +741,7 @@ mod tests {
             &mut framer,
             &mut framer_counters,
             &mut SeqTracker::new(8),
-            EndpointId(0),
-            &stats,
-            &frame_tx,
-            &crate::endpoint::filters::Filters::default(),
+            &session_ctx,
         )
         .await;
         assert_eq!(stats.load_state(), EndpointState::Reconnecting);
@@ -767,6 +776,12 @@ mod tests {
             block_msgid_in: vec![MsgIdRange::single(0)],
             ..Filters::default()
         };
+        let session_ctx = SessionCtx {
+            endpoint_id: EndpointId(0),
+            stats: &stats,
+            frame_tx: &frame_tx,
+            filters: &filters,
+        };
         let src = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 50000));
         handle_inbound(
             &bytes,
@@ -775,10 +790,7 @@ mod tests {
             &mut framer,
             &mut framer_counters,
             &mut SeqTracker::new(8),
-            EndpointId(0),
-            &stats,
-            &frame_tx,
-            &filters,
+            &session_ctx,
         )
         .await;
         assert!(frame_rx.try_recv().is_err(), "frame must not reach router");

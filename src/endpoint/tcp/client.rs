@@ -9,7 +9,7 @@ use super::super::EndpointId;
 use super::super::backoff::Backoff;
 use super::super::defaults::{DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS};
 use super::super::identity_flags::IdentityFlags;
-use super::super::session::{SessionOutcome, run_session};
+use super::super::session::{SessionCtx, SessionOutcome, run_session};
 use super::super::socket::configure_tcp_stream;
 use super::super::spec::TcpClientEndpoint;
 use super::super::stats::EndpointState;
@@ -119,17 +119,13 @@ async fn run_inner(spec: TcpClientSpec, wiring: ClientWiring) {
         }
         stats.store_state(EndpointState::Connected);
 
-        match run_session(
-            stream,
+        let ctx = SessionCtx {
             endpoint_id,
-            &stats,
-            &frame_tx,
-            &tx_queue,
-            &cancel,
-            &identity.filters,
-        )
-        .await
-        {
+            stats: &stats,
+            frame_tx: &frame_tx,
+            filters: &identity.filters,
+        };
+        match run_session(stream, &ctx, &tx_queue, &cancel).await {
             SessionOutcome::Terminated => {
                 let drained = tx_queue.drain_and_discard();
                 if drained > 0 {

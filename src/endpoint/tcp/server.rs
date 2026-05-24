@@ -14,7 +14,7 @@ use super::super::defaults::{
 use super::super::events::{EndpointEvent, PeerRemovalReason, Routable};
 use super::super::identity_flags::IdentityFlags;
 use super::super::peer_endpoint_name;
-use super::super::session::{SessionOutcome, run_session};
+use super::super::session::{SessionCtx, SessionOutcome, run_session};
 use super::super::socket::{bind_tcp_dual_stack, configure_tcp_stream};
 use super::super::spec::TcpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats};
@@ -208,16 +208,13 @@ async fn run_client_session(
         stats,
         cancel,
     } = wiring;
-    let outcome = run_session(
-        stream,
-        child_id,
-        &stats,
-        &frame_tx,
-        &tx_queue,
-        &cancel,
-        &identity.filters,
-    )
-    .await;
+    let ctx = SessionCtx {
+        endpoint_id: child_id,
+        stats: &stats,
+        frame_tx: &frame_tx,
+        filters: &identity.filters,
+    };
+    let outcome = run_session(stream, &ctx, &tx_queue, &cancel).await;
     // Drain anything still queued for this client; the socket is going away.
     let drained = tx_queue.drain_and_discard();
     if drained > 0 {

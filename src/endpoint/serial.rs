@@ -9,7 +9,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::EndpointId;
 use super::identity_flags::IdentityFlags;
-use super::session::{SessionOutcome, run_session};
+use super::session::{SessionCtx, SessionOutcome, run_session};
 use super::spec::{SerialEndpoint, SerialFlowControl};
 use super::stats::EndpointState;
 use super::wait_or_cancel;
@@ -105,17 +105,13 @@ async fn run_inner(spec: SerialSpec, wiring: ClientWiring) {
         }
         stats.store_state(EndpointState::Connected);
 
-        match run_session(
-            stream,
+        let ctx = SessionCtx {
             endpoint_id,
-            &stats,
-            &frame_tx,
-            &tx_queue,
-            &cancel,
-            &identity.filters,
-        )
-        .await
-        {
+            stats: &stats,
+            frame_tx: &frame_tx,
+            filters: &identity.filters,
+        };
+        match run_session(stream, &ctx, &tx_queue, &cancel).await {
             SessionOutcome::Terminated => {
                 tx_queue.drain_and_discard();
                 return;

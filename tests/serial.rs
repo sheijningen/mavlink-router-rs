@@ -15,7 +15,7 @@ use rmr::endpoint::events::RouterFrame;
 use rmr::endpoint::filters::Filters;
 use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::serial::{SerialSpec, run};
-use rmr::endpoint::session::{SessionOutcome, run_session};
+use rmr::endpoint::session::{SessionCtx, SessionOutcome, run_session};
 use rmr::endpoint::spec::SerialFlowControl;
 use rmr::endpoint::stats::{EndpointState, EndpointStats};
 use rmr::endpoint::tx_queue::TxQueue;
@@ -93,16 +93,14 @@ async fn pty_pair_round_trips_frame() {
         let tx_queue = tx_queue.clone();
         let cancel = cancel.clone();
         tokio::spawn(async move {
-            run_session(
-                master,
+            let filters = Filters::default();
+            let ctx = SessionCtx {
                 endpoint_id,
-                &stats,
-                &frame_tx,
-                &tx_queue,
-                &cancel,
-                &Filters::default(),
-            )
-            .await
+                stats: &stats,
+                frame_tx: &frame_tx,
+                filters: &filters,
+            };
+            run_session(master, &ctx, &tx_queue, &cancel).await
         })
     };
 
@@ -157,16 +155,14 @@ async fn session_surfaces_disconnected_on_slave_drop() {
         let tx_queue = tx_queue.clone();
         let cancel = cancel.clone();
         tokio::spawn(async move {
-            run_session(
-                master,
+            let filters = Filters::default();
+            let ctx = SessionCtx {
                 endpoint_id,
-                &stats,
-                &frame_tx,
-                &tx_queue,
-                &cancel,
-                &Filters::default(),
-            )
-            .await
+                stats: &stats,
+                frame_tx: &frame_tx,
+                filters: &filters,
+            };
+            run_session(master, &ctx, &tx_queue, &cancel).await
         })
     };
     drop(slave);

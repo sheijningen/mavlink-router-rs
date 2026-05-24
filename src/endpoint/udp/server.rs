@@ -20,7 +20,7 @@ use super::super::events::{EndpointEvent, PeerRemovalReason, Routable};
 use super::super::identity_flags::{IdentityFlags, SEQ_TRACKER_CAPACITY};
 use super::super::peer_endpoint_name;
 use super::super::seq_tracker::SeqTracker;
-use super::super::session::forward_inbound_frames;
+use super::super::session::SessionCtx;
 use super::super::socket::bind_udp_dual_stack;
 use super::super::spec::UdpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
@@ -284,15 +284,15 @@ async fn handle_packet(
     // listener, so the listener evaluates against its own IdentityFlags
     // rather than re-looking-up the peer's identical clone; only the drop
     // credit goes to the peer's Arc<EndpointStats>".
-    let pipeline = forward_inbound_frames(
-        &mut peer.framer,
-        &peer.stats,
-        peer.child_id,
-        &mut peer.seq_tracker,
-        &ctx.spec.identity.filters,
-        &ctx.wiring.frame_tx,
-    )
-    .instrument(tracing::trace_span!("udps_ingress", %src));
+    let session_ctx = SessionCtx {
+        endpoint_id: peer.child_id,
+        stats: &peer.stats,
+        frame_tx: &ctx.wiring.frame_tx,
+        filters: &ctx.spec.identity.filters,
+    };
+    let pipeline = session_ctx
+        .forward_inbound_frames(&mut peer.framer, &mut peer.seq_tracker)
+        .instrument(tracing::trace_span!("udps_ingress", %src));
     if pipeline.await.is_break() {
         return;
     }
