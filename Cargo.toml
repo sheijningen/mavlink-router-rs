@@ -12,14 +12,6 @@ keywords = ["mavlink", "router", "drone", "uav", "telemetry"]
 categories = ["command-line-utilities", "network-programming", "aerospace::drones"]
 publish = false
 
-[lib]
-name = "rmr"
-path = "src/lib.rs"
-
-[[bin]]
-name = "rmr"
-path = "src/main.rs"
-
 [dependencies]
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -31,7 +23,7 @@ tokio = { version = "1", features = [
     "time",
     "sync",
 ] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = "0.7"
 tokio-serial = "5.4"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
