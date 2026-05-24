@@ -77,8 +77,7 @@ async fn round_trip_between_two_tcps_listeners() {
         .expect("A frame_rx closed");
     assert_eq!(routed_from_a.header.seq, 7);
 
-    let displaced = peer_b_queue_on_b.push(routed_from_a.frame.clone());
-    assert!(!displaced, "first push should not evict");
+    peer_b_queue_on_b.push(routed_from_a.frame.clone());
     let got = read_exact_with_timeout(&mut peer_b, frame_routed.len(), "peer_b").await;
     assert_eq!(got, frame_routed);
 
@@ -92,8 +91,7 @@ async fn round_trip_between_two_tcps_listeners() {
         .expect("frame from B timeout")
         .expect("B frame_rx closed");
     assert_eq!(routed_from_b.header.seq, 11);
-    let displaced = peer_a_queue_on_a.push(routed_from_b.frame.clone());
-    assert!(!displaced);
+    peer_a_queue_on_a.push(routed_from_b.frame.clone());
     let got = read_exact_with_timeout(&mut peer_a, frame_routed2.len(), "peer_a").await;
     assert_eq!(got, frame_routed2);
 

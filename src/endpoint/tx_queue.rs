@@ -29,16 +29,15 @@ impl TxQueue {
         }
     }
 
-    /// Insert a frame, evicting the oldest entry if at capacity. Returns
-    /// `true` if an older frame was displaced (also reflected in `dropped_tx`).
-    /// Always wakes the writer.
-    pub fn push(&self, frame: Bytes) -> bool {
-        let displaced = self.inner.force_push(frame).is_some();
-        if displaced {
+    /// Insert a frame, evicting the oldest entry if at capacity. An evicted
+    /// frame increments `dropped_tx` on the shared stats — callers don't need
+    /// to (and shouldn't) account for overflow themselves. Always wakes the
+    /// writer.
+    pub fn push(&self, frame: Bytes) {
+        if self.inner.force_push(frame).is_some() {
             self.stats.dropped_tx.fetch_add(1, Ordering::Relaxed);
         }
         self.notify.notify_one();
-        displaced
     }
 
     pub fn pop(&self) -> Option<Bytes> {
@@ -93,8 +92,8 @@ mod tests {
     #[test]
     fn push_under_capacity_no_evict() {
         let (queue, stats) = make_queue(4);
-        assert!(!queue.push(Bytes::from_static(b"a")));
-        assert!(!queue.push(Bytes::from_static(b"b")));
+        queue.push(Bytes::from_static(b"a"));
+        queue.push(Bytes::from_static(b"b"));
         assert_eq!(queue.len(), 2);
         assert_eq!(stats.dropped_tx.load(Ordering::Relaxed), 0);
     }
@@ -104,8 +103,7 @@ mod tests {
         let (queue, stats) = make_queue(2);
         queue.push(Bytes::from_static(b"a"));
         queue.push(Bytes::from_static(b"b"));
-        let displaced = queue.push(Bytes::from_static(b"c"));
-        assert!(displaced);
+        queue.push(Bytes::from_static(b"c"));
         assert_eq!(stats.dropped_tx.load(Ordering::Relaxed), 1);
         assert_eq!(queue.pop().as_deref(), Some(b"b" as &[u8]));
         assert_eq!(queue.pop().as_deref(), Some(b"c" as &[u8]));

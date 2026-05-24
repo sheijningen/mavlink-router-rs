@@ -72,8 +72,7 @@ async fn round_trip_between_two_udps_listeners() {
     assert_eq!(routed_from_a.header.seq, 7);
     assert_eq!(&routed_from_a.frame[..], &frame_routed[..]);
 
-    let displaced = peer_b_queue_on_b.push(routed_from_a.frame.clone());
-    assert!(!displaced, "first push should not evict");
+    peer_b_queue_on_b.push(routed_from_a.frame.clone());
 
     let mut buf = [0u8; 128];
     let (bytes_read, src) = timeout(Duration::from_secs(2), peer_b.recv_from(&mut buf))
@@ -93,8 +92,7 @@ async fn round_trip_between_two_udps_listeners() {
         .expect("frame from B timeout")
         .expect("B frame_rx closed");
     assert_eq!(routed_from_b.header.seq, 11);
-    let displaced = peer_a_queue_on_a.push(routed_from_b.frame.clone());
-    assert!(!displaced);
+    peer_a_queue_on_a.push(routed_from_b.frame.clone());
     let (bytes_read, src) = timeout(Duration::from_secs(2), peer_a.recv_from(&mut buf))
         .await
         .expect("peer_a recv timeout")
