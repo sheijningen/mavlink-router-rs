@@ -133,7 +133,7 @@ impl Config {
         check_unique_names(&toml.endpoints)?;
         check_unique_names(&cli.endpoints)?;
 
-        let merged = toml_has_values(&toml) && cli_has_values(&cli);
+        let merged = toml.has_values() && cli.has_values();
 
         let (endpoints, overridden_names) = merge_endpoints(toml.endpoints, cli.endpoints);
 
@@ -195,35 +195,6 @@ fn merge_endpoints(
     }
     endpoints.extend(cli_endpoints);
     (endpoints, overridden_names)
-}
-
-/// True if the TOML side actually provided any value worth merging — at
-/// least one global key was present in the file, or `[[endpoints]]` carried
-/// at least one entry. An empty TOML file (loaded via `-c` but containing no
-/// keys) returns `false` so the startup log doesn't claim "merged" for a
-/// run that was effectively CLI-only.
-fn toml_has_values(toml: &TomlConfig) -> bool {
-    toml.log_level.is_some()
-        || toml.log_format.is_some()
-        || toml.stats.is_some()
-        || toml.stats_interval_secs.is_some()
-        || toml.dedup_ms.is_some()
-        || toml.skip_config_log.is_some()
-        || !toml.endpoints.is_empty()
-}
-
-/// True if the CLI side actually provided any value worth merging — at least
-/// one global flag was passed, or any endpoint argv string was supplied.
-/// `--config <FILE>` is captured in the binary's `main` (not in `CliConfig`)
-/// so it doesn't count toward CLI contribution.
-fn cli_has_values(cli: &CliConfig) -> bool {
-    cli.log_level.is_some()
-        || cli.log_format.is_some()
-        || cli.stats.is_some()
-        || cli.stats_interval_secs.is_some()
-        || cli.dedup_ms.is_some()
-        || cli.skip_config_log.is_some()
-        || !cli.endpoints.is_empty()
 }
 
 /// Fail with [`Error::DuplicateName`] on the first repeated `#name` in

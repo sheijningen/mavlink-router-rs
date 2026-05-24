@@ -67,6 +67,26 @@ impl TomlConfig {
         let file: TomlFile = toml::from_str(text).map_err(Error::ConfigParse)?;
         file.into_toml_config()
     }
+
+    /// True if the TOML side actually provided any value worth merging.
+    pub(crate) fn has_values(&self) -> bool {
+        let Self {
+            log_level,
+            log_format,
+            stats,
+            stats_interval_secs,
+            dedup_ms,
+            skip_config_log,
+            endpoints,
+        } = self;
+        log_level.is_some()
+            || log_format.is_some()
+            || stats.is_some()
+            || stats_interval_secs.is_some()
+            || dedup_ms.is_some()
+            || skip_config_log.is_some()
+            || !endpoints.is_empty()
+    }
 }
 
 /// On-disk TOML schema. Mirrors the global-knob surface and accepts an array
