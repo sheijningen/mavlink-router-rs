@@ -51,5 +51,8 @@ assert_cmd = "2"
 predicates = "3"
 rstest = { version = "0.23", default-features = false }
 
+[profile.release]
+lto = "thin"
+
 [lints.clippy]
 all = { level = "deny", priority = -1 }
