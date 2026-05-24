@@ -163,36 +163,10 @@ pub(crate) fn suggest_query_key(scheme: Scheme, unknown: &str) -> Option<&'stati
         .iter()
         .chain(Filters::KEYS.iter())
         .chain(extras.iter())
-        .map(|key| (*key, levenshtein(unknown, key)))
+        .map(|key| (*key, strsim::levenshtein(unknown, key)))
         .filter(|(_, distance)| *distance <= 4)
         .min_by_key(|(_, distance)| *distance)
         .map(|(key, _)| key)
-}
-
-pub fn levenshtein(left: &str, right: &str) -> usize {
-    let left_len = left.chars().count();
-    let right_len = right.chars().count();
-    if left_len == 0 {
-        return right_len;
-    }
-    if right_len == 0 {
-        return left_len;
-    }
-    let right_chars: Vec<char> = right.chars().collect();
-    let mut prev: Vec<usize> = (0..=right_len).collect();
-    let mut curr: Vec<usize> = vec![0; right_len + 1];
-    for (row, left_char) in left.chars().enumerate() {
-        curr[0] = row + 1;
-        for (col, &right_char) in right_chars.iter().enumerate() {
-            let cost = usize::from(left_char != right_char);
-            let del = prev[col + 1] + 1;
-            let ins = curr[col] + 1;
-            let sub = prev[col] + cost;
-            curr[col + 1] = del.min(ins).min(sub);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[right_len]
 }
 
 pub(crate) fn parse_u64(value: &str, key: &'static str) -> Result<u64, SpecError> {
@@ -204,7 +178,6 @@ pub(crate) fn parse_u64(value: &str, key: &'static str) -> Result<u64, SpecError
 
 #[cfg(test)]
 mod tests {
-    use super::levenshtein;
     use crate::endpoint::filters::{Filters, MsgIdRange, U8Range};
     use crate::endpoint::identity_flags::IdentityFlags;
     use crate::endpoint::spec::{
@@ -706,16 +679,6 @@ mod tests {
     }
 
     // -- helpers / invariants --
-
-    #[test]
-    fn levenshtein_known_pairs() {
-        assert_eq!(levenshtein("", ""), 0);
-        assert_eq!(levenshtein("", "abc"), 3);
-        assert_eq!(levenshtein("abc", ""), 3);
-        assert_eq!(levenshtein("abc", "abc"), 0);
-        assert_eq!(levenshtein("kitten", "sitting"), 3);
-        assert_eq!(levenshtein("snifer", "sniffer"), 1);
-    }
 
     #[test]
     fn identity_keys_sorted_and_unique() {
