@@ -21,7 +21,16 @@ name = "rmr"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "net",
+    "io-util",
+    "io-std",
+    "time",
+    "sync",
+] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-serial = "5.4"
 clap = { version = "4", features = ["derive"] }
