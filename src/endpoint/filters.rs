@@ -56,8 +56,8 @@ impl U8Range {
 /// in [`Filters::apply`].
 ///
 /// Lives on [`super::identity_flags::IdentityFlags::filters`] alongside the
-/// rest of the per-endpoint identity (sniffer / group / capacities). Sub-
-/// endpoints inherit the parent listener's `Filters` by clone at spawn time.
+/// rest of the per-endpoint identity (sniffer, group). Sub-endpoints inherit
+/// the parent listener's `Filters` by clone at spawn time.
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct Filters {
     pub allow_msgid_in: Vec<MsgIdRange>,

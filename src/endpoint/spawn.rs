@@ -183,8 +183,8 @@ async fn spawn_endpoint(
 /// Some(_)`, and return the queue on successful registration. `None` means
 /// the event channel was closed — the router has already exited and the
 /// caller must skip the spawn so no frame is ever stamped with an unknown
-/// `EndpointId`. The warning surfaces that asymmetry without aborting the
-/// rest of the spawn loop.
+/// `EndpointId`. The debug-level log surfaces that asymmetry without
+/// aborting the rest of the spawn loop.
 async fn prepare_leaf(
     event_tx: &mpsc::Sender<EndpointEvent>,
     id: EndpointId,

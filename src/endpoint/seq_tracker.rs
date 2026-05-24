@@ -49,8 +49,7 @@ pub struct SeqTracker {
 impl SeqTracker {
     /// Construct with the given capacity and the default gap-sanity
     /// threshold. A capacity of 0 silently clamps to 1 so the tracker is
-    /// never disabled by misconfiguration — the parser separately rejects
-    /// 0 with a bounds error.
+    /// never disabled by misconfiguration.
     pub fn new(capacity: usize) -> Self {
         Self::with_threshold(capacity, DEFAULT_SEQ_GAP_THRESHOLD)
     }

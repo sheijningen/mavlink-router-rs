@@ -238,11 +238,7 @@ pub async fn read_tcp_at_least(
 /// absolute). Use this when the test cares about "router stopped forwarding"
 /// rather than a known byte count — e.g. asserting that a disconnected link
 /// did not replay queued frames after reconnect.
-pub async fn read_until_quiet(
-    stream: &mut TcpStream,
-    cap: usize,
-    duration: Duration,
-) -> Vec<u8> {
+pub async fn read_until_quiet(stream: &mut TcpStream, cap: usize, duration: Duration) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 512];
     while buf.len() < cap {

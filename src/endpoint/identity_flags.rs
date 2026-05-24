@@ -1,5 +1,5 @@
-//! Per-endpoint identity bundle: filter rules, sniffer flag, optional group
-//! label. See [`IdentityFlags`].
+//! Per-endpoint identity bundle that travels with the `*Spec` and is cloned
+//! onto each sub-endpoint at admission. See [`IdentityFlags`].
 
 use std::fmt;
 use std::sync::Arc;
@@ -18,14 +18,14 @@ pub const LEARN_CAPACITY: usize = 32;
 /// than any real fleet needs.
 pub const SEQ_TRACKER_CAPACITY: usize = 32;
 
-/// Per-endpoint identity bundle: filter rules, sniffer flag, optional group
-/// label. Travels on the `*Spec` (not the `*Wiring`) per CLAUDE.md's
-/// "Filters, group, sniffer travel with the `*Spec`, not the `*Wiring`"
-/// decision — these are per-endpoint identity, not shared plumbing. The
-/// parser populates fields directly during query-string apply; missing
-/// knobs keep the CLAUDE.md defaults baked in by [`IdentityFlags::default`].
-/// Sub-endpoints inherit a clone of the parent's `IdentityFlags` at spawn
-/// time.
+/// Per-endpoint policy bundle — what makes one endpoint behave differently
+/// from another at the routing decision. Travels on the `*Spec` (not the
+/// `*Wiring`) per CLAUDE.md's "Filters, group, sniffer travel with the
+/// `*Spec`, not the `*Wiring`" decision — per-endpoint identity, not shared
+/// plumbing. The parser populates fields directly during query-string apply;
+/// missing knobs keep the CLAUDE.md defaults baked in by
+/// [`IdentityFlags::default`]. Sub-endpoints inherit a clone of the parent's
+/// `IdentityFlags` at spawn time.
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct IdentityFlags {
     pub filters: Filters,

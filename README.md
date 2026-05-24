@@ -128,6 +128,8 @@ Globals:
       --stats               emit per-endpoint stats (JSON-Lines on stdout)
       --stats-interval-secs N   stats output interval (default 5)
       --dedup-ms N          duplicate suppression window (0 = off, default)
+      --dry-run             print the merged config to stdout and exit
+                            without binding any sockets
   -V, --version             print version
 ```
 

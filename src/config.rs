@@ -34,7 +34,7 @@ use crate::error::Error;
 use crate::parsers::cli::CliConfig;
 use crate::parsers::toml::TomlConfig;
 
-/// CLAUDE.md "Defaults" → `stats_interval_secs_secs` (period of stats JSON-Lines
+/// CLAUDE.md "Defaults" → `stats_interval_secs` (period of stats JSON-Lines
 /// output).
 pub const DEFAULT_STATS_INTERVAL_SECS: u64 = 5;
 
@@ -64,10 +64,9 @@ pub enum LogFormat {
     Json,
 }
 
-/// Canonical, fully-resolved runtime configuration consumed by [`crate::run`]
-/// and [`crate::run`]. Produced exclusively by [`Config::merge`]
-/// (or [`Config::default`] for trivial test fixtures); never deserialised
-/// directly.
+/// Canonical, fully-resolved runtime configuration consumed by [`crate::run`].
+/// Produced exclusively by [`Config::merge`] (or [`Config::default`] for
+/// trivial test fixtures); never deserialised directly.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub log_level: LogLevel,

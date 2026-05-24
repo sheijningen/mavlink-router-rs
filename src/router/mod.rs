@@ -38,8 +38,8 @@
 //!   redundant-uplink use case (LTE + RFD900 each deliver the same
 //!   vehicle frame; the second arrival is suppressed).
 //! - **Shutdown sweep** — on cancel, write `state = Down` for every
-//!   remaining entry in both registries and forward `Finalize` so the
-//!   stats task can drop its registry mirror.
+//!   remaining entry in the unified registry and forward `Finalize` so
+//!   the stats task can drop its registry mirror.
 //!
 //! The per-source seq tracker that feeds `rx_lost_est` lives on the reader
 //! side (CLAUDE.md ingress pipeline step 2); the router never touches
@@ -371,7 +371,7 @@ impl Router {
     }
 
     async fn shutdown_sweep(&mut self) {
-        // CLAUDE.md "On shutdown the router walks its top-level registry,
+        // CLAUDE.md "On shutdown the router walks the unified registry,
         // writes state = Down". Sub-endpoints normally exit via
         // PeerRemoved before the sweep; any survivor here is one whose
         // removal event we didn't get to before cancel fired — Down is

@@ -77,9 +77,11 @@ pub struct Routable {
     pub identity: IdentityFlags,
 }
 
-/// Why a child routing endpoint was torn down. Surfaced in logs and (later)
-/// in stats so an operator can tell idle reap apart from peer-cap pressure,
-/// a `tcps:` client socket close, or a parent shutdown.
+/// Why a child routing endpoint was torn down. Surfaced in logs so an
+/// operator can tell idle reap apart from peer-cap pressure, a `tcps:`
+/// client socket close, or a parent shutdown. The stats `state` field
+/// collapses the four reasons into two terminal values: `Idle` → `Idle`,
+/// every other reason → `Down`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerRemovalReason {
     Idle,
