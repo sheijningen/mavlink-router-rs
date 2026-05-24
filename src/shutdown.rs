@@ -51,33 +51,23 @@ pub async fn watch_for_shutdown_signal(token: CancellationToken) {
 }
 
 /// Two-tier drain. Phase 1 waits up to [`PER_TASK_DRAIN`] (capped by
-/// `wall_clock`) for tasks to return naturally. Phase 2 aborts whatever's
-/// left and waits up to `wall_clock` total for the aborts to land; tasks
-/// still hanging at the wall-clock deadline log at WARN and are dropped.
+/// `wall_clock`) for tasks to return naturally. Phase 2 calls
+/// [`JoinSet::shutdown`] and waits up to the remaining wall-clock budget
+/// for the aborts to land; tasks still hanging at the wall-clock deadline
+/// log at WARN and are dropped.
 pub async fn shutdown<T: Send + 'static>(mut tasks: JoinSet<T>, wall_clock: Duration) {
     if tasks.is_empty() {
         return;
     }
 
     let start = tokio::time::Instant::now();
-    // Clamp the per-task budget so a caller passing a sub-2s wall-clock
-    // doesn't end up waiting longer than they asked for in Phase 1.
-    let per_task_deadline = start + PER_TASK_DRAIN.min(wall_clock);
-    let wall_deadline = start + wall_clock;
+    let drain_budget = PER_TASK_DRAIN.min(wall_clock);
+    let drained = tokio::time::timeout(drain_budget, async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await;
 
-    while !tasks.is_empty() {
-        tokio::select! {
-            biased;
-            joined = tasks.join_next() => {
-                if joined.is_none() {
-                    return;
-                }
-            }
-            () = tokio::time::sleep_until(per_task_deadline) => break,
-        }
-    }
-
-    if tasks.is_empty() {
+    if drained.is_ok() {
         return;
     }
 
@@ -85,24 +75,16 @@ pub async fn shutdown<T: Send + 'static>(mut tasks: JoinSet<T>, wall_clock: Dura
         remaining = tasks.len(),
         "per-task drain budget exceeded; aborting remaining tasks"
     );
-    tasks.abort_all();
 
-    while !tasks.is_empty() {
-        tokio::select! {
-            biased;
-            joined = tasks.join_next() => {
-                if joined.is_none() {
-                    return;
-                }
-            }
-            () = tokio::time::sleep_until(wall_deadline) => {
-                warn!(
-                    remaining = tasks.len(),
-                    "wall-clock shutdown budget exceeded after abort; giving up"
-                );
-                return;
-            }
-        }
+    let abort_budget = wall_clock.saturating_sub(start.elapsed());
+    if tokio::time::timeout(abort_budget, tasks.shutdown())
+        .await
+        .is_err()
+    {
+        warn!(
+            remaining = tasks.len(),
+            "wall-clock shutdown budget exceeded after abort; giving up"
+        );
     }
 }
 
