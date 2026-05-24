@@ -12,25 +12,6 @@ use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::config::{Config, LogFormat, LogLevel};
-use rmr::parsers::cli::parse_specs;
-
-fn config_with_endpoints(endpoints: Vec<String>) -> Config {
-    let cfg = Config {
-        log_level: LogLevel::Warn,
-        log_format: LogFormat::Text,
-        stats: false,
-        stats_interval_secs: 5,
-        dedup_ms: 0,
-        skip_config_log: true,
-        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
-        merged: false,
-    };
-    cfg.validate()
-        .expect("test config must pass cross-endpoint validation");
-    cfg
-}
-
 #[tokio::test]
 async fn spawner_routes_udp_frame_end_to_end() {
     // Probe-bind two ports so the spec strings can name them. Brief TOCTOU
@@ -42,10 +23,13 @@ async fn spawner_routes_udp_frame_end_to_end() {
     drop(probe_a);
     drop(probe_b);
 
-    let cfg = config_with_endpoints(vec![
-        format!("udps:127.0.0.1:{}#bus", addr_a.port()),
-        format!("udpc:127.0.0.1:{}#tap", addr_b.port()),
-    ]);
+    let cfg = common::config_with_endpoints(
+        vec![
+            format!("udps:127.0.0.1:{}#bus", addr_a.port()),
+            format!("udpc:127.0.0.1:{}#tap", addr_b.port()),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let run_handle = {

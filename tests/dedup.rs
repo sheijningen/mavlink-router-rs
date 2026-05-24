@@ -8,36 +8,11 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use rmr::config::{Config, LogFormat, LogLevel};
-use rmr::parsers::cli::parse_specs;
-
-fn config_with_endpoints_and_dedup(endpoints: Vec<String>, dedup_ms: u64) -> Config {
-    let cfg = Config {
-        log_level: LogLevel::Warn,
-        log_format: LogFormat::Text,
-        stats: false,
-        stats_interval_secs: 5,
-        dedup_ms,
-        skip_config_log: true,
-        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
-        merged: false,
-    };
-    cfg.validate()
-        .expect("test config must pass cross-endpoint validation");
-    cfg
-}
-
-fn pick_free_udp_addr() -> SocketAddr {
-    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("probe bind");
-    probe.local_addr().expect("local_addr")
-}
 
 #[tokio::test]
 async fn dedup_suppresses_second_copy_from_redundant_uplinks() {
@@ -45,11 +20,11 @@ async fn dedup_suppresses_second_copy_from_redundant_uplinks() {
     // destination (udpc:gcs). With dedup_ms=500 the second arrival of an
     // identical frame is suppressed at the router before per-destination
     // dispatch.
-    let uplink_a_addr = pick_free_udp_addr();
-    let uplink_b_addr = pick_free_udp_addr();
-    let gcs_addr = pick_free_udp_addr();
+    let uplink_a_addr = common::udp::pick_free_udp_addr();
+    let uplink_b_addr = common::udp::pick_free_udp_addr();
+    let gcs_addr = common::udp::pick_free_udp_addr();
 
-    let cfg = config_with_endpoints_and_dedup(
+    let cfg = common::config_with_endpoints(
         vec![
             format!("udps:127.0.0.1:{}#uplink_a", uplink_a_addr.port()),
             format!("udps:127.0.0.1:{}#uplink_b", uplink_b_addr.port()),

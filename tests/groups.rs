@@ -17,7 +17,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
@@ -25,29 +24,6 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use common::mavlink::{Heartbeat, Ping, TestFrame};
-use rmr::config::{Config, LogFormat, LogLevel};
-use rmr::parsers::cli::parse_specs;
-
-fn config_with_endpoints(endpoints: Vec<String>) -> Config {
-    let cfg = Config {
-        log_level: LogLevel::Warn,
-        log_format: LogFormat::Text,
-        stats: false,
-        stats_interval_secs: 5,
-        dedup_ms: 0,
-        skip_config_log: true,
-        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
-        merged: false,
-    };
-    cfg.validate()
-        .expect("test config must pass cross-endpoint validation");
-    cfg
-}
-
-fn pick_free_udp_addr() -> SocketAddr {
-    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("probe bind");
-    probe.local_addr().expect("local_addr")
-}
 
 #[tokio::test]
 async fn group_members_share_learn_set_so_sibling_is_loop_blocked() {
@@ -58,18 +34,21 @@ async fn group_members_share_learn_set_so_sibling_is_loop_blocked() {
     //   - tap has its own empty table, admits the broadcast.
     // Without the shared learn-set this same scenario would deliver the
     // frame to both sibling and tap.
-    let src_addr = pick_free_udp_addr();
-    let sibling_addr = pick_free_udp_addr();
-    let tap_addr = pick_free_udp_addr();
+    let src_addr = common::udp::pick_free_udp_addr();
+    let sibling_addr = common::udp::pick_free_udp_addr();
+    let tap_addr = common::udp::pick_free_udp_addr();
 
-    let cfg = config_with_endpoints(vec![
-        format!("udps:127.0.0.1:{}#src?group=uplink", src_addr.port()),
-        format!(
-            "udpc:127.0.0.1:{}#sibling?group=uplink",
-            sibling_addr.port()
-        ),
-        format!("udpc:127.0.0.1:{}#tap", tap_addr.port()),
-    ]);
+    let cfg = common::config_with_endpoints(
+        vec![
+            format!("udps:127.0.0.1:{}#src?group=uplink", src_addr.port()),
+            format!(
+                "udpc:127.0.0.1:{}#sibling?group=uplink",
+                sibling_addr.port()
+            ),
+            format!("udpc:127.0.0.1:{}#tap", tap_addr.port()),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let run_handle = {
@@ -146,21 +125,24 @@ async fn group_members_do_not_share_out_filters() {
     // ?group=g but only strict carries block_msgid_out=4. A broadcast PING
     // (msgid 4) must reach permissive and must NOT reach strict — confirming
     // that filters stay per-endpoint even when the learn-set is shared.
-    let src_addr = pick_free_udp_addr();
-    let strict_addr = pick_free_udp_addr();
-    let permissive_addr = pick_free_udp_addr();
+    let src_addr = common::udp::pick_free_udp_addr();
+    let strict_addr = common::udp::pick_free_udp_addr();
+    let permissive_addr = common::udp::pick_free_udp_addr();
 
-    let cfg = config_with_endpoints(vec![
-        format!("udps:127.0.0.1:{}#src", src_addr.port()),
-        format!(
-            "udpc:127.0.0.1:{}#strict?group=g&block_msgid_out=4",
-            strict_addr.port(),
-        ),
-        format!(
-            "udpc:127.0.0.1:{}#permissive?group=g",
-            permissive_addr.port(),
-        ),
-    ]);
+    let cfg = common::config_with_endpoints(
+        vec![
+            format!("udps:127.0.0.1:{}#src", src_addr.port()),
+            format!(
+                "udpc:127.0.0.1:{}#strict?group=g&block_msgid_out=4",
+                strict_addr.port(),
+            ),
+            format!(
+                "udpc:127.0.0.1:{}#permissive?group=g",
+                permissive_addr.port(),
+            ),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let run_handle = {

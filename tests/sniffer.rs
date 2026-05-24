@@ -9,7 +9,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
@@ -17,29 +16,6 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use common::mavlink::{Ping, TestFrame};
-use rmr::config::{Config, LogFormat, LogLevel};
-use rmr::parsers::cli::parse_specs;
-
-fn config_with_endpoints(endpoints: Vec<String>) -> Config {
-    let cfg = Config {
-        log_level: LogLevel::Warn,
-        log_format: LogFormat::Text,
-        stats: false,
-        stats_interval_secs: 5,
-        dedup_ms: 0,
-        skip_config_log: true,
-        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
-        merged: false,
-    };
-    cfg.validate()
-        .expect("test config must pass cross-endpoint validation");
-    cfg
-}
-
-fn pick_free_udp_addr() -> SocketAddr {
-    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("probe bind");
-    probe.local_addr().expect("local_addr")
-}
 
 #[tokio::test]
 async fn sniffer_admits_targeted_frame_that_non_sniffer_rejects() {
@@ -49,15 +25,18 @@ async fn sniffer_admits_targeted_frame_that_non_sniffer_rejects() {
     // rejects at non-sniffer destinations. The sniffer override at the
     // per-destination decision admits regardless. Net result: only the
     // sniffer probe receives the frame at the wire.
-    let source_addr = pick_free_udp_addr();
-    let target_addr = pick_free_udp_addr();
-    let tap_addr = pick_free_udp_addr();
+    let source_addr = common::udp::pick_free_udp_addr();
+    let target_addr = common::udp::pick_free_udp_addr();
+    let tap_addr = common::udp::pick_free_udp_addr();
 
-    let cfg = config_with_endpoints(vec![
-        format!("udps:127.0.0.1:{}#source", source_addr.port()),
-        format!("udpc:127.0.0.1:{}#target", target_addr.port()),
-        format!("udpc:127.0.0.1:{}#tap?sniffer=true", tap_addr.port()),
-    ]);
+    let cfg = common::config_with_endpoints(
+        vec![
+            format!("udps:127.0.0.1:{}#source", source_addr.port()),
+            format!("udpc:127.0.0.1:{}#target", target_addr.port()),
+            format!("udpc:127.0.0.1:{}#tap?sniffer=true", tap_addr.port()),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let run_handle = {

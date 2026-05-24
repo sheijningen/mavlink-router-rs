@@ -14,7 +14,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
@@ -23,35 +22,6 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use common::mavlink::{Heartbeat, Ping, TestFrame};
-use rmr::config::{Config, LogFormat, LogLevel};
-use rmr::parsers::cli::parse_specs;
-
-fn config_with_endpoints(endpoints: Vec<String>) -> Config {
-    let config = Config {
-        log_level: LogLevel::Warn,
-        log_format: LogFormat::Text,
-        stats: false,
-        stats_interval_secs: 5,
-        dedup_ms: 0,
-        skip_config_log: true,
-        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
-        merged: false,
-    };
-    config
-        .validate()
-        .expect("test config must pass cross-endpoint validation");
-    config
-}
-
-fn pick_free_udp_addr() -> SocketAddr {
-    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("probe bind");
-    probe.local_addr().expect("local_addr")
-}
-
-fn pick_free_tcp_addr() -> SocketAddr {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("probe bind");
-    probe.local_addr().expect("local_addr")
-}
 
 /// Drain a TCP stream into a `Vec<u8>` until we've collected at least
 /// `min_bytes` or hit the timeout. Returns whatever we got — the caller
@@ -86,15 +56,18 @@ async fn fanout_routes_broadcast_to_other_transports_but_not_source() {
     // via udpc, C receives it via the tcps connection, A does NOT receive
     // it back (loop prevention).
 
-    let udps_addr = pick_free_udp_addr();
-    let udpc_target = pick_free_udp_addr();
-    let tcps_addr = pick_free_tcp_addr();
+    let udps_addr = common::udp::pick_free_udp_addr();
+    let udpc_target = common::udp::pick_free_udp_addr();
+    let tcps_addr = common::tcp::pick_free_tcp_addr();
 
-    let config = config_with_endpoints(vec![
-        format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
-        format!("udpc:127.0.0.1:{}#downlink", udpc_target.port()),
-        format!("tcps:127.0.0.1:{}#gw", tcps_addr.port()),
-    ]);
+    let config = common::config_with_endpoints(
+        vec![
+            format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
+            format!("udpc:127.0.0.1:{}#downlink", udpc_target.port()),
+            format!("tcps:127.0.0.1:{}#gw", tcps_addr.port()),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let run_handle = {
@@ -195,15 +168,18 @@ async fn fanout_routes_targeted_frame_only_to_endpoint_that_learned_target() {
     // matches exactly one peer's learned id; assert only that peer's
     // endpoint receives it.
 
-    let udps_addr = pick_free_udp_addr();
-    let udpc_target = pick_free_udp_addr();
-    let tcps_addr = pick_free_tcp_addr();
+    let udps_addr = common::udp::pick_free_udp_addr();
+    let udpc_target = common::udp::pick_free_udp_addr();
+    let tcps_addr = common::tcp::pick_free_tcp_addr();
 
-    let config = config_with_endpoints(vec![
-        format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
-        format!("udpc:127.0.0.1:{}#downlink", udpc_target.port()),
-        format!("tcps:127.0.0.1:{}#gw", tcps_addr.port()),
-    ]);
+    let config = common::config_with_endpoints(
+        vec![
+            format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
+            format!("udpc:127.0.0.1:{}#downlink", udpc_target.port()),
+            format!("tcps:127.0.0.1:{}#gw", tcps_addr.port()),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let run_handle = {

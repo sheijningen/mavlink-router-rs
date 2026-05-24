@@ -7,7 +7,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
@@ -15,42 +14,22 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use common::mavlink::{Ping, TestFrame};
-use rmr::config::{Config, LogFormat, LogLevel};
-use rmr::parsers::cli::parse_specs;
-
-fn config_with_endpoints(endpoints: Vec<String>) -> Config {
-    let cfg = Config {
-        log_level: LogLevel::Warn,
-        log_format: LogFormat::Text,
-        stats: false,
-        stats_interval_secs: 5,
-        dedup_ms: 0,
-        skip_config_log: true,
-        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
-        merged: false,
-    };
-    cfg.validate()
-        .expect("test config must pass cross-endpoint validation");
-    cfg
-}
-
-fn pick_free_udp_addr() -> SocketAddr {
-    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("probe bind");
-    probe.local_addr().expect("local_addr")
-}
 
 #[tokio::test]
 async fn out_filter_blocks_destination_msgid_at_wire() {
     // udps:source ingests frames from the injector; udpc:dst is the
     // destination with PING (msgid 4) on its out-blocklist. HEARTBEAT
     // (msgid 0) must reach dst; PING must not.
-    let source_addr = pick_free_udp_addr();
-    let dst_addr = pick_free_udp_addr();
+    let source_addr = common::udp::pick_free_udp_addr();
+    let dst_addr = common::udp::pick_free_udp_addr();
 
-    let cfg = config_with_endpoints(vec![
-        format!("udps:127.0.0.1:{}#source", source_addr.port()),
-        format!("udpc:127.0.0.1:{}#dst?block_msgid_out=4", dst_addr.port()),
-    ]);
+    let cfg = common::config_with_endpoints(
+        vec![
+            format!("udps:127.0.0.1:{}#source", source_addr.port()),
+            format!("udpc:127.0.0.1:{}#dst?block_msgid_out=4", dst_addr.port()),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let run_handle = {

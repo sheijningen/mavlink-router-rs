@@ -11,11 +11,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mavlink::{Heartbeat, TestFrame};
+use rmr::config::{Config, LogFormat, LogLevel};
 use rmr::endpoint::EndpointId;
 use rmr::endpoint::events::EndpointEvent;
 use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::stats::{EndpointState, EndpointStats};
 use rmr::endpoint::tx_queue::TxQueue;
+use rmr::parsers::cli::parse_specs;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -128,4 +130,29 @@ where
         }
     }
     assert!(failures.is_empty(), "shutdown_all: {}", failures.join("; "));
+}
+
+/// Build a fully-validated [`Config`] from a vector of endpoint spec strings,
+/// with the global knobs every `rmr::run`-driven test cares about set the
+/// same way: warn-level text logs, stats off, config-dump suppressed,
+/// `merged: false`. `dedup_ms` is exposed so the dedup test can flip it
+/// without forking a near-identical helper; everyone else passes `0`.
+///
+/// Panics if any spec string fails to parse or the resulting config fails
+/// cross-endpoint validation — both are programming errors in the test, not
+/// behaviour under test.
+pub fn config_with_endpoints(endpoints: Vec<String>, dedup_ms: u64) -> Config {
+    let cfg = Config {
+        log_level: LogLevel::Warn,
+        log_format: LogFormat::Text,
+        stats: false,
+        stats_interval_secs: 5,
+        dedup_ms,
+        skip_config_log: true,
+        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
+        merged: false,
+    };
+    cfg.validate()
+        .expect("test config must pass cross-endpoint validation");
+    cfg
 }

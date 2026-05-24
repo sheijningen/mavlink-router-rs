@@ -23,33 +23,6 @@ use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::config::{Config, LogFormat, LogLevel};
-use rmr::parsers::cli::parse_specs;
-
-fn config_with_endpoints(endpoints: Vec<String>) -> Config {
-    let config = Config {
-        log_level: LogLevel::Warn,
-        log_format: LogFormat::Text,
-        stats: false,
-        stats_interval_secs: 5,
-        dedup_ms: 0,
-        skip_config_log: true,
-        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
-        merged: false,
-    };
-    config
-        .validate()
-        .expect("test config must pass cross-endpoint validation");
-    config
-}
-
-/// Pick a UDP address bound to an OS-chosen port, drop it, and return the
-/// address. The drop-then-reuse window is tolerable on loopback for tests.
-fn pick_free_udp_addr() -> SocketAddr {
-    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("probe bind");
-    probe.local_addr().expect("local_addr")
-}
-
 #[tokio::test]
 async fn shutdown_drains_every_endpoint_within_budget() {
     // Mixed-state endpoints:
@@ -57,17 +30,20 @@ async fn shutdown_drains_every_endpoint_within_budget() {
     // - sender:   udpc dialing nowhere → Connected after local bind
     // - stuck:    tcpc dialing a port nobody is listening on → loops on
     //             reconnect forever, stays Reconnecting
-    let listener = pick_free_udp_addr();
-    let sender_target = pick_free_udp_addr();
+    let listener = common::udp::pick_free_udp_addr();
+    let sender_target = common::udp::pick_free_udp_addr();
 
-    let config = config_with_endpoints(vec![
-        format!("udps:127.0.0.1:{}#listener", listener.port()),
-        format!("udpc:127.0.0.1:{}#sender", sender_target.port()),
-        // Port 1 is privileged; binding loopback to it as a client almost
-        // always fails with ConnectionRefused, keeping `stuck` perpetually
-        // in Reconnecting until cancel arrives.
-        "tcpc:127.0.0.1:1#stuck".to_string(),
-    ]);
+    let config = common::config_with_endpoints(
+        vec![
+            format!("udps:127.0.0.1:{}#listener", listener.port()),
+            format!("udpc:127.0.0.1:{}#sender", sender_target.port()),
+            // Port 1 is privileged; binding loopback to it as a client almost
+            // always fails with ConnectionRefused, keeping `stuck` perpetually
+            // in Reconnecting until cancel arrives.
+            "tcpc:127.0.0.1:1#stuck".to_string(),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let cancel_for_run = cancel.clone();
@@ -103,11 +79,14 @@ async fn shutdown_returns_immediately_when_no_endpoints_are_connected() {
     // quickly because each task observes the cancel and exits its retry
     // loop. Pins the lower-bound behaviour: cancel-then-join should not
     // burn the full grace window when there's nothing to flush.
-    let config = config_with_endpoints(vec![
-        "tcpc:127.0.0.1:1#a".to_string(),
-        "tcpc:127.0.0.1:2#b".to_string(),
-        "tcpc:127.0.0.1:3#c".to_string(),
-    ]);
+    let config = common::config_with_endpoints(
+        vec![
+            "tcpc:127.0.0.1:1#a".to_string(),
+            "tcpc:127.0.0.1:2#b".to_string(),
+            "tcpc:127.0.0.1:3#c".to_string(),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let cancel_for_run = cancel.clone();
@@ -134,14 +113,17 @@ async fn shutdown_drains_with_inflight_udp_traffic() {
     // udps with a freshly-learned peer: the listener has work in flight (a
     // peer writer task that's been admitted) at the moment cancel fires.
     // The shutdown must still complete within budget.
-    let listener_addr = pick_free_udp_addr();
+    let listener_addr = common::udp::pick_free_udp_addr();
     let probe = UdpSocket::bind("127.0.0.1:0").await.expect("probe bind");
     let peer_addr: SocketAddr = probe.local_addr().expect("probe local");
 
-    let config = config_with_endpoints(vec![
-        format!("udps:127.0.0.1:{}#listener", listener_addr.port()),
-        format!("udpc:127.0.0.1:{}#fanout", peer_addr.port()),
-    ]);
+    let config = common::config_with_endpoints(
+        vec![
+            format!("udps:127.0.0.1:{}#listener", listener_addr.port()),
+            format!("udpc:127.0.0.1:{}#fanout", peer_addr.port()),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let cancel_for_run = cancel.clone();
@@ -190,8 +172,8 @@ fn binary_shutdown_emits_final_synthetic_stats_lines() {
     use std::thread;
     use std::time::Duration;
 
-    let listener_addr = pick_free_udp_addr();
-    let sender_target = pick_free_udp_addr();
+    let listener_addr = common::udp::pick_free_udp_addr();
+    let sender_target = common::udp::pick_free_udp_addr();
     let endpoints = [
         // Connected after bind.
         format!("udps:127.0.0.1:{}#listener", listener_addr.port()),

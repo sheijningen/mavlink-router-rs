@@ -31,30 +31,6 @@ fn bind_reusable_listener(addr: SocketAddr) -> TcpListener {
 }
 
 use common::mavlink::{Heartbeat, TestFrame};
-use rmr::config::{Config, LogFormat, LogLevel};
-use rmr::parsers::cli::parse_specs;
-
-fn config_with_endpoints(endpoints: Vec<String>) -> Config {
-    let config = Config {
-        log_level: LogLevel::Warn,
-        log_format: LogFormat::Text,
-        stats: false,
-        stats_interval_secs: 5,
-        dedup_ms: 0,
-        skip_config_log: true,
-        endpoints: parse_specs(&endpoints).expect("test endpoint strings must parse"),
-        merged: false,
-    };
-    config
-        .validate()
-        .expect("test config must pass cross-endpoint validation");
-    config
-}
-
-fn pick_free_udp_addr() -> SocketAddr {
-    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("probe bind");
-    probe.local_addr().expect("local_addr")
-}
 
 /// Read up to `cap` bytes from `stream` with a per-read timeout. Returns
 /// what was collected when either `cap` is reached or `dur` elapses without
@@ -86,16 +62,19 @@ async fn tcpc_drains_queue_on_disconnect_then_streams_fresh_frames_after_reconne
     //          frames and NONE of the "during" frames (drain-and-discard,
     //          never replay). The "pre" frames must not reappear either.
 
-    let udps_addr = pick_free_udp_addr();
+    let udps_addr = common::udp::pick_free_udp_addr();
     // Bind the fake server with SO_REUSEADDR so we can rebind the same
     // port mid-test after dropping it (and the connection it accepted).
     let server = bind_reusable_listener("127.0.0.1:0".parse().unwrap());
     let server_addr: SocketAddr = server.local_addr().expect("server addr");
 
-    let config = config_with_endpoints(vec![
-        format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
-        format!("tcpc:127.0.0.1:{}#downlink", server_addr.port()),
-    ]);
+    let config = common::config_with_endpoints(
+        vec![
+            format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
+            format!("tcpc:127.0.0.1:{}#downlink", server_addr.port()),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let run_handle = {
@@ -244,14 +223,17 @@ async fn tcpc_survives_repeated_flaps_under_sustained_ingress() {
     // one watches for accidental task / FD leaks via "after N flaps, rmr
     // still accepts the next connection and still shuts down within the
     // wall-clock budget."
-    let udps_addr = pick_free_udp_addr();
+    let udps_addr = common::udp::pick_free_udp_addr();
     let server = TcpListener::bind("127.0.0.1:0").await.expect("server bind");
     let server_addr: SocketAddr = server.local_addr().expect("server addr");
 
-    let config = config_with_endpoints(vec![
-        format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
-        format!("tcpc:127.0.0.1:{}#downlink", server_addr.port()),
-    ]);
+    let config = common::config_with_endpoints(
+        vec![
+            format!("udps:127.0.0.1:{}#listener", udps_addr.port()),
+            format!("tcpc:127.0.0.1:{}#downlink", server_addr.port()),
+        ],
+        0,
+    );
 
     let cancel = CancellationToken::new();
     let run_handle = {
@@ -349,7 +331,7 @@ async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {
         .await
         .expect("listener bind");
     let listen_addr: SocketAddr = listener.local_addr().expect("listen_addr");
-    let udps_addr = pick_free_udp_addr();
+    let udps_addr = common::udp::pick_free_udp_addr();
 
     let bin_path = Command::cargo_bin("rmr")
         .expect("cargo_bin")
