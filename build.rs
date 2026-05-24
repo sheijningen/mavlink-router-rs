@@ -38,9 +38,6 @@ const DIALECTS: &[&str] = &["common.xml", "ardupilotmega.xml"];
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build_support");
-    println!("cargo:rerun-if-changed=build_support/crc_extra.rs");
-    println!("cargo:rerun-if-changed=build_support/xml_loader.rs");
-    println!("cargo:rerun-if-changed=build_support/dialect_parse.rs");
 
     emit_version_string();
 
