@@ -508,6 +508,7 @@ rmr/
 │   │   ├── socket.rs                 ← `bind_tcp_dual_stack`, `bind_udp_dual_stack`, `configure_tcp_stream` (`IPV6_V6ONLY=0`, `SO_REUSEADDR`, `TCP_NODELAY`, keepalive); used by every IP transport
 │   │   ├── session.rs                ← generic `run_session<S: AsyncRead + AsyncWrite>` + `SessionOutcome` shared by `serial:`, `tcpc:`, `tcps:` children
 │   │   ├── spawn.rs                  ← cross-kind spawn dispatch: `spawn_endpoints` walks the parsed spec list, `spawn_endpoint` matches on `EndpointKind` and wires each leaf / parent listener into its `*Spec` + `ClientWiring` / `ServerWiring` + `EndpointAdded` registration, `prepare_leaf` / `prepare_parent_listener` handle the registration handshake
+│   │   ├── wiring.rs                 ← `ClientWiring` / `ServerWiring` plumbing structs (channels, queues, stats, cancel) handed to each `*Spec`-typed `run()` alongside its `*Spec`
 │   │   ├── serial.rs                 ← `serial:` open + hot-replug loop wrapping the shared session
 │   │   ├── udp/
 │   │   │   ├── mod.rs                ← submodule declarations
@@ -551,7 +552,11 @@ rmr/
 │   ├── dedup.rs
 │   ├── groups.rs                     ← endpoint-group shared learn-set + per-endpoint filter independence, asserted at the wire
 │   ├── shutdown.rs                   ← per-task drain budget + 5s wall-clock abort
-│   └── spawner_e2e.rs                ← lib::run orchestration: spec parse → spawn → cancel
+│   ├── spawner_e2e.rs                ← lib::run orchestration: spec parse → spawn → cancel
+│   ├── multi_transport_fanout.rs     ← Phase 6 e2e: mixed-transport routing matrix (learn + loop-prevention + targeted vs broadcast)
+│   ├── reconnect_under_load.rs       ← Phase 6 e2e: `dropped_tx` accounting and no replay across `tcpc:` link flaps under sustained ingress
+│   ├── shutdown_soak.rs              ← Phase 6 e2e: terminal-state synthesis (`Down`/`Idle`) under mid-stream cancel
+│   └── examples.rs                   ← Phase 7: each `examples/*/*.toml` parses and the declared endpoints come up against a loopback fixture
 └── benches/                          ← criterion benchmarks (post-v1)
     ├── framer.rs
     └── routing.rs

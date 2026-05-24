@@ -87,6 +87,12 @@ ENDPOINT := SCHEME:BODY[#name][?key=val&...]
 | `tcps:`   | `host:port`                   | TCP server (accepts many)        |
 | `tcpc:`   | `host:port`                   | TCP client (dials + reconnects)  |
 
+Example:
+
+```sh
+rmr tcps:0.0.0.0:5760#vehicle?block_msgid_in=33,100-150
+```
+
 Binding `udps:` or `tcps:` to `[::]` is dual-stack on Linux and Windows
 alike — RMR forces `IPV6_V6ONLY=0` on both so v4 peers reach a
 `[::]`-bound listener identically on each.

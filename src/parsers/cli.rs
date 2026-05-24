@@ -34,6 +34,9 @@ const ENDPOINT_GUIDE: &str = "Endpoints:
   tcps:          host:port                    TCP server (accepts many)
   tcpc:          host:port                    TCP client (dials + reconnects)
 
+Example:
+  rmr tcps:0.0.0.0:5760#vehicle?block_msgid_in=33,100-150
+
   The `#name` is an optional identifier of the endpoint used for logs and stats.
 
   Per-endpoint options are passed as a URL-style query string appended
