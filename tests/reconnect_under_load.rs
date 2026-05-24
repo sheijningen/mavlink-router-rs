@@ -12,10 +12,12 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use socket2::{Domain, Protocol, Socket, Type};
-use tokio::io::AsyncReadExt;
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
+
+use common::mavlink::{Heartbeat, TestFrame};
+use common::tcp::read_until_quiet;
 
 /// Bind a TCP listener on `addr` with `SO_REUSEADDR` so the test can drop
 /// it and rebind the same port without waiting out the kernel's release
@@ -28,23 +30,6 @@ fn bind_reusable_listener(addr: SocketAddr) -> TcpListener {
     socket.bind(&addr.into()).expect("bind");
     socket.listen(128).expect("listen");
     TcpListener::from_std(socket.into()).expect("from_std")
-}
-
-use common::mavlink::{Heartbeat, TestFrame};
-
-/// Read up to `cap` bytes from `stream` with a per-read timeout. Returns
-/// what was collected when either `cap` is reached or `dur` elapses without
-/// new bytes.
-async fn read_until_quiet(stream: &mut TcpStream, cap: usize, duration: Duration) -> Vec<u8> {
-    let mut buf = Vec::new();
-    let mut tmp = [0u8; 512];
-    while buf.len() < cap {
-        match timeout(duration, stream.read(&mut tmp)).await {
-            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
-            Ok(Ok(bytes_read)) => buf.extend_from_slice(&tmp[..bytes_read]),
-        }
-    }
-    buf
 }
 
 #[tokio::test]

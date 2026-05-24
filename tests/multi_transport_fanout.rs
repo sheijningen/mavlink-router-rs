@@ -16,34 +16,12 @@ mod common;
 
 use std::time::Duration;
 
-use tokio::io::AsyncReadExt;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use common::mavlink::{Heartbeat, Ping, TestFrame};
-
-/// Drain a TCP stream into a `Vec<u8>` until we've collected at least
-/// `min_bytes` or hit the timeout. Returns whatever we got — the caller
-/// asserts on shape.
-async fn read_tcp_at_least(
-    stream: &mut TcpStream,
-    min_bytes: usize,
-    duration: Duration,
-) -> Vec<u8> {
-    let mut buf = Vec::new();
-    let mut tmp = [0u8; 512];
-    let deadline = tokio::time::Instant::now() + duration;
-    while buf.len() < min_bytes && tokio::time::Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match timeout(remaining, stream.read(&mut tmp)).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(bytes_read)) => buf.extend_from_slice(&tmp[..bytes_read]),
-            Ok(Err(_)) | Err(_) => break,
-        }
-    }
-    buf
-}
+use common::tcp::read_tcp_at_least;
 
 #[tokio::test]
 async fn fanout_routes_broadcast_to_other_transports_but_not_source() {

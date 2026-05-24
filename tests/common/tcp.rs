@@ -6,9 +6,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::{
@@ -206,4 +208,48 @@ pub async fn connect_with_retry(addr: SocketAddr, deadline: Duration) -> TcpStre
         }
     }
     panic!("connect_with_retry({addr}) gave up after {deadline:?}: {last_err:?}");
+}
+
+/// Drain a TCP stream into a `Vec<u8>` until at least `min_bytes` have been
+/// collected or `duration` elapses as an absolute wall-clock deadline.
+/// Returns whatever was read — the caller asserts on shape. Use this when
+/// the test knows exactly how many bytes the router should forward.
+pub async fn read_tcp_at_least(
+    stream: &mut TcpStream,
+    min_bytes: usize,
+    duration: Duration,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 512];
+    let deadline = tokio::time::Instant::now() + duration;
+    while buf.len() < min_bytes && tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match timeout(remaining, stream.read(&mut tmp)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(bytes_read)) => buf.extend_from_slice(&tmp[..bytes_read]),
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+    buf
+}
+
+/// Drain a TCP stream into a `Vec<u8>` until `cap` bytes have been collected
+/// or `duration` elapses without any bytes arriving (quiet timeout, **not**
+/// absolute). Use this when the test cares about "router stopped forwarding"
+/// rather than a known byte count — e.g. asserting that a disconnected link
+/// did not replay queued frames after reconnect.
+pub async fn read_until_quiet(
+    stream: &mut TcpStream,
+    cap: usize,
+    duration: Duration,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 512];
+    while buf.len() < cap {
+        match timeout(duration, stream.read(&mut tmp)).await {
+            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+            Ok(Ok(bytes_read)) => buf.extend_from_slice(&tmp[..bytes_read]),
+        }
+    }
+    buf
 }
