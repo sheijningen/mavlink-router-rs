@@ -10,7 +10,7 @@ mod error;
 mod parse;
 mod query;
 pub(crate) use parse::name_matches_regex;
-use parse::{default_name, parse_kind, split_body_name_query, validate_name};
+use parse::{parse_kind, split_body_name_query, validate_name};
 use query::parse_query_pairs;
 
 pub use endpoint_kinds::{
@@ -137,7 +137,7 @@ impl EndpointSpec {
                 validate_name(name)?;
                 name.to_string()
             }
-            None => default_name(&kind),
+            None => kind.default_name(),
         };
         Ok(Self { kind, name })
     }

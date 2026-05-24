@@ -27,6 +27,7 @@
 use std::collections::HashSet;
 
 use serde::Deserialize;
+use tracing::info;
 
 use crate::endpoint::spec::EndpointSpec;
 use crate::error::Error;
@@ -168,6 +169,30 @@ impl Config {
     /// configs never reach this branch via the within-source path.
     pub fn validate(&self) -> Result<(), Error> {
         check_unique_names(&self.endpoints)
+    }
+
+    /// Emit one INFO event capturing every resolved global plus the
+    /// per-endpoint table rendered via `Debug`, so every defaulted-in
+    /// `?key=val` is visible in the line. The message is "merged config" only
+    /// when both TOML and CLI contributed values; otherwise just "config".
+    /// Revisit if any future config field carries a secret.
+    pub fn log_resolved(&self) {
+        let msg = if self.merged {
+            "merged config"
+        } else {
+            "config"
+        };
+        info!(
+            log_level = ?self.log_level,
+            log_format = ?self.log_format,
+            stats = self.stats,
+            stats_interval_secs = self.stats_interval_secs,
+            dedup_ms = self.dedup_ms,
+            skip_config_log = self.skip_config_log,
+            endpoint_count = self.endpoints.len(),
+            endpoints = ?self.endpoints,
+            "{msg}",
+        );
     }
 }
 

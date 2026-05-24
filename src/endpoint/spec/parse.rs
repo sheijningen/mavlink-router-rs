@@ -251,38 +251,6 @@ pub fn validate_name(name: &str) -> Result<(), SpecError> {
     Ok(())
 }
 
-pub fn default_name(kind: &EndpointKind) -> String {
-    match kind {
-        EndpointKind::Serial(endpoint) => {
-            format!(
-                "serial-{}-{}",
-                sanitize_for_name(&endpoint.path),
-                endpoint.baud
-            )
-        }
-        EndpointKind::UdpServer(endpoint) => format!(
-            "udps-{}-{}",
-            sanitize_for_name(&endpoint.bind_addr.ip().to_string()),
-            endpoint.bind_addr.port()
-        ),
-        EndpointKind::UdpClient(endpoint) => format!(
-            "udpc-{}-{}",
-            sanitize_for_name(&endpoint.host),
-            endpoint.port
-        ),
-        EndpointKind::TcpServer(endpoint) => format!(
-            "tcps-{}-{}",
-            sanitize_for_name(&endpoint.bind_addr.ip().to_string()),
-            endpoint.bind_addr.port()
-        ),
-        EndpointKind::TcpClient(endpoint) => format!(
-            "tcpc-{}-{}",
-            sanitize_for_name(&endpoint.host),
-            endpoint.port
-        ),
-    }
-}
-
 pub fn sanitize_for_name(text: &str) -> String {
     text.chars()
         .map(|ch| {
@@ -479,7 +447,7 @@ mod tests {
         }
     }
 
-    // -- validate_name / default_name / sanitize_for_name --
+    // -- validate_name / sanitize_for_name --
 
     #[test]
     fn name_max_64_ok() {

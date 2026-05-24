@@ -48,7 +48,7 @@ const DEFAULT_TCPS_PEER_BUDGET: usize = 64;
 /// responsible for installing the signal handler and initialising tracing.
 pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
     if !cfg.skip_config_log {
-        log_resolved_config(&cfg);
+        cfg.log_resolved();
     }
 
     // Exhaustive destructure: adding a Config field forces a touch here, so
@@ -117,30 +117,6 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
     info!("rmr stopped");
 
     Ok(())
-}
-
-/// Emit one INFO event capturing every resolved global plus the per-endpoint
-/// table rendered via `Debug`, so every defaulted-in `?key=val` is visible
-/// in the line. The message is "merged config" only when both TOML and CLI
-/// contributed values; otherwise just "config". Revisit if any future config
-/// field carries a secret.
-pub fn log_resolved_config(cfg: &Config) {
-    let msg = if cfg.merged {
-        "merged config"
-    } else {
-        "config"
-    };
-    info!(
-        log_level = ?cfg.log_level,
-        log_format = ?cfg.log_format,
-        stats = cfg.stats,
-        stats_interval_secs = cfg.stats_interval_secs,
-        dedup_ms = cfg.dedup_ms,
-        skip_config_log = cfg.skip_config_log,
-        endpoint_count = cfg.endpoints.len(),
-        endpoints = ?cfg.endpoints,
-        "{msg}",
-    );
 }
 
 /// Return every group with two or more non-sniffer members when dedup is

@@ -62,7 +62,7 @@ async fn main() -> ExitCode {
     }
 
     if dry_run {
-        rmr::log_resolved_config(&cfg);
+        cfg.log_resolved();
         return ExitCode::SUCCESS;
     }
 

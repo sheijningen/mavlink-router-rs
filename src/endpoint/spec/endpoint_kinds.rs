@@ -3,6 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use super::super::identity_flags::IdentityFlags;
 use super::Scheme;
+use super::parse::sanitize_for_name;
 
 /// Supported endpoint schemes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +36,42 @@ impl EndpointKind {
             EndpointKind::UdpClient(endpoint) => &endpoint.identity,
             EndpointKind::TcpServer(endpoint) => &endpoint.identity,
             EndpointKind::TcpClient(endpoint) => &endpoint.identity,
+        }
+    }
+
+    /// Derive a `scheme-addr-port` name for use when `#name` is omitted from
+    /// the endpoint spec. Characters disallowed by the name regex
+    /// (`[A-Za-z0-9_-]`) are replaced with `_` so the auto-name satisfies the
+    /// same validation as explicit names.
+    pub fn default_name(&self) -> String {
+        match self {
+            EndpointKind::Serial(endpoint) => {
+                format!(
+                    "serial-{}-{}",
+                    sanitize_for_name(&endpoint.path),
+                    endpoint.baud
+                )
+            }
+            EndpointKind::UdpServer(endpoint) => format!(
+                "udps-{}-{}",
+                sanitize_for_name(&endpoint.bind_addr.ip().to_string()),
+                endpoint.bind_addr.port()
+            ),
+            EndpointKind::UdpClient(endpoint) => format!(
+                "udpc-{}-{}",
+                sanitize_for_name(&endpoint.host),
+                endpoint.port
+            ),
+            EndpointKind::TcpServer(endpoint) => format!(
+                "tcps-{}-{}",
+                sanitize_for_name(&endpoint.bind_addr.ip().to_string()),
+                endpoint.bind_addr.port()
+            ),
+            EndpointKind::TcpClient(endpoint) => format!(
+                "tcpc-{}-{}",
+                sanitize_for_name(&endpoint.host),
+                endpoint.port
+            ),
         }
     }
 }
