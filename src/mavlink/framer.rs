@@ -7,8 +7,7 @@ use super::frame::{
     V2_SIGNATURE_LEN, Version,
 };
 use super::msgid_table::{self, MsgEntry};
-
-const DEFAULT_BUF_CAPACITY: usize = 8192;
+use crate::endpoint::defaults::READ_BUF_BYTES;
 
 /// Per-endpoint MAVLink frame state machine. Callers write raw transport
 /// bytes into the inner `BytesMut` via `buffer_mut()` and drain complete
@@ -22,7 +21,7 @@ pub struct Framer {
 
 impl Framer {
     pub fn new() -> Self {
-        Self::with_capacity(DEFAULT_BUF_CAPACITY)
+        Self::with_capacity(READ_BUF_BYTES)
     }
 
     pub fn with_capacity(cap: usize) -> Self {
@@ -168,7 +167,7 @@ impl Framer {
             ..header
         };
         let frame = self.buf.split_to(frame_len).freeze();
-        self.buf.reserve(DEFAULT_BUF_CAPACITY);
+        self.buf.reserve(READ_BUF_BYTES);
         Some((full_header, frame))
     }
 
@@ -577,7 +576,7 @@ mod tests {
 
     #[test]
     fn large_garbage_prefix_beyond_default_buffer_is_all_counted() {
-        // 12_000 STX-free bytes — larger than DEFAULT_BUF_CAPACITY (8192).
+        // 12_000 STX-free bytes — larger than READ_BUF_BYTES (8192).
         // The whole prefix should be consumed as resync_bytes in a single call
         // (the framer clears the buffer once it finds no STX).
         let garbage = vec![0u8; 12_000];
