@@ -162,6 +162,10 @@ terminal via `rmr --help`.
 
 ## TOML
 
+A TOML config file is the recommended way to set up RMR for anything
+beyond a quick one-shot test: the CLI covers the same surface but does
+not scale to multi-endpoint setups with filters and globals.
+
 Globals match the CLI flags one-for-one (snake_case keys). Endpoints are
 an array of tables:
 
@@ -171,8 +175,10 @@ log_level = "info"             # trace | debug | info | warn | error
 log_format = "text"            # text | json
 stats = true                   # emit JSON-Lines stats on stdout
 stats_interval_secs = 5
-dedup_ms = 250                 # default 0 (off); non-zero = TTL in ms
-                               # see examples/advanced/redundant-links/
+dedup_ms = 2000                # default 0 (off); non-zero = TTL in ms.
+                               # Err high — too low misses duplicates,
+                               # too high is essentially free.
+                               # See examples/advanced/redundant-links/
 skip_config_log = false
 
 # one [[endpoints]] table per endpoint

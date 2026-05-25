@@ -17,11 +17,11 @@
 # same group act as one logical link for routing — a device that
 # appears on either endpoint is considered reachable via both.
 
-# Global `dedup_ms = 250`: if an identical message arrives within 250 ms
-# of a previous one, the duplicate is dropped. Prevents GCS commands
-# from arriving twice to the FC. Increase if more significant latency
-# differences between links are expected.
-dedup_ms = 250
+# Global `dedup_ms = 2000`: if an identical message arrives within 2000
+# ms of a previous one, the duplicate is dropped. Prevents GCS commands
+# from arriving twice to the FC. Err on the high side — undersizing
+# silently misses duplicates, oversizing is essentially free.
+dedup_ms = 2000
 
 # Flight controller.
 [[endpoints]]
@@ -48,7 +48,7 @@ group = "links"
 
 # Equivalent CLI invocation:
 #
-# rmr --dedup-ms 250 \
+# rmr --dedup-ms 2000 \
 #     serial:/dev/ttyACM0:115200#fc \
 #     udpc:203.0.113.10:14550#lte?group=links \
 #     serial:/dev/serial0:57600#rfd900?group=links

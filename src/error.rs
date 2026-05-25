@@ -46,6 +46,11 @@ pub enum Error {
         name: Option<String>,
         reason: String,
     },
+
+    #[error(
+        "dedup_ms = {requested}ms exceeds maximum of {max}ms"
+    )]
+    DedupMsTooLarge { requested: u64, max: u64 },
 }
 
 fn fmt_toml_locator(index: &usize, name: Option<&str>) -> String {

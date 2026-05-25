@@ -41,6 +41,8 @@ pub const DEFAULT_STATS_INTERVAL_SECS: u64 = 5;
 /// CLAUDE.md "Defaults" → `dedup_ms` default (0 = dedup window disabled).
 pub const DEFAULT_DEDUP_MS: u64 = 0;
 
+pub const MAX_DEDUP_MS: u64 = 10_000;
+
 /// Log verbosity, mirroring the CLAUDE.md "Global opts" enumeration. Lives in
 /// the config module so TOML and CLI parsers see the same type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, Deserialize)]
@@ -167,6 +169,12 @@ impl Config {
     /// (e.g. a test fixture) with inconsistent input — `merge`-produced
     /// configs never reach this branch via the within-source path.
     pub fn validate(&self) -> Result<(), Error> {
+        if self.dedup_ms > MAX_DEDUP_MS {
+            return Err(Error::DedupMsTooLarge {
+                requested: self.dedup_ms,
+                max: MAX_DEDUP_MS,
+            });
+        }
         check_unique_names(&self.endpoints)
     }
 
@@ -281,6 +289,32 @@ mod tests {
         match config.validate() {
             Err(Error::DuplicateName(name)) => assert_eq!(name, "foo"),
             other => panic!("expected DuplicateName, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_dedup_ms_at_cap() {
+        let config = Config {
+            dedup_ms: MAX_DEDUP_MS,
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
+            ..Config::default()
+        };
+        config.validate().expect("at-cap value must pass");
+    }
+
+    #[test]
+    fn validate_rejects_dedup_ms_above_cap() {
+        let config = Config {
+            dedup_ms: MAX_DEDUP_MS + 1,
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
+            ..Config::default()
+        };
+        match config.validate() {
+            Err(Error::DedupMsTooLarge { requested, max }) => {
+                assert_eq!(requested, MAX_DEDUP_MS + 1);
+                assert_eq!(max, MAX_DEDUP_MS);
+            }
+            other => panic!("expected DedupMsTooLarge, got {other:?}"),
         }
     }
 

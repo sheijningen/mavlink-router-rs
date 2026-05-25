@@ -17,11 +17,11 @@
 # the same group act as one logical link for routing — a device that
 # appears on either endpoint is considered reachable via both.
 
-# Global `dedup_ms = 250`: if an identical message arrives within 250 ms
-# of a previous one, the duplicate is dropped. Prevents FC telemetry
-# from arriving twice to the GCS. Increase if more significant latency
-# differences between links are expected.
-dedup_ms = 250
+# Global `dedup_ms = 2000`: if an identical message arrives within 2000
+# ms of a previous one, the duplicate is dropped. Prevents FC telemetry
+# from arriving twice to the GCS. Err on the high side — undersizing
+# silently misses duplicates, oversizing is essentially free.
+dedup_ms = 2000
 
 # LTE downlink.
 [[endpoints]]
@@ -46,7 +46,7 @@ bind = "0.0.0.0:5760"
 
 # Equivalent CLI invocation:
 #
-# rmr --dedup-ms 250 \
+# rmr --dedup-ms 2000 \
 #     udps:0.0.0.0:14550#lte?group=links \
 #     serial:/dev/ttyUSB0:57600#rfd900?group=links \
 #     tcps:0.0.0.0:5760#gcs
