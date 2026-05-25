@@ -6,10 +6,7 @@ use super::endpoint_kinds::{
     UdpServerEndpoint,
 };
 use super::error::SpecError;
-use super::query::{
-    SerialApplier, TcpClientApplier, TcpServerApplier, UdpClientApplier, UdpServerApplier,
-    apply_pairs,
-};
+use super::query::{SerialApplier, UdpClientApplier, UdpServerApplier, apply_pairs};
 
 /// Split the post-scheme remainder into `(body, name, query)`. `#name`
 /// precedes `?query` — this ordering is locked because every example in
@@ -80,11 +77,7 @@ pub fn parse_kind(
                 bind_addr,
                 ..TcpServerEndpoint::default()
             };
-            apply_pairs(
-                &mut TcpServerApplier(&mut endpoint),
-                Scheme::TcpServer,
-                pairs,
-            )?;
+            apply_pairs(&mut endpoint.identity, Scheme::TcpServer, pairs)?;
             Ok(EndpointKind::TcpServer(endpoint))
         }),
         Scheme::TcpClient => parse_host_port(body, Scheme::TcpClient).and_then(|(host, port)| {
@@ -93,11 +86,7 @@ pub fn parse_kind(
                 port,
                 ..TcpClientEndpoint::default()
             };
-            apply_pairs(
-                &mut TcpClientApplier(&mut endpoint),
-                Scheme::TcpClient,
-                pairs,
-            )?;
+            apply_pairs(&mut endpoint.identity, Scheme::TcpClient, pairs)?;
             Ok(EndpointKind::TcpClient(endpoint))
         }),
     }

@@ -7,8 +7,7 @@ use super::super::udp::server::{MAX_IDLE_SECS, MIN_IDLE_SECS};
 use super::Scheme;
 use super::bounds::check_u64_range;
 use super::endpoint_kinds::{
-    SerialEndpoint, SerialFlowControl, TcpClientEndpoint, TcpServerEndpoint, UdpClientEndpoint,
-    UdpServerEndpoint,
+    SerialEndpoint, SerialFlowControl, UdpClientEndpoint, UdpServerEndpoint,
 };
 use super::error::SpecError;
 
@@ -123,17 +122,9 @@ impl QueryApplier for UdpClientApplier<'_> {
     }
 }
 
-pub struct TcpServerApplier<'a>(pub &'a mut TcpServerEndpoint);
-impl QueryApplier for TcpServerApplier<'_> {
+impl QueryApplier for IdentityFlags {
     fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
-        self.0.identity.apply(key, value)
-    }
-}
-
-pub struct TcpClientApplier<'a>(pub &'a mut TcpClientEndpoint);
-impl QueryApplier for TcpClientApplier<'_> {
-    fn set(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
-        self.0.identity.apply(key, value)
+        self.apply(key, value)
     }
 }
 
