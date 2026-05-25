@@ -19,11 +19,10 @@ mod common;
 
 use std::time::Duration;
 
+use common::mavlink::{Heartbeat, Ping, TestFrame};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use common::mavlink::{Heartbeat, Ping, TestFrame};
 
 #[tokio::test]
 async fn group_members_share_learn_set_so_sibling_is_loop_blocked() {

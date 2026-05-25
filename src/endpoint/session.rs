@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
@@ -16,7 +17,6 @@ use super::seq_tracker::SeqTracker;
 use super::stats::{EndpointStats, FramerCounters};
 use super::tx_queue::TxQueue;
 use crate::mavlink::framer::Framer;
-use tokio::time::Instant;
 
 /// Why a per-connection read/write session terminated. Shared by every
 /// endpoint that runs a [`TxQueue`]-fed session loop over an
@@ -172,16 +172,18 @@ async fn write_outbound_frame<W: AsyncWrite + Unpin>(
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use std::task::{Context, Poll};
+
+    use bytes::BufMut;
+
     use super::*;
     use crate::endpoint::EndpointIdAllocator;
     use crate::endpoint::filters::{Filters, MsgIdRange};
     use crate::mavlink::crc::Crc16;
     use crate::mavlink::frame::STX_V1;
-    use bytes::BufMut;
-    use std::pin::Pin;
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-    use std::task::{Context, Poll};
 
     fn no_filter() -> Filters {
         Filters::default()

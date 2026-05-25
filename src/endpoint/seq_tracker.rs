@@ -98,9 +98,11 @@ impl SeqTracker {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rstest::rstest;
     use std::time::Duration;
+
+    use rstest::rstest;
+
+    use super::*;
 
     fn at(millis: u64) -> Instant {
         Instant::now() + Duration::from_millis(millis)

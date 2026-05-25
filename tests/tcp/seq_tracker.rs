@@ -7,10 +7,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use rmr::endpoint::EndpointIdAllocator;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
-
-use rmr::endpoint::EndpointIdAllocator;
 
 use crate::common;
 use crate::common::tcp::{connect_with_retry, spawn_tcps};

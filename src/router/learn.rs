@@ -93,8 +93,9 @@ impl LearnTable {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     fn now_plus(offset: Duration) -> Instant {
         Instant::now() + offset

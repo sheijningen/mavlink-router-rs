@@ -392,13 +392,15 @@ async fn check_latch_idle(dest: &mut Destination, idle: Duration) {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4};
+
+    use tokio::sync::mpsc;
+
     use super::*;
     use crate::endpoint::events::RouterFrame;
     use crate::endpoint::filters::{Filters, MsgIdRange};
     use crate::mavlink::crc::Crc16;
     use crate::mavlink::frame::STX_V1;
-    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4};
-    use tokio::sync::mpsc;
 
     fn make_dest(ips: &[IpAddr], port: u16) -> Destination {
         Destination {

@@ -8,11 +8,10 @@ pub mod router;
 pub mod shutdown;
 pub mod stats;
 
-use error::Error;
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use error::Error;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;

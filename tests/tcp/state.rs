@@ -12,11 +12,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rmr::endpoint::EndpointIdAllocator;
+use rmr::endpoint::spec::TcpClientEndpoint;
+use rmr::endpoint::stats::EndpointState;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use rmr::endpoint::{EndpointIdAllocator, spec::TcpClientEndpoint, stats::EndpointState};
 
 use crate::common::tcp::{spawn_tcpc_with, spawn_tcps};
 use crate::common::{shutdown_all, wait_for_state};

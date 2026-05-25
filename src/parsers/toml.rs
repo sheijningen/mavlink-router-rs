@@ -313,10 +313,11 @@ fn scheme_from_toml_type(raw: &str, index: usize, name: Option<&str>) -> Result<
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
     use crate::endpoint::filters::Filters;
     use crate::endpoint::spec::EndpointKind;
-    use rstest::rstest;
 
     #[test]
     fn empty_yields_no_endpoints() {

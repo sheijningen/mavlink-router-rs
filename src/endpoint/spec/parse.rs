@@ -248,11 +248,12 @@ pub fn sanitize_for_name(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::{Scheme, sanitize_for_name, validate_name};
     use crate::endpoint::spec::{
         EndpointKind, EndpointSpec, SerialEndpoint, SpecError, TcpClientEndpoint, UdpServerEndpoint,
     };
-    use rstest::rstest;
 
     fn parse_ok(input: &str) -> EndpointSpec {
         EndpointSpec::parse(input)

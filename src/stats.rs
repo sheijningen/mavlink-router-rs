@@ -421,10 +421,12 @@ async fn drain_queue<W>(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, duplex};
+
     use super::*;
     use crate::endpoint::EndpointIdAllocator;
-    use std::time::Duration;
-    use tokio::io::{AsyncReadExt, duplex};
 
     fn make_register(id: EndpointId, name: &str, stats: Arc<EndpointStats>) -> StatsEvent {
         StatsEvent::Register {

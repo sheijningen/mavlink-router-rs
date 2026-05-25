@@ -12,10 +12,11 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use rmr::endpoint::EndpointIdAllocator;
+use rmr::endpoint::spec::UdpClientEndpoint;
+use rmr::endpoint::stats::EndpointState;
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
-
-use rmr::endpoint::{EndpointIdAllocator, spec::UdpClientEndpoint, stats::EndpointState};
 
 use crate::common::udp::{spawn_udpc, spawn_udps};
 use crate::common::{shutdown_all, wait_for_state};

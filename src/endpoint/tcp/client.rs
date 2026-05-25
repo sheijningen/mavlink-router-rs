@@ -5,7 +5,6 @@ use tokio::net::{TcpStream, lookup_host};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use super::super::EndpointId;
 use super::super::backoff::Backoff;
 use super::super::defaults::{DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS};
 use super::super::identity_flags::IdentityFlags;
@@ -13,8 +12,8 @@ use super::super::session::{SessionCtx, SessionOutcome, run_session};
 use super::super::socket::configure_tcp_stream;
 use super::super::spec::TcpClientEndpoint;
 use super::super::stats::EndpointState;
-use super::super::wait_or_cancel;
 use super::super::wiring::ClientWiring;
+use super::super::{EndpointId, wait_or_cancel};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -215,8 +214,9 @@ async fn resolve_to_socket_addrs(host: &str, port: u16) -> Vec<SocketAddr> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use super::*;
 
     #[test]
     fn spec_defaults_when_endpoint_unset() {

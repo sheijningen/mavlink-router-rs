@@ -13,18 +13,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rmr::endpoint::EndpointIdAllocator;
+use rmr::endpoint::spec::TcpServerEndpoint;
+use rmr::endpoint::stats::EndpointState;
+use rmr::endpoint::tcp::server::TcpServerSpec;
 use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::endpoint::{
-    EndpointIdAllocator, spec::TcpServerEndpoint, stats::EndpointState, tcp::server::TcpServerSpec,
-};
-
 use crate::common;
-use crate::common::next_peer_added;
-use crate::common::shutdown_all;
 use crate::common::tcp::{connect_with_retry, spawn_tcps_with_spec};
+use crate::common::{next_peer_added, shutdown_all};
 
 #[tokio::test]
 async fn tcps_attaches_when_pre_held_port_is_freed() {

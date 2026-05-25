@@ -14,11 +14,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rmr::endpoint::EndpointIdAllocator;
+use rmr::endpoint::spec::UdpClientEndpoint;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use rmr::endpoint::{EndpointIdAllocator, spec::UdpClientEndpoint};
 
 use crate::common;
 use crate::common::shutdown_all;

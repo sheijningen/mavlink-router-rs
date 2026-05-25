@@ -6,23 +6,24 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rmr::endpoint::EndpointIdAllocator;
+use rmr::endpoint::events::{EndpointEvent, RouterFrame};
+use rmr::endpoint::spec::{TcpClientEndpoint, TcpServerEndpoint};
+use rmr::endpoint::stats::{EndpointState, EndpointStats};
+use rmr::endpoint::tcp::client::{
+    TcpClientSpec, {self as tcp_client},
+};
+use rmr::endpoint::tcp::server::{
+    TcpServerSpec, {self as tcp_server},
+};
+use rmr::endpoint::tx_queue::TxQueue;
+use rmr::endpoint::wiring::{ClientWiring, ServerWiring};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use rmr::endpoint::{
-    EndpointIdAllocator,
-    events::{EndpointEvent, RouterFrame},
-    spec::{TcpClientEndpoint, TcpServerEndpoint},
-    stats::{EndpointState, EndpointStats},
-    tcp::client::{self as tcp_client, TcpClientSpec},
-    tcp::server::{self as tcp_server, TcpServerSpec},
-    tx_queue::TxQueue,
-    wiring::{ClientWiring, ServerWiring},
-};
 
 use crate::common::wait_for_state;
 

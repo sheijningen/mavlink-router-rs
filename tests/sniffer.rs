@@ -11,11 +11,10 @@ mod common;
 
 use std::time::Duration;
 
+use common::mavlink::{Ping, TestFrame};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use common::mavlink::{Ping, TestFrame};
 
 #[tokio::test]
 async fn sniffer_admits_targeted_frame_that_non_sniffer_rejects() {

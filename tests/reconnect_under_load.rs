@@ -9,13 +9,12 @@ mod common;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use common::mavlink::{Heartbeat, TestFrame};
+use common::tcp::read_until_quiet;
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use common::mavlink::{Heartbeat, TestFrame};
-use common::tcp::read_until_quiet;
 
 /// Bind a TCP listener on `addr` with `SO_REUSEADDR` so the test can drop
 /// it and rebind the same port without waiting out the kernel's release

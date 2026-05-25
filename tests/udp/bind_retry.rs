@@ -13,15 +13,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rmr::endpoint::events::EndpointEvent;
+use rmr::endpoint::spec::UdpServerEndpoint;
+use rmr::endpoint::stats::EndpointState;
+use rmr::endpoint::udp::server::UdpServerSpec;
+use rmr::endpoint::{EndpointIdAllocator, peer_endpoint_name};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use rmr::endpoint::events::EndpointEvent;
-use rmr::endpoint::stats::EndpointState;
-use rmr::endpoint::{
-    EndpointIdAllocator, peer_endpoint_name, spec::UdpServerEndpoint, udp::server::UdpServerSpec,
-};
 
 use crate::common;
 use crate::common::shutdown_all;

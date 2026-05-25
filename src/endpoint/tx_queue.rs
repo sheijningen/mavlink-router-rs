@@ -77,8 +77,9 @@ impl TxQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     fn make_queue(capacity: usize) -> (TxQueue, Arc<EndpointStats>) {
         let stats = Arc::new(EndpointStats::default());

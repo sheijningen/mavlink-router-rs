@@ -9,11 +9,10 @@ mod common;
 
 use std::time::Duration;
 
+use common::mavlink::{Ping, TestFrame};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use common::mavlink::{Ping, TestFrame};
 
 #[tokio::test]
 async fn out_filter_blocks_destination_msgid_at_wire() {

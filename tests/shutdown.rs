@@ -20,21 +20,28 @@ mod common;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-
 use rmr::endpoint::events::{EndpointEvent, Routable, RouterFrame};
 use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::spec::{TcpServerEndpoint, UdpClientEndpoint};
 use rmr::endpoint::stats::{EndpointState, EndpointStats};
-use rmr::endpoint::tcp::server::{self as tcp_server, TcpServerSpec};
+use rmr::endpoint::tcp::server::{
+    TcpServerSpec, {self as tcp_server},
+};
 use rmr::endpoint::tx_queue::TxQueue;
-use rmr::endpoint::udp::client::{self as udp_client, UdpClientSpec};
+use rmr::endpoint::udp::client::{
+    UdpClientSpec, {self as udp_client},
+};
 use rmr::endpoint::wiring::{ClientWiring, ServerWiring};
 use rmr::endpoint::{EndpointId, EndpointIdAllocator};
-use rmr::router::{self, RouterWiring};
-use rmr::stats::{self as stats_task, StatsEvent, StatsRunConfig};
+use rmr::router::{
+    RouterWiring, {self},
+};
+use rmr::stats::{
+    StatsEvent, StatsRunConfig, {self as stats_task},
+};
+use tokio::net::{TcpListener, UdpSocket};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::common::{shutdown_all, wait_for_state};
 

@@ -7,13 +7,12 @@ use tokio_serial::{SerialPortBuilderExt, SerialStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use super::EndpointId;
 use super::identity_flags::IdentityFlags;
 use super::session::{SessionCtx, SessionOutcome, run_session};
 use super::spec::{SerialEndpoint, SerialFlowControl};
 use super::stats::EndpointState;
-use super::wait_or_cancel;
 use super::wiring::ClientWiring;
+use super::{EndpointId, wait_or_cancel};
 
 /// Fixed hot-replug poll interval. Below ~100 ms the open-retry loop spins
 /// on a missing device for nothing (USB re-enumeration is on the order of
@@ -178,9 +177,11 @@ fn try_open(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
     use tokio::time::timeout;
+
+    use super::*;
 
     #[tokio::test]
     async fn open_until_cancel_yields_on_cancel_during_sleep() {

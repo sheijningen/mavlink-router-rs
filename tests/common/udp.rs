@@ -6,22 +6,23 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rmr::endpoint::EndpointIdAllocator;
+use rmr::endpoint::events::{EndpointEvent, RouterFrame};
+use rmr::endpoint::spec::{UdpClientEndpoint, UdpServerEndpoint};
+use rmr::endpoint::stats::{EndpointState, EndpointStats};
+use rmr::endpoint::tx_queue::TxQueue;
+use rmr::endpoint::udp::client::{
+    UdpClientSpec, {self as udp_client},
+};
+use rmr::endpoint::udp::server::{
+    UdpServerSpec, {self as udp_server},
+};
+use rmr::endpoint::wiring::{ClientWiring, ServerWiring};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use rmr::endpoint::{
-    EndpointIdAllocator,
-    events::{EndpointEvent, RouterFrame},
-    spec::{UdpClientEndpoint, UdpServerEndpoint},
-    stats::{EndpointState, EndpointStats},
-    tx_queue::TxQueue,
-    udp::client::{self as udp_client, UdpClientSpec},
-    udp::server::{self as udp_server, UdpServerSpec},
-    wiring::{ClientWiring, ServerWiring},
-};
 
 use crate::common::wait_for_state;
 

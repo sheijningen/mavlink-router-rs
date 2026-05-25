@@ -4,13 +4,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rmr::endpoint::events::{EndpointEvent, PeerRemovalReason};
+use rmr::endpoint::{EndpointIdAllocator, peer_endpoint_name};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use rmr::endpoint::events::{EndpointEvent, PeerRemovalReason};
-use rmr::endpoint::{EndpointIdAllocator, peer_endpoint_name};
 
 use crate::common;
 use crate::common::tcp::{connect_with_retry, spawn_tcps};

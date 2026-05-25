@@ -11,14 +11,12 @@ use tokio::time::{Instant, MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use super::super::EndpointId;
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES,
 };
 use super::super::events::{EndpointEvent, PeerRemovalReason, Routable};
 use super::super::identity_flags::{IdentityFlags, SEQ_TRACKER_CAPACITY};
-use super::super::peer_endpoint_name;
 use super::super::seq_tracker::SeqTracker;
 use super::super::session::SessionCtx;
 use super::super::socket::bind_udp_dual_stack;
@@ -26,6 +24,7 @@ use super::super::spec::UdpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
 use super::super::wiring::ServerWiring;
+use super::super::{EndpointId, peer_endpoint_name};
 use super::MAX_DATAGRAM_BYTES;
 use crate::mavlink::framer::Framer;
 
@@ -386,10 +385,11 @@ async fn run_peer_writer(
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
     use super::*;
     use crate::endpoint::EndpointIdAllocator;
     use crate::endpoint::events::RouterFrame;
-    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
     fn spec_defaults_when_endpoint_unset() {

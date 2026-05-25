@@ -3,15 +3,14 @@
 
 use std::sync::Arc;
 
-use tokio::net::UdpSocket;
-use tokio_util::sync::CancellationToken;
-
 use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::filters::{Filters, MsgIdRange, U8Range};
 use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::spec::UdpServerEndpoint;
 use rmr::endpoint::stats::EndpointState;
 use rmr::endpoint::udp::server::UdpServerSpec;
+use tokio::net::UdpSocket;
+use tokio_util::sync::CancellationToken;
 
 use crate::common;
 use crate::common::udp::{pick_free_udp_addr, spawn_udps_with_spec};

@@ -2,9 +2,8 @@
 
 use std::fmt;
 
-use crate::mavlink::frame::NodeId;
-
 use super::spec::SpecError;
+use crate::mavlink::frame::NodeId;
 
 /// Inclusive decimal range used inside `allow_msgid_*` and `block_msgid_*`
 /// filter lists. Single values parse to `lo == hi`.

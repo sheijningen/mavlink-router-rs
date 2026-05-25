@@ -16,12 +16,11 @@ mod common;
 
 use std::time::Duration;
 
+use common::mavlink::{Heartbeat, Ping, TestFrame};
+use common::tcp::read_tcp_at_least;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use common::mavlink::{Heartbeat, Ping, TestFrame};
-use common::tcp::read_tcp_at_least;
 
 #[tokio::test]
 async fn fanout_routes_broadcast_to_other_transports_but_not_source() {

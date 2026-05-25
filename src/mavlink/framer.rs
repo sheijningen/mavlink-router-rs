@@ -6,7 +6,9 @@ use super::frame::{
     CRC_LEN, NodeId, ParsedHeader, Stx, V1_HEADER_LEN, V2_HEADER_LEN, V2_IFLAG_SIGNED,
     V2_SIGNATURE_LEN, Version,
 };
-use super::msgid_table::{self, MsgEntry};
+use super::msgid_table::{
+    MsgEntry, {self},
+};
 use crate::endpoint::defaults::READ_BUF_BYTES;
 
 /// Per-endpoint MAVLink frame state machine. Callers write raw transport
@@ -260,10 +262,11 @@ fn extract_targets(
 
 #[cfg(test)]
 mod tests {
+    use bytes::BufMut;
+
     use super::*;
     use crate::mavlink::frame::{STX_V1, STX_V2};
     use crate::mavlink::msgid_table;
-    use bytes::BufMut;
 
     fn build_v1(msgid: u32, payload: &[u8], crc_extra: u8) -> Vec<u8> {
         let mut frame = Vec::with_capacity(8 + payload.len());
@@ -751,10 +754,11 @@ mod tests {
 
 #[cfg(test)]
 mod property_tests {
-    use super::*;
-    use crate::mavlink::frame::{STX_V1, STX_V2};
     use bytes::BufMut;
     use proptest::prelude::*;
+
+    use super::*;
+    use crate::mavlink::frame::{STX_V1, STX_V2};
 
     proptest! {
         // Random bytes in: framer must not panic, must not loop forever,

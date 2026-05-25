@@ -64,9 +64,10 @@ pub fn configure_tcp_stream(stream: &TcpStream) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::time::Duration;
+
+    use super::*;
 
     #[tokio::test]
     async fn bind_ipv4_loopback_any_port() {

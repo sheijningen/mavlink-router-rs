@@ -5,12 +5,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rmr::endpoint::EndpointIdAllocator;
+use rmr::endpoint::spec::TcpClientEndpoint;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-
-use rmr::endpoint::{EndpointIdAllocator, spec::TcpClientEndpoint};
 
 use crate::common;
 use crate::common::shutdown_all;

@@ -8,15 +8,14 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use tokio::io::AsyncWriteExt;
-use tokio_util::sync::CancellationToken;
-
 use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::filters::{Filters, MsgIdRange};
 use rmr::endpoint::identity_flags::IdentityFlags;
 use rmr::endpoint::spec::TcpServerEndpoint;
 use rmr::endpoint::stats::EndpointState;
 use rmr::endpoint::tcp::server::TcpServerSpec;
+use tokio::io::AsyncWriteExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::common;
 use crate::common::tcp::{connect_with_retry, pick_free_tcp_addr, spawn_tcps_with_spec};

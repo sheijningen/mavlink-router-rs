@@ -10,8 +10,6 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use super::EndpointId;
-use super::EndpointIdAllocator;
 use super::defaults::DEFAULT_TX_QUEUE_FRAMES;
 use super::events::{EndpointEvent, Routable, RouterFrame};
 use super::identity_flags::IdentityFlags;
@@ -24,6 +22,7 @@ use super::tx_queue::TxQueue;
 use super::udp::client::UdpClientSpec;
 use super::udp::server::UdpServerSpec;
 use super::wiring::{ClientWiring, ServerWiring};
+use super::{EndpointId, EndpointIdAllocator};
 use crate::error::Error;
 
 /// Spawn one task per parsed endpoint.

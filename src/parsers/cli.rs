@@ -223,8 +223,9 @@ pub fn parse_specs(raw: &[String]) -> Result<Vec<EndpointSpec>, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use clap::CommandFactory;
+
+    use super::*;
 
     #[test]
     fn parse_minimal() {

@@ -6,20 +6,19 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use super::super::EndpointId;
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES,
 };
 use super::super::events::{EndpointEvent, PeerRemovalReason, Routable};
 use super::super::identity_flags::IdentityFlags;
-use super::super::peer_endpoint_name;
 use super::super::session::{SessionCtx, SessionOutcome, run_session};
 use super::super::socket::{bind_tcp_dual_stack, configure_tcp_stream};
 use super::super::spec::TcpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats};
 use super::super::tx_queue::TxQueue;
 use super::super::wiring::{ClientWiring, ServerWiring};
+use super::super::{EndpointId, peer_endpoint_name};
 
 /// Inputs that distinguish one `tcps:` listener from another: where to bind
 /// and what to call it. Filter / sniffer / group bundle inherited by every

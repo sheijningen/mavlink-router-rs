@@ -5,8 +5,7 @@
 //! `HashSet<u64>` for O(1) lookup + parallel FIFO
 //! ring for TTL / capacity eviction. Disabled when `dedup_ms == 0`.
 
-use std::collections::HashSet;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::time::Duration;
 
 use bytes::Bytes;

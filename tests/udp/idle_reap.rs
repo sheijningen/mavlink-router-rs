@@ -7,13 +7,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::net::UdpSocket;
-use tokio::time::timeout;
-use tokio_util::sync::CancellationToken;
-
 use rmr::endpoint::events::{EndpointEvent, PeerRemovalReason};
 use rmr::endpoint::spec::UdpServerEndpoint;
 use rmr::endpoint::{EndpointIdAllocator, peer_endpoint_name};
+use tokio::net::UdpSocket;
+use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 use crate::common;
 use crate::common::udp::spawn_udps_with_endpoint;

@@ -8,15 +8,14 @@ mod endpoint_kinds;
 mod error;
 mod parse;
 mod query;
-pub(crate) use parse::name_matches_regex;
-use parse::{parse_kind, split_body_name_query, validate_name};
-use query::parse_query_pairs;
-
 pub use endpoint_kinds::{
     EndpointKind, SerialEndpoint, SerialFlowControl, TcpClientEndpoint, TcpServerEndpoint,
     UdpClientEndpoint, UdpServerEndpoint,
 };
 pub use error::SpecError;
+pub(crate) use parse::name_matches_regex;
+use parse::{parse_kind, split_body_name_query, validate_name};
+use query::parse_query_pairs;
 
 /// Closed set of endpoint schemes the parser recognises. Carrying the scheme
 /// as an enum past the string-tokenising boundary (CLI argv, TOML `type`

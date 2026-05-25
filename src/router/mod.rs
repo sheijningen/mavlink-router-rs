@@ -14,6 +14,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
+use decide::{Decision, decide as decide_for_dest};
+use dedup::DedupWindow;
+use group::GroupRegistry;
+use learn::LearnTable;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -26,11 +30,6 @@ use crate::endpoint::stats::{EndpointState, EndpointStats};
 use crate::endpoint::tx_queue::TxQueue;
 use crate::mavlink::frame::ParsedHeader;
 use crate::stats::StatsEvent;
-
-use decide::{Decision, decide as decide_for_dest};
-use dedup::DedupWindow;
-use group::GroupRegistry;
-use learn::LearnTable;
 
 /// One registered endpoint. Leaves (`tcpc:` / `udpc:` / `serial:`),
 /// accepted `tcps:` children, and learned `udps:` peers all set `routable
@@ -390,12 +389,13 @@ mod tests {
     //! cancel-driven drain lives in the integration tests under
     //! `tests/spawner_e2e.rs`, `tests/shutdown.rs`, and `tests/shutdown_soak.rs`.
 
+    use bytes::Bytes;
+
     use super::*;
     use crate::endpoint::EndpointIdAllocator;
     use crate::endpoint::events::{PeerRemovalReason, Routable};
     use crate::endpoint::filters::{Filters, MsgIdRange};
     use crate::mavlink::frame::{NodeId, ParsedHeader, Version};
-    use bytes::Bytes;
 
     fn header(sysid: u8, compid: u8, target_system: Option<u8>) -> ParsedHeader {
         ParsedHeader {

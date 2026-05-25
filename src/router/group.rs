@@ -64,10 +64,12 @@ impl GroupRegistry {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
     use super::*;
     use crate::mavlink::frame::NodeId;
-    use std::time::Duration;
-    use tokio::time::Instant;
 
     fn now_at(ms: u64) -> Instant {
         Instant::now() + Duration::from_millis(ms)

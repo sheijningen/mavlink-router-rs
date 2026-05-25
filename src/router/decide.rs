@@ -1,10 +1,9 @@
 //! Per-destination routing decision: sniffer → loop-prevention → out-filter
 //! → target-match.
 
+use super::learn::LearnTable;
 use crate::endpoint::identity_flags::IdentityFlags;
 use crate::mavlink::frame::{NodeId, ParsedHeader};
-
-use super::learn::LearnTable;
 
 /// Outcome of the per-destination decision. `Admit` pushes the frame to the
 /// destination's TxQueue; `OutFilterBlocked` is the one rejection that the
@@ -61,11 +60,13 @@ fn target_match(header: &ParsedHeader, learn: &LearnTable) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
     use super::*;
     use crate::endpoint::filters::{Filters, MsgIdRange, U8Range};
     use crate::mavlink::frame::Version;
-    use std::time::Duration;
-    use tokio::time::Instant;
 
     fn header_at(
         sysid: u8,

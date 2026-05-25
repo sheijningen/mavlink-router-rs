@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 #[cfg(unix)]
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::signal::unix::SignalKind;
+#[cfg(unix)]
+use tokio::signal::unix::signal;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -85,9 +87,10 @@ pub async fn shutdown<T: Send + 'static>(mut tasks: JoinSet<T>, wall_clock: Dura
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
 
     #[tokio::test]
     async fn empty_joinset_returns_immediately() {

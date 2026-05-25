@@ -160,13 +160,14 @@ async fn shutdown_drains_with_inflight_udp_traffic() {
 #[cfg(unix)]
 #[test]
 fn binary_shutdown_emits_final_synthetic_stats_lines() {
-    use assert_cmd::Command;
     use std::collections::HashMap;
     use std::io::Read;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Command as StdCommand, Stdio};
     use std::thread;
     use std::time::Duration;
+
+    use assert_cmd::Command;
 
     let listener_addr = common::udp::pick_free_udp_addr();
     let sender_target = common::udp::pick_free_udp_addr();

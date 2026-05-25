@@ -83,8 +83,9 @@ impl EndpointIdAllocator {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::net::{Ipv4Addr, SocketAddrV4, SocketAddrV6};
+
+    use super::*;
 
     #[test]
     fn peer_name_ipv4() {
