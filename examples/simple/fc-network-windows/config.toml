@@ -2,14 +2,14 @@
 # FC reached over a COM port. Demonstrates that the `serial:` configuration
 # surface is cross-platform.
 #
-#   ┌── Drone ──┐                ┌─────────────── PC ────────────────┐
-#   │           │                │                                   │
-#   │           │                │                 ┌──────┐          │
-#   │           │                │                 │      │◄─────────┼──► GCS
-#   │   FC      │◄────(COM3)─────┼────────────────►│ RMR  │◄─────────┼──► ad-hoc UDP clients
-#   │           │                │                 │      │◄─────────┼──► ad-hoc TCP clients
-#   │           │                │                 └──────┘          │
-#   └───────────┘                └───────────────────────────────────┘
+#   ┌── Drone ──┐                ┌──────── PC ───────┐
+#   │           │                │                   │
+#   │           │                │      ┌──────┐     │
+#   │           │                │      │      │◄────┼──► GCS
+#   │   FC      │◄────(COM3)─────┼─────►│ RMR  │◄────┼──► ad-hoc UDP clients
+#   │           │                │      │      │◄────┼──► ad-hoc TCP clients
+#   │           │                │      └──────┘     │
+#   └───────────┘                └───────────────────┘
 
 # Flight controller on a Windows COM port.
 [[endpoints]]

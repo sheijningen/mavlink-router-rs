@@ -49,6 +49,7 @@ fn all_expected_examples_are_populated() {
         ("simple", "fc-network"),
         ("simple", "fc-network-windows"),
         ("simple", "fc-sniffer"),
+        ("simple", "filter-axes"),
         ("simple", "ipv6-and-hostname"),
         ("advanced", "companion-microservices"),
         ("advanced", "ground-side-local-service"),

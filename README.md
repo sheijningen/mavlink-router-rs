@@ -5,8 +5,12 @@ between serial, UDP, and TCP endpoints with a learned routing table that
 improves targeted delivery over pure broadcast. Bytes in, bytes out —
 RMR owns no MAVLink identity, never emits a message of its own, and
 parses no more of each message than it needs to in order to route it.
-("RMR" is the short-form alias used throughout the docs; the binary
-operators run is also called `rmr`.)
+
+RMR implements **no GCS features**: it does not emit `HEARTBEAT`s,
+never sends `REQUEST_DATA_STREAM` or `SET_MESSAGE_INTERVAL`, and
+originates no traffic of its own. Per-endpoint filters enable highly customizable
+forwarding behavior between endpoints. ("RMR" is the short-form alias
+used throughout the docs; the binary is also called `rmr`.)
 
 ## Install
 
@@ -33,7 +37,7 @@ docker run --rm -i -p 14550:14550/udp --device /dev/ttyAMA0 \
 
 ## Quick start
 
-Forward between a flight controller and a GCS over TCP:
+Expose a flight controller to the network over TCP:
 
 ```sh
 rmr serial:/dev/ttyUSB0:115200#fc tcps:0.0.0.0:5760#gcs
@@ -73,8 +77,13 @@ skips this check). Source endpoints muzzle their own ingress via
 `*_in` filters. A `?sniffer=true` destination skips the three
 per-destination checks and sees all accepted traffic.
 
-See [Routing pipeline](#routing-pipeline) for per-step semantics and
-the stats counter each drop maps to.
+For server schemes, **each connected peer is its own routing
+endpoint**: a `tcps:` listener spawns one per accepted client, a
+`udps:` socket spawns one per learned source address. Each child has
+its own learn-set and stats; filters and `?group=` on the parent
+apply to every child by reference.
+
+See [Routing pipeline](#routing-pipeline) for per-step semantics.
 
 ## CLI
 
@@ -117,6 +126,21 @@ Per-endpoint filters are 12 axes
 comma-separated list of decimal integers and inclusive `lo-hi` ranges —
 e.g. `block_msgid_in=33,100-150,32`. Hex literals and symbolic msgid
 names are intentionally not accepted.
+
+> **Filter direction (`_in` vs `_out`).**
+>
+> - `_in` filters reject frames arriving from the wire *into* the
+>   endpoint. Rejection drops the frame for every destination.
+> - `_out` filters reject frames the router is about to send *out* on
+>   the wire from the endpoint. One rejection only suppresses
+>   delivery through that endpoint.
+>
+> A frame reaches a destination only if it passes the source's `_in`
+> and that destination's `_out`.
+>
+> See [`examples/simple/filter-axes/`](examples/simple/filter-axes/config.toml)
+> for a worked example with all four `{allow,block}_msgid_{in,out}`
+> axes side-by-side.
 
 Globals:
 
@@ -176,45 +200,48 @@ block_msgid_in = "33,100-150"
 allow_src_sys_out = "1,5-10"
 ```
 
-Unknown keys (top-level or per-endpoint) fail at parse time. Per-endpoint
-keys are scheme-validated — a `serial` entry that carries `bind = "..."`
-is rejected with a clear error. Filter values must be strings; the array
-form is not accepted.
+**Config validation and CLI/TOML merge rules:**
 
-When the same `#name` appears in both TOML and on the CLI, the CLI
-entry wholesale replaces the TOML entry and the override is logged at
-WARN.
+- **Validation is strict.** Any unknown key — top-level or
+  per-endpoint — is fatal at startup.
+- **Endpoint names must be unique within each source.** A duplicate
+  `#name` inside the CLI, or inside the TOML, is fatal.
+- **CLI overrides TOML, per key.** For globals, any CLI flag that is
+  set overrides the matching TOML key.
+- **CLI overrides TOML, per endpoint.** When the same endpoint `#name` appears
+  in both TOML and on the CLI, the CLI entry wholesale replaces the
+  TOML entry.
 
 ## Routing pipeline
 
 Every frame traverses two checkpoints: an ingress pipeline at the
 source endpoint, then a per-destination check that runs once for each
-other endpoint. Each labelled drop maps to a stats counter.
+other endpoint.
 
 **Ingress** (source endpoint):
 
-1. Validate CRC against the msgid's `crc_extra` (known msgids only;
-   unknown msgids forward without CRC validation). Mismatch →
-   `crc_errors++`.
-2. Update `rx_lost_est` from the MAVLink seq-number gap.
-3. Apply `allow_*_in` / `block_*_in` filters across
-   `{msgid, src_sys, src_comp}`. Reject → `in_filter_drops++`.
-4. Hand to the router. If `--dedup-ms > 0` and the xxh3-64 hash is
-   already in the global dedup window: drop, `dedup_drops++`.
-5. Learn `(src_sys, src_comp)` into this endpoint's learn-set.
+1. Validate CRC against the msgid's `crc_extra`. A known msgid with a
+   bad CRC is **dropped**; unknown msgids forward without CRC
+   validation.
+2. Apply `allow_*_in` / `block_*_in` filters across
+   `{msgid, src_sys, src_comp}`. A rejected frame is **dropped** and
+   never reaches the router.
+3. If `--dedup-ms > 0` and a recent identical frame is still in the
+   global dedup window, the duplicate is **dropped**.
+4. Learn `(src_sys, src_comp)` into this endpoint's learn-set. The
+   frame **proceeds** to the per-destination check.
 
 **Per-destination D** (runs for every other endpoint):
 
-1. If D is `?sniffer=true`: forward (skip remaining checks).
-2. If D's learn-set already contains `(src_sys, src_comp)`: drop
-   (loop-prevention; silent — no counter).
-3. Apply `allow_*_out` / `block_*_out` filters. Reject →
-   `out_filter_drops++`.
-4. Accept if the frame is broadcast (`target_sys == 0`, or the msgid
-   has no target field), or `(target_sys, target_comp)` is in D's
-   learn-set, or `target_comp == 0` and `target_sys` is in D's set.
-   Otherwise drop (target mismatch; silent — no counter).
-5. Enqueue on D's TxQueue.
+1. If D is `?sniffer=true`: **forward** (skip remaining checks).
+2. If D's learn-set already contains `(src_sys, src_comp)`: **drop**
+   for D (loop-prevention).
+3. Apply `allow_*_out` / `block_*_out` filters. A rejected frame is
+   **dropped** for D; other destinations are unaffected.
+4. **Drop** for D if the message is targeted and its
+   `(target_sys, target_comp)` is not in D's learn-set. Otherwise
+   **forward** to D (broadcast frames, and targeted frames whose
+   addressee D has learned, both fall through here).
 
 Block lists win on overlap: a value listed in both `allow_*` and
 `block_*` is blocked. An empty `allow_*` means "no allow restriction"
@@ -232,7 +259,11 @@ you expect, the counter that did (or didn't) move points at the stage
 that rejected it. The "Non-zero indicates" column below is meant to be
 read in that mode.
 
-Routable endpoint:
+`tcps:` and `udps:` listeners emit only `ts`, `endpoint`, and `state`
+— their accepted clients and learned peers each emit the per-connection
+shape below.
+
+Per-connection endpoint:
 
 ```json
 {"ts":"2026-05-15T19:00:00Z","endpoint":"vehicle","state":"connected",
@@ -240,11 +271,6 @@ Routable endpoint:
  "dropped_tx":0,"crc_errors":2,"resync_bytes":7,"rx_lost_est":3,
  "in_filter_drops":0,"out_filter_drops":1,"dedup_drops":15,"learn_entries":4}
 ```
-
-`tcps:` and `udps:` **parent listeners** emit only `ts`, `endpoint`,
-and `state` — no frames traverse them directly (every accepted client
-or learned peer is its own routing endpoint). Consumers distinguish
-the two shapes by the presence of counter fields.
 
 All counters are cumulative since process start; consumers compute
 deltas.
@@ -254,18 +280,18 @@ deltas.
 | `ts`               | RFC 3339 UTC timestamp.                                                                        | —                                                            |
 | `endpoint`         | Endpoint name. Sub-endpoints suffixed `/ip-port` (unstable across reconnects).                 | —                                                            |
 | `state`            | `connected` / `reconnecting` / `idle` / `down`.                                                | Transport state.                                             |
-| `rx_frames`        | Frames framed and accepted on this endpoint.                                                   | Inbound traffic is flowing.                                  |
-| `tx_frames`        | Frames written out on this endpoint.                                                           | The router is forwarding to it.                              |
-| `rx_bytes`         | Sum of framed lengths of every accepted `rx_frames`.                                           | Pair with `rx_frames` for bytes-per-frame.                   |
-| `tx_bytes`         | Bytes written out.                                                                             | Pair with `tx_frames` to spot writes blocked at the syscall. |
+| `rx_frames`        | Frames accepted on this endpoint.                                                            | Inbound traffic is flowing.                                  |
+| `tx_frames`        | Frames written out on this endpoint.                                                         | The router is forwarding to it.                              |
+| `rx_bytes`         | Bytes accepted on this endpoint.                                                   | Pair with `rx_frames` for bytes-per-frame.                 |
+| `tx_bytes`         | Bytes written out on this endpoint.                                                                             | Pair with `tx_frames` to spot writes blocked at the syscall. |
 | `dropped_tx`       | TX-queue evictions: router-side overflow + writer-side drain-on-disconnect.                    | Slow consumer or recent link flap.                           |
-| `crc_errors`       | Known-msgid frames whose CRC didn't match `crc_extra`.                                         | Wire-level corruption (cable, RF, baud mismatch).            |
-| `resync_bytes`     | Bytes the framer skipped scanning for the next STX.                                            | Mid-frame corruption or non-MAVLink prefix bytes.            |
-| `rx_lost_est`      | Estimated lost frames from seq-number gaps under the sanity threshold (64).                    | Upstream packet loss (radio, UDP buffer, UART overrun).      |
+| `crc_errors`       | Known-msgid frames whose CRC didn't match `crc_extra`.                                       | Wire-level corruption (cable, RF, baud mismatch).            |
+| `resync_bytes`     | Bytes skipped while resynchronizing to the next message boundary.                              | Mid-message corruption or non-MAVLink prefix bytes.          |
+| `rx_lost_est`      | Estimated lost frames from seq-number gaps.                                            | Upstream packet loss (radio, UDP buffer, UART overrun).      |
 | `in_filter_drops`  | Frames refused by `allow_*_in` / `block_*_in`. Also `udpc:` packets dropped for wrong source IP. | Configured ingress filter rejecting traffic, or stale peer.  |
-| `out_filter_drops` | Frames refused by `allow_*_out` / `block_*_out` while evaluating this endpoint as destination. | Configured egress filter shaping traffic.                    |
-| `dedup_drops`      | Frames whose hash matched a live entry in the global dedup window.                             | `--dedup-ms > 0` is suppressing duplicates.                  |
-| `learn_entries`    | Current `(sysid, compid)` entries in this endpoint's (or group's) learn-set. Cap 32, LRU-evicted. | Observing MAVLink sources.                                   |
+| `out_filter_drops` | Frames refused by `allow_*_out` / `block_*_out` while evaluating this endpoint as destination. | Configured egress filter rejecting traffic.                    |
+| `dedup_drops`      | Frames suppressed as duplicates by `--dedup-ms`.                                             | `--dedup-ms > 0` is suppressing duplicates.                  |
+| `learn_entries`    | Current `(sysid, compid)` entries in this endpoint's (or group's) learn-set.                   | Observing MAVLink sources.                                   |
 
 ## Development
 
@@ -307,10 +333,6 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-features
 ```
-
-Design rationale, locked architectural decisions, and the phased
-roadmap live in [CLAUDE.md](CLAUDE.md). Read it before changing core
-behavior; update it when the design changes.
 
 ## Versioning
 
