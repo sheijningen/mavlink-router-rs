@@ -218,6 +218,12 @@ allow_src_sys_out = "1,5-10"
   in both TOML and on the CLI, the CLI entry wholesale replaces the
   TOML entry.
 
+## Reconnects
+
+Bind or open failure at startup is **not fatal**: the affected endpoint
+enters its retry loop (`state = reconnecting`, WARN per attempt) and
+the router comes up. Same loop handles loss-of-resource at runtime.
+
 ## Routing pipeline
 
 Every frame traverses two checkpoints: an ingress pipeline at the
