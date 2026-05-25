@@ -91,6 +91,12 @@ pub struct EndpointSpec {
     pub name: String,
 }
 
+impl fmt::Display for EndpointSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.name, self.kind)
+    }
+}
+
 impl EndpointSpec {
     /// Parse a CLI-style spec string straight into an [`EndpointSpec`]. This
     /// is the single CLI entry point — `cli::parse_specs` calls it once per

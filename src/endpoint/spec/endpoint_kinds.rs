@@ -15,6 +15,18 @@ pub enum EndpointKind {
     TcpClient(TcpClientEndpoint),
 }
 
+impl fmt::Display for EndpointKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EndpointKind::Serial(endpoint) => fmt::Display::fmt(endpoint, formatter),
+            EndpointKind::UdpServer(endpoint) => fmt::Display::fmt(endpoint, formatter),
+            EndpointKind::UdpClient(endpoint) => fmt::Display::fmt(endpoint, formatter),
+            EndpointKind::TcpServer(endpoint) => fmt::Display::fmt(endpoint, formatter),
+            EndpointKind::TcpClient(endpoint) => fmt::Display::fmt(endpoint, formatter),
+        }
+    }
+}
+
 impl EndpointKind {
     /// The [`Scheme`] this endpoint belongs to, without re-matching every variant.
     pub fn scheme(&self) -> Scheme {
@@ -88,7 +100,7 @@ pub enum SerialFlowControl {
 }
 
 /// `serial:` endpoint config.
-#[derive(Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SerialEndpoint {
     pub path: String,
     pub baud: u32,
@@ -96,7 +108,7 @@ pub struct SerialEndpoint {
     pub identity: IdentityFlags,
 }
 
-impl fmt::Debug for SerialEndpoint {
+impl fmt::Display for SerialEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut entry = formatter.debug_struct("SerialEndpoint");
         entry.field("path", &self.path);
@@ -104,7 +116,7 @@ impl fmt::Debug for SerialEndpoint {
         if self.flow_control != SerialFlowControl::default() {
             entry.field("flow_control", &self.flow_control);
         }
-        debug_identity(&mut entry, &self.identity);
+        fmt_identity(&mut entry, &self.identity);
         entry.finish()
     }
 }
@@ -112,21 +124,21 @@ impl fmt::Debug for SerialEndpoint {
 /// `udps:` endpoint config. `bind_addr` is fully resolved at parse time —
 /// CLAUDE.md "malformed addresses are fatal" rules out hostnames here, so
 /// every `udps:` reaches the spawner with a concrete `SocketAddr`.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpServerEndpoint {
     pub bind_addr: SocketAddr,
     pub idle_secs: Option<u64>,
     pub identity: IdentityFlags,
 }
 
-impl fmt::Debug for UdpServerEndpoint {
+impl fmt::Display for UdpServerEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut entry = formatter.debug_struct("UdpServerEndpoint");
         entry.field("bind_addr", &self.bind_addr);
         if let Some(value) = self.idle_secs {
             entry.field("idle_secs", &value);
         }
-        debug_identity(&mut entry, &self.identity);
+        fmt_identity(&mut entry, &self.identity);
         entry.finish()
     }
 }
@@ -145,7 +157,7 @@ impl Default for UdpServerEndpoint {
 }
 
 /// `udpc:` endpoint config.
-#[derive(Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UdpClientEndpoint {
     pub host: String,
     pub port: u16,
@@ -153,7 +165,7 @@ pub struct UdpClientEndpoint {
     pub identity: IdentityFlags,
 }
 
-impl fmt::Debug for UdpClientEndpoint {
+impl fmt::Display for UdpClientEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut entry = formatter.debug_struct("UdpClientEndpoint");
         entry.field("host", &self.host);
@@ -161,7 +173,7 @@ impl fmt::Debug for UdpClientEndpoint {
         if let Some(value) = self.latch_idle_secs {
             entry.field("latch_idle_secs", &value);
         }
-        debug_identity(&mut entry, &self.identity);
+        fmt_identity(&mut entry, &self.identity);
         entry.finish()
     }
 }
@@ -169,17 +181,17 @@ impl fmt::Debug for UdpClientEndpoint {
 /// `tcps:` endpoint config. `bind_addr` is fully resolved at parse time —
 /// CLAUDE.md "malformed addresses are fatal" rules out hostnames here, so
 /// every `tcps:` reaches the spawner with a concrete `SocketAddr`.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TcpServerEndpoint {
     pub bind_addr: SocketAddr,
     pub identity: IdentityFlags,
 }
 
-impl fmt::Debug for TcpServerEndpoint {
+impl fmt::Display for TcpServerEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut entry = formatter.debug_struct("TcpServerEndpoint");
         entry.field("bind_addr", &self.bind_addr);
-        debug_identity(&mut entry, &self.identity);
+        fmt_identity(&mut entry, &self.identity);
         entry.finish()
     }
 }
@@ -197,24 +209,24 @@ impl Default for TcpServerEndpoint {
 }
 
 /// `tcpc:` endpoint config.
-#[derive(Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TcpClientEndpoint {
     pub host: String,
     pub port: u16,
     pub identity: IdentityFlags,
 }
 
-impl fmt::Debug for TcpClientEndpoint {
+impl fmt::Display for TcpClientEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut entry = formatter.debug_struct("TcpClientEndpoint");
         entry.field("host", &self.host);
         entry.field("port", &self.port);
-        debug_identity(&mut entry, &self.identity);
+        fmt_identity(&mut entry, &self.identity);
         entry.finish()
     }
 }
 
-fn debug_identity(entry: &mut fmt::DebugStruct<'_, '_>, identity: &IdentityFlags) {
+fn fmt_identity(entry: &mut fmt::DebugStruct<'_, '_>, identity: &IdentityFlags) {
     if *identity != IdentityFlags::default() {
         entry.field("identity", identity);
     }
