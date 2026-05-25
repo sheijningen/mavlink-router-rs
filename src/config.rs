@@ -1,28 +1,5 @@
-//! Canonical input to [`crate::run`]: the fully-resolved [`Config`] struct
-//! the spawner consumes, plus the merge step that combines a TOML-derived
-//! [`crate::parsers::toml::TomlConfig`] with a CLI-derived
-//! [`crate::parsers::cli::CliConfig`].
-//!
-//! Layering:
-//!
-//! 1. [`crate::parsers::cli`] parses argv into a [`crate::parsers::cli::CliConfig`]
-//!    with `Option<T>` globals (so "operator omitted" is distinguishable
-//!    from "operator set to default").
-//! 2. [`crate::parsers::toml`] parses a TOML file into a
-//!    [`crate::parsers::toml::TomlConfig`] with the same shape.
-//! 3. [`Config::merge`] (this module) folds the two together: CLI > TOML >
-//!    defaults for globals, and for endpoints the TOML set has any
-//!    name-colliding entry **wholesale replaced** by the CLI entry. The
-//!    collided names are returned alongside the [`Config`] in a
-//!    [`MergeOutcome`] so the caller can WARN about them (after installing
-//!    the tracing subscriber, in `main`).
-//! 4. [`Config::validate`] then catches duplicate names **within** a single
-//!    source — cross-source dups are resolved by the merge, not reported as
-//!    errors.
-//!
-//! Neither parser submodule references the other; both only reach into this
-//! module for the shared `LogLevel` / `LogFormat` value types and the
-//! defaults.
+//! Fully-resolved [`Config`] consumed by [`crate::run`], plus the
+//! [`Config::merge`] step that folds CLI + TOML into it.
 
 use std::collections::HashSet;
 
@@ -34,17 +11,15 @@ use crate::error::Error;
 use crate::parsers::cli::CliConfig;
 use crate::parsers::toml::TomlConfig;
 
-/// CLAUDE.md "Defaults" → `stats_interval_secs` (period of stats JSON-Lines
-/// output).
+/// Period of stats JSON-Lines output.
 pub const DEFAULT_STATS_INTERVAL_SECS: u64 = 5;
 
-/// CLAUDE.md "Defaults" → `dedup_ms` default (0 = dedup window disabled).
+/// `0` disables the dedup window.
 pub const DEFAULT_DEDUP_MS: u64 = 0;
 
 pub const MAX_DEDUP_MS: u64 = 10_000;
 
-/// Log verbosity, mirroring the CLAUDE.md "Global opts" enumeration. Lives in
-/// the config module so TOML and CLI parsers see the same type.
+/// Log verbosity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogLevel {

@@ -1,22 +1,7 @@
-//! Endpoint-group registry.
-//!
-//! Endpoints declaring `?group=NAME` share a single learn-set across all
-//! members — CLAUDE.md "Endpoint groups: declared implicitly by
-//! `?group=name` ... Members share *only* the learn-set; filters and stats
-//! remain per-endpoint." This is what keeps redundant parallel uplinks
-//! (e.g. LTE + RFD900 dialled by `tcpc:…?group=uplink`) from silencing each
-//! other's learn table: a frame learned by one member's reader is visible
-//! to every other member's per-destination decision.
-//!
-//! The router task is the sole owner of every group's `LearnTable`. There
-//! is no synchronisation beyond the router's single-task ownership — every
-//! mutation (`touch`, `join`, `leave`) happens inside `handle_event` /
-//! `handle_frame`, both of which run on the router's loop.
-//!
-//! Every group's learn table is sized at admission of its first member.
-//! The per-endpoint learn-table capacity is the hardcoded
-//! [`crate::endpoint::identity_flags::LEARN_CAPACITY`], so every group
-//! converges on the same size regardless of admission order.
+//! Endpoint-group registry: members of `?group=NAME` share one
+//! [`LearnTable`] but keep filters and stats per-endpoint. Sharing the
+//! learn-set is what stops redundant parallel uplinks from silencing each
+//! other's loop-prevention.
 
 use std::collections::HashMap;
 use std::sync::Arc;

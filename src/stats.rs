@@ -1,29 +1,5 @@
 //! Dedicated stats task: registry mirror, interval timer, and JSON-Lines
-//! stdout sink.
-//!
-//! Owns the [`EndpointId → (name, Arc<EndpointStats>, routable: bool)`]
-//! registry mirror fed by the router over a [`StatsEvent`] channel. On each
-//! `stats_interval_secs` tick it walks the registry, builds one
-//! [`StatsLine`] per endpoint, and writes it as a single JSON object
-//! followed by `\n` to the supplied writer (production: `tokio::io::stdout`).
-//! The `routable` flag picks the line shape: routable endpoints emit the full
-//! counter schema; `tcps:` / `udps:` parent listeners emit only `ts`,
-//! `endpoint`, and `state` because their counters are structurally zero.
-//!
-//! Internally the task keeps a bounded `VecDeque` so a slow or broken stdout
-//! consumer cannot stall registry maintenance. Drop-oldest on overflow per
-//! CLAUDE.md; `stats_dropped` accumulates and produces at most one WARN per
-//! interval. `BrokenPipe` on the writer logs once at WARN and suppresses
-//! subsequent writes — the registry still ticks so the cancel-path final
-//! synthetic lines aren't piling forever.
-//!
-//! `Finalize` (from `PeerRemoved` and the router shutdown sweep) emits a
-//! final synthetic line taking a **bypass path**: it evicts the oldest
-//! regular line to make room when the queue is full, so the authoritative
-//! terminal state is never silently lost behind a flood of interval lines.
-//! A synthetic line displaced by another synthetic line (bounded by
-//! registered-endpoint count, so vanishingly rare in practice) gets its own
-//! dedicated WARN naming the lost endpoint.
+//! stdout statistics sink.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -42,13 +18,11 @@ use tracing::{debug, trace, warn};
 use crate::endpoint::EndpointId;
 use crate::endpoint::stats::{EndpointState, EndpointStats};
 
-/// CLAUDE.md "Defaults" → `stats_queue_lines` (Stats-task bounded queue
-/// depth; drop-oldest on slow/dead stdout consumer).
+/// Stats-task bounded queue depth; drop-oldest on slow/dead stdout consumer.
 pub const DEFAULT_STATS_QUEUE_LINES: usize = 256;
 
 /// One lifecycle message from the router to the stats task. Forwarded
-/// fire-and-forget per CLAUDE.md — the router never awaits a stats-task
-/// acknowledgement.
+/// fire-and-forget — the router never awaits a stats-task acknowledgement.
 #[derive(Debug)]
 pub enum StatsEvent {
     Register {
@@ -77,13 +51,9 @@ struct RegisteredEndpoint {
     routable: bool,
 }
 
-/// Per-endpoint stats emitted as one JSON-Lines object on stdout. The
-/// `Routable` shape is the full counter schema documented in CLAUDE.md's
-/// "Stats schema" example; the `NonRoutable` shape is the subset emitted for
-/// `tcps:` / `udps:` parent listeners — they accept connections but never
-/// carry frames, so the counter fields would all be zero forever. Untagged
-/// serialization means the JSON object has no discriminator key; consumers
-/// distinguish by the presence (or absence) of counter fields.
+/// Per-endpoint stats emitted as one JSON-Lines object on stdout. Parent
+/// listeners (`tcps:` / `udps:`) carry no frames, so they emit the
+/// counter-less `NonRoutable` shape.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum StatsLine {
@@ -132,9 +102,7 @@ pub struct StatsRunConfig {
     pub queue_capacity: usize,
 }
 
-/// Stable lowercase label for the stats JSON's `state` field — pinned by
-/// CLAUDE.md's "Stats `state` field" decision (`connected | reconnecting |
-/// idle | down`).
+/// Stable lowercase label for the stats JSON's `state` field.
 fn state_label(state: EndpointState) -> &'static str {
     match state {
         EndpointState::Reconnecting => "reconnecting",
@@ -145,8 +113,7 @@ fn state_label(state: EndpointState) -> &'static str {
     }
 }
 
-/// RFC 3339 UTC timestamp truncated to whole seconds — matches the
-/// `"2026-05-15T19:00:00Z"` example in CLAUDE.md.
+/// RFC 3339 UTC timestamp truncated to whole seconds.
 fn rfc3339_now() -> String {
     let now = OffsetDateTime::now_utc()
         .replace_nanosecond(0)
@@ -204,11 +171,8 @@ pub async fn run<W>(
     let mut last_warned_dropped: u64 = 0;
     let mut broken_pipe_warned = false;
 
-    // Delay the first tick by `interval` so we don't emit before any
-    // endpoint has had a chance to register; subsequent ticks fire on the
-    // regular schedule. `Skip` keeps us from catching up if the loop ever
-    // falls behind (a long stdout stall would otherwise produce a burst of
-    // back-to-back lines on recovery).
+    // Delay the first tick so registrations land first; `Skip` avoids a
+    // post-stall burst of catch-up lines.
     let mut interval = cfg.enabled.then(|| {
         let start = tokio::time::Instant::now() + cfg.interval;
         let mut timer = tokio::time::interval_at(start, cfg.interval);
@@ -239,15 +203,10 @@ pub async fn run<W>(
         }
     }
 
-    // After cancel: keep processing events until the channel closes
-    // (every sender — router + sub-endpoint tasks — drops their handle
-    // when they finish their own drain) OR we burn the producer's slice
-    // of the per-task drain budget. Using `recv().await` (not `try_recv`)
-    // is load-bearing: the router emits its shutdown-sweep Finalizes
-    // AFTER its own cancel observation, so a tight try_recv loop here
-    // would race those emissions and exit before they arrived, leaving
-    // every top-level endpoint with an interval-line as its last
-    // observable state instead of the authoritative Down.
+    // `recv().await` (not `try_recv`) is load-bearing: shutdown_sweep
+    // emits Finalizes AFTER its own cancel observation, so a tight
+    // try_recv would race past them and leave endpoints stuck on an
+    // interval-line as their last observable state.
     let drain_deadline = tokio::time::Instant::now() + POST_CANCEL_DRAIN;
     loop {
         let now = tokio::time::Instant::now();
@@ -331,11 +290,9 @@ fn handle_event(
             let Some(entry) = registry.remove(&id) else {
                 return;
             };
-            // When stats output is disabled the registry mirror still
-            // serves its role (router fire-and-forget needs a consumer),
-            // but no synthetic line should reach stdout. Skipping the
-            // enqueue here also means `--stats=false` never grows the
-            // queue or burns the BrokenPipe path.
+            // With output disabled the registry mirror still runs, but
+            // skipping the enqueue keeps stdout clean and avoids growing
+            // the queue or hitting the BrokenPipe path.
             if !emit_lines {
                 return;
             }
@@ -383,12 +340,9 @@ fn enqueue_regular(
     });
 }
 
-/// Finalize bypass per CLAUDE.md "Stats sink architecture": authoritative
-/// end-state lines never silently disappear. Evict the oldest regular
-/// interval line to make room; if every queued entry is itself a synthetic
-/// line, fall back to dropping the oldest synthetic and emit a dedicated
-/// WARN naming the lost endpoint (not rate-limited — this is supposed to be
-/// vanishingly rare).
+/// Authoritative end-state lines never silently disappear: evict the oldest
+/// regular interval line to make room. If every queued entry is itself a
+/// synthetic line, drop the oldest and WARN with the lost endpoint name.
 fn enqueue_synthetic(
     queue: &mut VecDeque<QueueEntry>,
     queue_capacity: usize,
@@ -443,9 +397,7 @@ async fn drain_queue<W>(
 {
     while let Some(entry) = queue.pop_front() {
         if *broken_pipe_warned {
-            // Stdout is gone; discard quietly. We keep ticking so the post-
-            // cancel drain doesn't grow the queue forever, and the WARN was
-            // already emitted once.
+            // Stdout is gone; discard quietly (WARN already emitted).
             continue;
         }
         let line = &entry.line;
@@ -550,8 +502,6 @@ mod tests {
 
     #[test]
     fn build_line_for_listener_omits_counter_fields() {
-        // Parent listeners (`routable = false`) emit only ts/endpoint/state;
-        // every counter field must be absent from the JSON.
         let stats = EndpointStats::default();
         stats.rx_frames.fetch_add(99, Ordering::Relaxed);
         stats.store_state(EndpointState::Connected);
@@ -588,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn state_label_covers_every_variant_with_claude_md_strings() {
+    fn state_label_covers_every_variant() {
         assert_eq!(state_label(EndpointState::Reconnecting), "reconnecting");
         assert_eq!(state_label(EndpointState::Connected), "connected");
         assert_eq!(state_label(EndpointState::Idle), "idle");
@@ -598,8 +548,6 @@ mod tests {
 
     #[test]
     fn rfc3339_now_has_no_subseconds() {
-        // CLAUDE.md example has Z directly after seconds — must not include
-        // a fractional component.
         let ts = rfc3339_now();
         assert!(ts.ends_with('Z'), "ts = {ts}");
         assert!(!ts.contains('.'), "ts = {ts}");
@@ -688,9 +636,7 @@ mod tests {
 
     #[tokio::test]
     async fn task_exits_on_cancel_with_sender_alive_disabled() {
-        // With the sender held alive, the post-cancel drain awaits more
-        // events for up to `POST_CANCEL_DRAIN` (1.5s) before timing out
-        // and exiting. The 3s join budget covers that drain plus slack.
+        // 3s join budget covers POST_CANCEL_DRAIN (1.5s) plus slack.
         let (tx, rx) = mpsc::channel::<StatsEvent>(4);
         let cancel = CancellationToken::new();
         let (writer, _reader) = duplex(1024);
@@ -705,12 +651,6 @@ mod tests {
 
     #[tokio::test]
     async fn post_cancel_drain_processes_finalize_arriving_after_cancel() {
-        // Regression: the prior `try_recv()` drain raced the router's
-        // shutdown_sweep — a Finalize emitted AFTER the stats task
-        // observed cancel was missed, and the final synthetic line never
-        // reached stdout. The bounded `recv().await` drain catches the
-        // late event; verify by reading the synthetic line off the
-        // duplex writer after cancel.
         let (tx, rx) = mpsc::channel::<StatsEvent>(8);
         let cancel = CancellationToken::new();
         let (writer, mut reader) = duplex(4096);
@@ -725,10 +665,8 @@ mod tests {
             .await
             .expect("register");
 
-        // Cancel FIRST, then send Finalize — simulating the router's
-        // shutdown_sweep which emits Finalize after observing cancel.
+        // Cancel first, then send Finalize — mirrors shutdown_sweep.
         cancel.cancel();
-        // Yield so the stats task observes cancel before our send lands.
         tokio::task::yield_now().await;
         stats.store_state(EndpointState::Down);
         tx.send(StatsEvent::Finalize { id })
@@ -765,10 +703,6 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_task_emits_no_lines_on_finalize() {
-        // Regression: when `--stats` is off, the registry mirror still runs
-        // (the router fire-and-forwards Register/Finalize), but no bytes
-        // must reach stdout. Test fixtures that build a `Config` with
-        // `stats: false` rely on this so their stdout stays clean.
         let (tx, rx) = mpsc::channel::<StatsEvent>(8);
         let cancel = CancellationToken::new();
         let (writer, mut reader) = duplex(4096);
@@ -785,12 +719,9 @@ mod tests {
             .await
             .expect("finalize");
 
-        // Give the task time to process events; with stats disabled, no
-        // lines should land on the duplex reader.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        // Drop the sender before cancel so the post-cancel drain's
-        // `recv().await` returns `Ok(None)` immediately and the task
-        // exits without burning the drain budget.
+        // Drop the sender so the post-cancel drain exits via `Ok(None)`
+        // without burning the drain budget.
         drop(tx);
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(2), handle)
@@ -798,9 +729,6 @@ mod tests {
             .expect("stats task did not exit")
             .expect("stats task panicked");
 
-        // Reader side: every byte the task wrote is buffered in the duplex.
-        // We close the writer half by dropping it (already done when the
-        // task returned), so `read` returns 0 cleanly at EOF.
         let mut buf = vec![0u8; 1024];
         let bytes_read = reader.read(&mut buf).await.expect("read");
         assert_eq!(
@@ -836,8 +764,6 @@ mod tests {
         // Advance past one interval so the timer fires once.
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        // Read whatever was written so far. duplex buffer is in-process so
-        // bytes are available immediately after the write.
         let mut buf = vec![0u8; 4096];
         let bytes_read = tokio::time::timeout(Duration::from_secs(1), reader.read(&mut buf))
             .await
@@ -857,8 +783,7 @@ mod tests {
         assert_eq!(endpoints, vec!["alpha", "beta"]);
 
         // Drop the sender so the post-cancel drain exits via `Ok(None)`
-        // immediately. Under `start_paused`, the alternative (timeout
-        // expiry) would require manual `tokio::time::advance` calls.
+        // (under `start_paused`, timeout expiry needs `time::advance`).
         drop(tx);
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(2), handle)
@@ -869,9 +794,6 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn enabled_task_emits_state_only_line_for_listener_endpoint() {
-        // Parent listeners (`routable = false`) emit JSON without counter
-        // fields — only `ts`, `endpoint`, and `state`. Verifies the
-        // interval-tick path picks the NonRoutable variant.
         let (tx, rx) = mpsc::channel::<StatsEvent>(8);
         let cancel = CancellationToken::new();
         let (writer, mut reader) = duplex(4096);

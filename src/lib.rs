@@ -27,13 +27,11 @@ use crate::endpoint::udp::server::DEFAULT_PEER_CAPACITY;
 use crate::router::RouterWiring;
 use crate::stats::{DEFAULT_STATS_QUEUE_LINES, StatsEvent, StatsRunConfig};
 
-/// CLAUDE.md "Defaults" table: shared reader→router mpsc capacity. Senders
-/// `await` on full — backpressure flows to readers rather than silently
-/// dropping frames.
+/// Shared reader→router mpsc capacity. Senders `await` on full so
+/// backpressure flows to readers instead of dropping frames.
 const INGRESS_QUEUE_FRAMES: usize = 1024;
 
-/// CLAUDE.md "Stats sink architecture": `tcps_peer_budget` defaults to 64
-/// per listener as a sizing hint (`tcps:` has no hard cap on accepted
+/// Per-listener `tcps:` peer-count sizing hint (no hard cap on accepted
 /// clients in v1).
 const DEFAULT_TCPS_PEER_BUDGET: usize = 64;
 
@@ -51,9 +49,6 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
         cfg.log_resolved();
     }
 
-    // Exhaustive destructure: adding a Config field forces a touch here, so
-    // we can't silently grow the surface without wiring the new knob into
-    // the spawner.
     let Config {
         stats,
         stats_interval_secs,
@@ -102,9 +97,8 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
     );
     spawn_endpoints(&mut tasks, &event_tx, &frame_tx, &token, specs).await?;
 
-    // Drop the parent senders so the router's recv() loops observe
-    // end-of-input once the last endpoint task exits, not just the cancel
-    // token.
+    // Drop parent senders so the router observes end-of-input once the
+    // last endpoint task exits, not just the cancel token.
     drop(event_tx);
     drop(frame_tx);
 
@@ -145,12 +139,9 @@ fn groups_needing_dedup_warning(specs: &[EndpointSpec], dedup_ms: u64) -> Vec<(A
     groups
 }
 
-/// A group exists to share a learn-set across redundant-uplink legs (CLAUDE.md
-/// "Endpoint groups" — LTE + RFD900 sharing `?group=uplink`). When the legs
-/// deliver the same vehicle frame and `--dedup-ms=0`, the duplicate fans out
-/// to every destination twice. The WARN doesn't change behaviour — some
-/// deployments may legitimately not need dedup — it just surfaces what is
-/// almost always a misconfig.
+/// Groups share a learn-set across redundant-uplink legs; without dedup the
+/// duplicate uplink frame fans out to every destination twice. The WARN
+/// surfaces an almost-certain misconfig without changing behaviour.
 fn warn_on_groups_without_dedup(specs: &[EndpointSpec], dedup_ms: u64) {
     for (name, count) in groups_needing_dedup_warning(specs, dedup_ms) {
         warn!(
@@ -161,7 +152,6 @@ fn warn_on_groups_without_dedup(specs: &[EndpointSpec], dedup_ms: u64) {
     }
 }
 
-/// CLAUDE.md "Stats sink architecture": channel sizing formula
 /// N = top-level + sum(DEFAULT_PEER_CAPACITY for each udps:) + sum(tcps_peer_budget).
 fn estimate_registry_size(specs: &[EndpointSpec]) -> usize {
     let mut count = specs.len();

@@ -236,13 +236,8 @@ mod tests {
         }
     }
 
-    // -- Parse-time bounds checks. Every numeric knob the parser accepts
-    //    must reject 0 and obviously-bogus large values with a uniform
-    //    `"must be in MIN..=MAX, got N"` reason so operator-visible error
-    //    text is consistent. The MIN/MAX literals are hardcoded here on
-    //    purpose so the wire-contract (the exact bytes an operator sees
-    //    in the error) is pinned — a silent retune of the constants
-    //    would otherwise pass tests. --
+    // -- Parse-time bounds checks. MIN/MAX literals are hardcoded so the
+    //    operator-visible error text is pinned. --
 
     /// Assert that parsing `input` fails with `InvalidQueryValue { key }`
     /// and that the error reason references both `min`/`max` (so an
@@ -520,9 +515,6 @@ mod tests {
 
     #[test]
     fn query_keys_case_insensitive() {
-        // `parse_query_pairs` lowercases keys so `?SNIFFER=true`,
-        // `?Sniffer=true`, and `?sniffer=true` all reach the same applier
-        // branch. Values keep their case.
         let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1?SNIFFER=true")).clone();
         assert!(endpoint.identity.sniffer);
         let endpoint = as_udps(&parse_ok("udps:0.0.0.0:1?Sniffer=true")).clone();
@@ -534,8 +526,6 @@ mod tests {
 
     #[test]
     fn duplicate_query_key_detected_across_cases() {
-        // Lowercasing happens before the dedup check, so `Sniffer` and
-        // `SNIFFER` collide on the canonical `sniffer`.
         assert!(matches!(
             parse_err("udps:0.0.0.0:1?Sniffer=true&SNIFFER=false"),
             SpecError::DuplicateQueryKey(k) if k == "sniffer"

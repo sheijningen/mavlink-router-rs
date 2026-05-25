@@ -23,10 +23,7 @@ const REOPEN_DELAY: Duration = Duration::from_millis(1000);
 
 /// Inputs that distinguish one `serial:` endpoint from another: which device
 /// to open at what baud (with optional hardware flow control) and what to
-/// call it. `identity` carries the filter / sniffer / group bundle
-/// (CLAUDE.md "Filters, group, sniffer travel with the `*Spec`"); the reader
-/// applies the in-filter snapshot, the router applies out-filter / sniffer /
-/// group from the same bundle.
+/// call it. `identity` carries the filter / sniffer / group bundle.
 pub struct SerialSpec {
     pub path: String,
     pub baud: u32,
@@ -52,15 +49,10 @@ impl SerialSpec {
     }
 }
 
-/// Run a `serial:` endpoint until the cancellation token fires.
-///
-/// On startup, opens the configured device at `baud` with the requested
-/// flow-control. On open failure or mid-stream disconnect, polls every
-/// [`REOPEN_DELAY`] (fixed; CLAUDE.md "devices appear or they don't —
-/// backoff doesn't help") until the device is reachable again or the cancel
-/// token trips. The TxQueue is drained-and-discarded on every disconnect so a
-/// fresh device never inherits telemetry that aged out while unplugged
-/// (CLAUDE.md "TX queue on disconnect: drain and discard, never replay").
+/// Run a `serial:` endpoint until the cancellation token fires. On open
+/// failure or mid-stream disconnect, polls every [`REOPEN_DELAY`] until the
+/// device is reachable. The TxQueue is drained-and-discarded on every
+/// disconnect so a fresh device never inherits stale telemetry.
 pub async fn run(spec: SerialSpec, wiring: ClientWiring) {
     let span = info_span!("serial", name = %spec.name);
     run_inner(spec, wiring).instrument(span).await
@@ -96,9 +88,7 @@ async fn run_inner(spec: SerialSpec, wiring: ClientWiring) {
             }
         };
 
-        // Drain any frames the router queued while we were re-opening. They
-        // would otherwise be stale by the time they hit the wire — the router
-        // is already pushing fresh ones.
+        // Drain frames queued while re-opening; they're stale.
         let drained = tx_queue.drain_and_discard();
         if drained > 0 {
             debug!(drained, "drained stale frames before resuming");
@@ -123,9 +113,8 @@ async fn run_inner(spec: SerialSpec, wiring: ClientWiring) {
                     debug!(drained, "discarded in-flight frames on disconnect");
                 }
                 stats.store_state(EndpointState::Reconnecting);
-                // Sleep one reopen interval before reattempting so we don't
-                // spin if the device disappeared and `open_until_cancel`
-                // would succeed immediately on a zombie path.
+                // Sleep before reattempting so a zombie-path re-open
+                // doesn't spin.
                 if !wait_or_cancel(&cancel, REOPEN_DELAY).await {
                     return;
                 }
@@ -196,11 +185,6 @@ mod tests {
 
     #[tokio::test]
     async fn open_until_cancel_yields_on_cancel_during_sleep() {
-        // Bad path → first `try_open` fails and the loop drops into a
-        // [`REOPEN_DELAY`] sleep; cancelling mid-sleep must return
-        // `OpenOutcome::Cancelled` rather than wait out the full delay.
-        // Tests a private function — must live next to it; the public-API
-        // equivalents are in `tests/serial.rs`.
         let cancel = CancellationToken::new();
         let task = {
             let cancel = cancel.clone();
@@ -225,11 +209,8 @@ mod tests {
 
     #[test]
     fn try_open_runs_both_flow_control_variants_without_panicking() {
-        // The mapping `SerialFlowControl::RtsCts → tokio_serial::FlowControl::
-        // Hardware` is a one-line match arm whose only failure mode is "the
-        // variant ends up in the wrong arm". A bad-path open errors out the
-        // same way for both variants, so we only assert the call doesn't
-        // panic — what matters is the branch executes.
+        // Bad-path open errors out the same way for both variants; this
+        // just exercises the match arm.
         for fc in [SerialFlowControl::None, SerialFlowControl::RtsCts] {
             let result = try_open("/this/path/definitely/does/not/exist", 115200, fc);
             assert!(

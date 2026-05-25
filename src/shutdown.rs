@@ -6,17 +6,11 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-/// CLAUDE.md "Per-task 2s shutdown drain": each top-level `JoinSet` entry
-/// gets up to this long after the cancellation token trips to complete its
-/// current operation (final TX flush, final frame write, `PeerRemoved`
-/// emission). Tasks still alive at this point are aborted; the overall
-/// wall-clock budget [`SHUTDOWN_GRACE`] then bounds how long we wait for
-/// the abort to land.
+/// Per-task drain budget after cancellation; tasks still alive past this
+/// are aborted within the [`SHUTDOWN_GRACE`] wall-clock budget.
 const PER_TASK_DRAIN: Duration = Duration::from_secs(2);
 
-/// CLAUDE.md "Shutdown timing": overall wall-clock budget on shutdown.
-/// Hardcoded — operator policy doesn't apply here, the constant is a
-/// liveness bound (after this we abort + drop), not a tunable.
+/// Overall wall-clock budget on shutdown. Liveness bound.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 pub async fn watch_for_shutdown_signal(token: CancellationToken) {

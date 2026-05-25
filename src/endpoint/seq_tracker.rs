@@ -1,35 +1,14 @@
-//! Per-source sequence-loss tracker on each endpoint's reader.
-//!
-//! Each reader task maintains a fixed-capacity flat table of
-//! `(sysid, compid) → last_seq` updated on every framed frame after CRC
-//! validation and **before** In-filter evaluation (CLAUDE.md ingress
-//! pipeline step 2: "Runs before In-filter so the counter reflects link
-//! quality, not policy"). For each observation:
-//!
-//! - `gap = (seq - last_seq - 1) mod 256` — wraparound-safe u8 subtraction.
-//! - `0 < gap < threshold` (default 64) → real packet loss; add `gap` to
-//!   the endpoint's [`crate::endpoint::stats::EndpointStats::rx_lost_est`].
-//! - `gap >= threshold` → treat as source restart / long silence; reset
-//!   `last_seq` without inflating the counter. Duplicates and out-of-
-//!   order arrivals naturally land above the threshold (e.g. `seq == last`
-//!   produces `gap = 255`).
-//! - First observation of a `(sysid, compid)` → no gap; record and return.
-//!
-//! Capacity is the hardcoded
-//! [`crate::endpoint::identity_flags::SEQ_TRACKER_CAPACITY`] (32). LRU
-//! eviction by oldest `last_seen` on insert when full. The seq tracker is
-//! **independent** of the learn table — they share no state per the locked
-//! decision "the reader-side seq tracker uses an independent LRU".
+//! Per-source `(sysid, compid) → last_seq` tracker on each endpoint's reader.
+//! Drives `rx_lost_est` from inter-frame gaps; runs after CRC and before
+//! In-filter so the counter reflects link quality, not policy.
 
 use tokio::time::Instant;
 
 use crate::mavlink::frame::NodeId;
 
-/// Default gap-sanity threshold. Per CLAUDE.md: "If `gap >= threshold`,
-/// treat as a source restart / long silence". 64 is a quarter of the u8
-/// sequence space — large enough that real bursty loss stays below it,
-/// small enough that wraparound-around-zero (seq going backwards more
-/// than 64) is correctly classified as a restart.
+/// Gap above which the tracker treats the source as restarted (a quarter of
+/// the u8 sequence space; large enough to ignore bursty loss, small enough
+/// that a backwards-by-N jump is correctly classified as a restart).
 pub const DEFAULT_SEQ_GAP_THRESHOLD: u8 = 64;
 
 #[derive(Debug, Clone, Copy)]

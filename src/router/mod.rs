@@ -1,49 +1,8 @@
-//! Central router task.
-//!
-//! Owns the per-endpoint learn tables and one registry keyed by
-//! [`EndpointId`]. Each entry carries an optional [`RoutableState`] —
-//! leaves and accepted sub-endpoints supply one; `tcps:` / `udps:` parent
-//! listeners leave it `None` because they never receive frames themselves
-//! (their children own real readers/writers). The hot frame-dispatch loop
-//! short-circuits on `routable.is_none()` at one branch per registry slot,
-//! so parents pay one predicted-not-taken branch and never reach the
-//! per-destination decision. Receives lifecycle events and frames on two
-//! bounded mpscs, applies the per-destination decision to each frame
-//! against every other routing endpoint's learn-set, and pushes admitted
-//! frames into each destination's [`TxQueue`].
-//!
-//! Behaviours implemented here:
-//!
-//! - **Registry maintenance** — handle `EndpointAdded` / `PeerAdded` /
-//!   `PeerRemoved`, forwarding `StatsEvent::Register` / `Finalize` to the
-//!   stats task in lockstep.
-//! - **Source learn** — touch the source endpoint's learn-set on every
-//!   inbound frame and keep the `learn_entries` stats counter in sync.
-//! - **Routing decision** — for every *other* registered routing
-//!   endpoint, run [`decide::decide`] and push the frame to that
-//!   destination's `TxQueue` when admitted (cheap `Bytes::clone` Arc
-//!   bumps; the queue handles drop-oldest overflow and increments
-//!   `dropped_tx`). Out-filter rejections bump the destination's
-//!   `out_filter_drops`; sniffer destinations bypass loop-prevent,
-//!   out-filter, and target-match per CLAUDE.md.
-//! - **Group registry maintenance** — endpoints declaring `?group=NAME`
-//!   share a single learn-set hosted in [`GroupRegistry`]; the router
-//!   joins / leaves on `EndpointAdded` / `PeerAdded` / `PeerRemoved` and
-//!   routes source-learn writes and per-destination loop-prevent reads
-//!   through the group's table when present.
-//! - **Global dedup window** — when `dedup_ms > 0`, a single
-//!   [`DedupWindow`] hashes each frame with xxh3-64 *before* learn and
-//!   per-destination dispatch. A hit drops the frame and bumps the
-//!   source endpoint's `dedup_drops` counter; this is what protects the
-//!   redundant-uplink use case (LTE + RFD900 each deliver the same
-//!   vehicle frame; the second arrival is suppressed).
-//! - **Shutdown sweep** — on cancel, write `state = Down` for every
-//!   remaining entry in the unified registry and forward `Finalize` so
-//!   the stats task can drop its registry mirror.
-//!
-//! The per-source seq tracker that feeds `rx_lost_est` lives on the reader
-//! side (CLAUDE.md ingress pipeline step 2); the router never touches
-//! per-source seq state.
+//! Central router task. Owns the unified endpoint registry, per-endpoint
+//! learn tables, group registry, and global dedup window. Parent listeners
+//! (`tcps:` / `udps:`) share the registry with routing endpoints but carry
+//! `routable = None`; the per-frame dispatch loop short-circuits on that
+//! at one branch per slot so parents are never iterated as destinations.
 
 pub mod decide;
 pub mod dedup;
@@ -91,14 +50,9 @@ struct RegisteredEndpoint {
 }
 
 /// Per-endpoint dispatch state owned by the router for every routable
-/// endpoint. Built from the [`Routable`] payload of `EndpointAdded` /
-/// `PeerAdded` plus a fresh [`LearnTable`].
-///
-/// The `learn` field is *only* consulted when the endpoint has no group
-/// (`identity.group.is_none()`). Group members read their effective learn
-/// table from [`GroupRegistry`] keyed by `identity.group` per CLAUDE.md's
-/// "Endpoint groups: members share *only* the learn-set; filters and
-/// stats remain per-endpoint."
+/// endpoint. The `learn` field is consulted only when the endpoint has no
+/// group; group members read their effective learn table from
+/// [`GroupRegistry`] keyed by `identity.group`.
 struct RoutableState {
     tx_queue: TxQueue,
     /// Filter / sniffer / group flags. The router reads `filters`
@@ -110,11 +64,9 @@ struct RoutableState {
 }
 
 /// Bundle the spawner hands to the router task. The two `mpsc::Receiver`s
-/// drive the entire data plane (lifecycle events + frames); the
-/// `stats_event_tx` is fire-and-forget per CLAUDE.md ("the router does not
-/// await a stats-task acknowledgement"). `dedup_ms == 0` (the default)
-/// turns the global dedup window off — no hashing, no allocation, no
-/// per-frame cost.
+/// drive the data plane; `stats_event_tx` is fire-and-forget. `dedup_ms ==
+/// 0` (the default) disables the global dedup window entirely — no
+/// hashing, no allocation, no per-frame cost.
 pub struct RouterWiring {
     pub frame_rx: mpsc::Receiver<RouterFrame>,
     pub event_rx: mpsc::Receiver<EndpointEvent>,
@@ -269,10 +221,8 @@ impl Router {
         header: &ParsedHeader,
         now: Instant,
     ) -> bool {
-        // Field-disjoint split-borrow confined to this method: one
-        // `routing.get_mut` gates dedup AND touches the per-endpoint
-        // learn-set when the source has no group — no second lookup, no
-        // `expect` revalidating an invariant we just observed.
+        // Split-borrow: one `routing.get_mut` gates dedup AND touches the
+        // per-endpoint learn-set, no second lookup or `expect` needed.
         let Router {
             routing,
             groups,
@@ -290,18 +240,16 @@ impl Router {
             return false;
         };
 
-        // Dedup runs BEFORE learn (CLAUDE.md "Sniffer + dedup ordering":
-        // sniffer destinations see the post-dedup frame set). No-op when
-        // `dedup_ms == 0`.
+        // Dedup runs BEFORE learn so sniffer destinations see the
+        // post-dedup frame set. No-op when `dedup_ms == 0`.
         if dedup.check_and_insert(frame, now) {
             src_stats.dedup_drops.fetch_add(1, Ordering::Relaxed);
             trace!(%src_id, "dedup suppressed duplicate frame");
             return false;
         }
 
-        // Always publish the current learn-set size — group siblings may
-        // have inserted between our touches, so the unconditional store
-        // is the only way every member's stats reflect the current size.
+        // Always publish learn-set size; group siblings may have inserted
+        // between touches.
         let learn_len = match &src_routable.identity.group {
             Some(name) => {
                 let Some(group) = groups.get_mut(name) else {
@@ -337,10 +285,8 @@ impl Router {
             };
             let dest_learn = match &dest_routable.identity.group {
                 Some(name) => {
-                    // Single-task ownership: groups.leave is only called
-                    // from handle_event, which is mutually exclusive with
-                    // this iteration. A registered group member always
-                    // has its entry present.
+                    // Single-task ownership: `groups.leave` only runs from
+                    // `handle_event`, mutually exclusive with this loop.
                     let group = self.groups.get(name);
                     debug_assert!(group.is_some(), "group entry vanished mid-dispatch");
                     match group {
@@ -374,11 +320,9 @@ impl Router {
     }
 
     async fn shutdown_sweep(&mut self) {
-        // CLAUDE.md "On shutdown the router walks the unified registry,
-        // writes state = Down". Sub-endpoints normally exit via
-        // PeerRemoved before the sweep; any survivor here is one whose
-        // removal event we didn't get to before cancel fired — Down is
-        // still the safe terminal value.
+        // Sub-endpoints normally exit via PeerRemoved; any survivor here
+        // missed its removal event before cancel — Down is the safe
+        // terminal value.
         for (id, entry) in self.routing.drain() {
             entry.stats.store_state(EndpointState::Down);
             trace!(
@@ -393,11 +337,9 @@ impl Router {
 }
 
 /// Run the router task until the cancellation token fires. Biased select
-/// over cancel, then events, then frames per CLAUDE.md's "Endpoint
-/// registration is symmetric, and ordering is enforced by biased select"
-/// decision — every available lifecycle event drains before the next
-/// frame is taken, so the registry is always at least as caught up as
-/// the frame stream.
+/// over cancel, then events, then frames so every available lifecycle
+/// event drains before the next frame is taken — the registry is always
+/// at least as caught up as the frame stream.
 pub async fn run(wiring: RouterWiring) {
     let span = info_span!("router");
     run_inner(wiring).instrument(span).await
@@ -742,13 +684,9 @@ mod tests {
 
     #[tokio::test]
     async fn parent_listener_does_not_receive_broadcast() {
-        // CLAUDE.md: tcps/udps parent listeners register via
-        // `EndpointAdded` with `routable = None`. They share the registry
-        // with routing endpoints; the frame-dispatch loop short-circuits
-        // on the `None` at one branch per slot. The parent's TxQueue is
-        // held only by the test fixture (never handed to the router via
-        // `Routable`), so it must receive zero frames despite live
-        // broadcast traffic.
+        // Parents register with `routable = None`; the dispatch loop
+        // short-circuits at one branch. The parent's TxQueue is held only
+        // by the fixture, so it must receive zero frames.
         let (mut router, _stats_rx) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
@@ -979,12 +917,9 @@ mod tests {
 
     #[tokio::test]
     async fn group_members_do_not_share_filters_or_stats() {
-        // CLAUDE.md: "Members share *only* the learn-set; filters and
-        // stats remain per-endpoint." Two group members with different
-        // filters must each apply their own out-filter independently —
-        // and the resulting `out_filter_drops` counter must be credited
-        // only to the member that did the dropping, demonstrating
-        // per-endpoint stats isolation under shared-group membership.
+        // Group members share *only* the learn-set; filters apply
+        // per-member and `out_filter_drops` is credited only to the
+        // member that dropped.
         let (mut router, _stats_rx) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
@@ -1060,9 +995,8 @@ mod tests {
 
     #[tokio::test]
     async fn dedup_suppresses_redundant_uplink_at_router_ingress() {
-        // CLAUDE.md "redundant-uplink use case": same vehicle frame
-        // arrives on two different routing endpoints (LTE + RFD900); the
-        // global window suppresses the second arrival regardless of source.
+        // Redundant uplink: the global window must suppress the second
+        // copy regardless of which leg it arrived on.
         let (mut router, _stats_rx) = make_router(500, 16);
         let alloc = EndpointIdAllocator::new();
         let lte = make_endpoint(&alloc, true);
@@ -1091,18 +1025,16 @@ mod tests {
             gcs.tx_queue.pop().is_none(),
             "duplicate frame must not reach gcs"
         );
-        // dedup_drops is credited to the *source* of the suppressed
-        // frame (rfd), not the lte leg that admitted the first copy.
+        // `dedup_drops` is credited to the suppressed frame's source.
         assert_eq!(rfd.stats.dedup_drops.load(Ordering::Relaxed), 1);
         assert_eq!(lte.stats.dedup_drops.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
     async fn sniffer_sees_post_dedup_traffic() {
-        // CLAUDE.md "Sniffer + dedup ordering: ingress dedup runs before
-        // the per-destination decision, so a sniffer sees the post-dedup
-        // frame set." Duplicate suppression therefore hides the second
-        // arrival from the sniffer too.
+        // Ingress dedup runs before the per-destination decision, so
+        // duplicate suppression also hides the second arrival from a
+        // sniffer destination.
         let (mut router, _stats_rx) = make_router(500, 16);
         let alloc = EndpointIdAllocator::new();
         let lte = make_endpoint(&alloc, true);
@@ -1139,11 +1071,10 @@ mod tests {
 
     #[tokio::test]
     async fn dedup_does_not_run_learn_on_suppressed_frame() {
-        // CLAUDE.md ingress pipeline order: dedup runs BEFORE learn. A
-        // suppressed duplicate must not advance the source's learn-set.
-        // The duplicate carries a *different* header (sysid 8 instead of
-        // 7) on identical bytes — if dedup ran *after* learn, we'd see
-        // learn_entries grow to 2; the assertion below pins ordering.
+        // Dedup runs BEFORE learn: a suppressed duplicate must not advance
+        // the source's learn-set. The duplicate carries a *different*
+        // header on identical bytes — if learn ran first, `learn_entries`
+        // would grow to 2.
         let (mut router, _stats_rx) = make_router(500, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);

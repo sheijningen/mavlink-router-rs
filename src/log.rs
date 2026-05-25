@@ -1,9 +1,4 @@
 //! Tracing initialisation and the `LogLevel → tracing::Level` bridge.
-//!
-//! [`crate::config`] owns the parsed `LogLevel` / `LogFormat` enums (clap +
-//! serde value types); this module owns the operational side — converting
-//! the parsed level into the `tracing::Level` the subscriber needs and
-//! installing the global subscriber at process startup.
 
 use tracing::Level;
 
@@ -21,9 +16,7 @@ impl From<LogLevel> for Level {
     }
 }
 
-/// Install the global tracing subscriber. Called once at process startup
-/// (CLAUDE.md "Lifecycle: Startup"). Tests that drive [`crate::run`]
-/// initialise their own subscriber and bypass this entry point.
+/// Install the global tracing subscriber. Called once at process startup.
 pub fn init_tracing(level: LogLevel, format: LogFormat) {
     let builder = tracing_subscriber::fmt()
         .with_max_level(Level::from(level))

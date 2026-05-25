@@ -22,14 +22,8 @@ use super::super::tx_queue::TxQueue;
 use super::super::wiring::{ClientWiring, ServerWiring};
 
 /// Inputs that distinguish one `tcps:` listener from another: where to bind
-/// and what to call it. The `reconnect_*_ms` fields are always the
-/// hardcoded `tcpc:` curve (CLAUDE.md "Hardcoded plumbing knobs"); the field
-/// stays on the Spec so bind-retry tests can shrink the curve. `identity`
-/// carries the filter / sniffer / group bundle — inherited by every
-/// accepted child at admission time (CLAUDE.md "Sub-endpoints inherit their
-/// parent's `IdentityFlags` by clone at spawn time"); the child reader
-/// applies the in-filter snapshot, the router applies out-filter / sniffer
-/// / group from the same bundle.
+/// and what to call it. Filter / sniffer / group bundle inherited by every
+/// accepted child at admission time.
 pub struct TcpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,
@@ -60,10 +54,8 @@ impl TcpServerSpec {
 }
 
 /// Run a `tcps:` listener until the cancellation token fires. Binding is
-/// retried with the shared capped-exp backoff (CLAUDE.md "Initial bind/dial
-/// failure path"), so a port collision at startup logs at WARN and the
-/// listener attaches as soon as the port frees. Each accepted client becomes
-/// its own routing endpoint announced via `event_tx`.
+/// retried with the shared capped-exp backoff. Each accepted client
+/// becomes its own routing endpoint announced via `event_tx`.
 pub async fn run(spec: TcpServerSpec, wiring: ServerWiring) {
     let span = info_span!("tcps", name = %spec.parent_name);
     run_inner(spec, wiring).instrument(span).await
@@ -109,10 +101,8 @@ async fn run_accept_loop(listener: TcpListener, spec: &TcpServerSpec, wiring: &S
                         accept_one_client(stream, peer_addr, spec, wiring, &mut children).await;
                     }
                     Err(err) => {
-                        // Per CLAUDE.md: removal of a child without killing the
-                        // router. Accept errors are typically EMFILE-style
-                        // per-connection failures, not listener death; log and
-                        // continue.
+                        // Accept errors are typically per-connection failures
+                        // (EMFILE etc.), not listener death; log and continue.
                         warn!(error = %err, "accept failed; continuing");
                     }
                 }
@@ -146,9 +136,8 @@ async fn accept_one_client(
     let child_span = info_span!("tcps_child", name = %name);
 
     // Announce PeerAdded before spawning the child so the router never sees
-    // a RouterFrame for an unknown EndpointId. The child inherits the parent
-    // listener's IdentityFlags by clone per CLAUDE.md "Sub-endpoints inherit
-    // their parent's IdentityFlags by clone at spawn time".
+    // a RouterFrame for an unknown EndpointId. The child inherits the
+    // parent listener's IdentityFlags.
     if wiring
         .event_tx
         .send(EndpointEvent::PeerAdded {

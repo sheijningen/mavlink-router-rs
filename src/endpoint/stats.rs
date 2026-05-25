@@ -2,29 +2,10 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use crate::mavlink::framer::Framer;
 
-/// User-visible health of one routing endpoint. Stored on
-/// [`EndpointStats::state`] as a raw `u8` so the stats task can cheaply
-/// `load → match` on a hot interval; the named enum keeps writers honest
-/// about which variant they're storing. The u8 encoding is an internal
-/// implementation detail — the stats JSON-Line serializes by variant name,
-/// not by discriminant.
-///
-/// **Default is `Reconnecting`** — the safe initial state before any
-/// transport event has been observed. [`EndpointStats::default`] therefore
-/// lands in `Reconnecting`; every call site that needs a different initial
-/// state stores it explicitly (top-level endpoints stay on `Reconnecting`
-/// through their bind/dial backoff; sub-endpoint admission paths store
-/// `Connected` because admission *is* the transport-up event).
-///
-/// **Write authority is split** (CLAUDE.md locked decision): the endpoint
-/// task owns `Connected` / `Reconnecting`, the router task owns `Idle` /
-/// `Down`. Once an endpoint task observes the cancellation token it must
-/// not write `state` again so the router's `Down` write is guaranteed to
-/// be the last write to the slot.
-///
-/// `Unknown` is the safe fallback [`EndpointStats::load_state`] returns
-/// when the slot holds an out-of-range u8. It is not a value any writer
-/// ever stores; if it surfaces in stats output it indicates a bug.
+/// User-visible health of one routing endpoint, stored on
+/// [`EndpointStats::state`] as a raw `u8`. Default `Reconnecting`; sub-
+/// endpoint admission paths explicitly store `Connected` because admission
+/// *is* the transport-up event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EndpointState {
     #[default]

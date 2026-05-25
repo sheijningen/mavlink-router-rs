@@ -1,6 +1,5 @@
 //! Endpoint-spec parsing: turn one CLI string (or one TOML entry) into a
-//! fully-typed [`EndpointSpec`]. See the "Project layout" section of
-//! `CLAUDE.md` for the per-file breakdown.
+//! fully-typed [`EndpointSpec`].
 
 use std::fmt;
 
@@ -35,7 +34,7 @@ pub enum Scheme {
 
 impl Scheme {
     /// CLI prefix / TOML `type` literal for this variant. Pinned strings —
-    /// these appear verbatim in error messages and CLAUDE.md's CLI grammar.
+    /// they appear verbatim in error messages and the CLI grammar.
     pub fn as_str(self) -> &'static str {
         match self {
             Scheme::Serial => "serial",
@@ -72,11 +71,6 @@ impl fmt::Display for Scheme {
         formatter.write_str(self.as_str())
     }
 }
-
-// No external parsers re-exported: CLI argv goes through `EndpointSpec::parse`,
-// TOML goes through `EndpointSpec::build`. The two share the same body /
-// query / applier machinery internally — "one parser for both CLI and TOML"
-// is enforced at the `EndpointSpec` boundary, not via re-exported helpers.
 
 /// One endpoint declaration after parsing a CLI string or TOML entry. The
 /// scheme-specific configuration (address, query knobs, filter lists) lives

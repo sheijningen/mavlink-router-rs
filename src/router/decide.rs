@@ -1,26 +1,5 @@
-//! Per-destination routing decision.
-//!
-//! Pure function consumed by the router task: given one parsed header, the
-//! destination endpoint's learn table, and its identity (filters + sniffer
-//! flag), decide whether to admit the frame and — on rejection — surface
-//! the reason so the caller can bump `out_filter_drops` if and only if the
-//! out-filter rejected the frame. The four decision steps documented in
-//! CLAUDE.md's "Routing" section are implemented here:
-//!
-//! 1. Sniffer override — `sniffer = true` bypasses every other step and
-//!    accepts. CLAUDE.md: "A sniffer sees every frame the router has
-//!    accepted, regardless of target, loop-prevention, or out-filters."
-//! 2. Loop prevention — reject if the destination has learned the source
-//!    identity (the frame would loop back via a redundant link).
-//! 3. Out-filter — apply the destination's `*_out` allow/block lists.
-//! 4. Target match — broadcast frames go everywhere; targeted frames need
-//!    the destination to have learned the target identity (fully matched
-//!    on both sysid and compid, or half-matched on sysid alone when the
-//!    msgid carries no compid field or the compid is the 0 wildcard).
-//!
-//! The caller (the router task) is responsible for excluding the source
-//! endpoint from the destination loop before calling [`decide`]; every
-//! other admission criterion comes from here.
+//! Per-destination routing decision: sniffer → loop-prevention → out-filter
+//! → target-match.
 
 use crate::endpoint::identity_flags::IdentityFlags;
 use crate::mavlink::frame::{NodeId, ParsedHeader};
@@ -248,11 +227,7 @@ mod tests {
 
     #[test]
     fn empty_learn_rejects_half_target_compid_zero() {
-        // target_sys = N (non-zero), target_comp = 0 with no prior learning:
-        // `target_match` routes through `learn.contains_sys(N)` which is
-        // false on an empty table → `TargetMismatch`. Guards the "the
-        // 0-wildcard component does not accidentally bypass the empty-learn
-        // check" boundary documented in CLAUDE.md's per-destination decision.
+        // 0-wildcard compid must not bypass the empty-learn check.
         let header = header_at(99, 99, Some(5), Some(0));
         assert_eq!(
             decide(&header, &empty_learn(), &plain_identity()),
@@ -262,8 +237,6 @@ mod tests {
 
     #[test]
     fn empty_learn_rejects_half_target_no_compid_field() {
-        // Same boundary as above for messages whose msgid carries
-        // `target_system` only (no `target_component` slot).
         let header = header_at(99, 99, Some(5), None);
         assert_eq!(
             decide(&header, &empty_learn(), &plain_identity()),
@@ -288,10 +261,8 @@ mod tests {
 
     #[test]
     fn out_filter_block_runs_after_loop_prevent() {
-        // Per CLAUDE.md the out-filter is step 3; loop-prevention is step 2
-        // (after sniffer). A frame that's both looped *and* blocked must
-        // surface as LoopBlocked so the silent-rejection accounting wins —
-        // out_filter_drops would lie about the cause.
+        // A looped-and-blocked frame must surface as LoopBlocked so
+        // out_filter_drops doesn't lie about the cause.
         let header = header_with_msgid(33, 1, 1);
         let identity = identity_with_filters(Filters {
             block_msgid_out: vec![MsgIdRange::single(33)],
@@ -354,10 +325,8 @@ mod tests {
 
     #[test]
     fn out_filter_runs_before_target_match() {
-        // A frame that fails target-match AND fails out-filter must surface
-        // OutFilterBlocked (step 3 runs before step 4 in the documented
-        // order). Important so out_filter_drops captures the policy hit
-        // rather than being swallowed by the silent target-mismatch.
+        // Out-filter rejection must surface over target-mismatch so
+        // out_filter_drops captures the policy hit.
         let header = header_at(1, 1, Some(99), Some(99));
         let identity = identity_with_filters(Filters {
             block_msgid_out: vec![MsgIdRange::single(0)],
@@ -373,8 +342,6 @@ mod tests {
 
     #[test]
     fn sniffer_admits_even_when_looped() {
-        // CLAUDE.md: "A sniffer sees every frame the router has accepted,
-        // regardless of target, loop-prevention, or out-filters."
         let header = header_at(1, 1, None, None);
         let learn = learn_with(&[(1, 1)]);
         assert_eq!(

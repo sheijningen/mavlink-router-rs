@@ -1,17 +1,6 @@
-//! TOML deserialisation.
-//!
-//! Reads a TOML file off disk (or a string fixture in tests) and produces a
-//! [`TomlConfig`] — the TOML-side view of the world, where every global is
-//! `Option<T>` so the merge step in [`crate::config`] can tell "operator
-//! omitted this key" from "operator wrote the default value".
-//!
-//! Round-tripping a `[[endpoints]]` table into an [`EndpointSpec`] happens
-//! here too: the flat serde struct ([`TomlEndpoint`]) is rejected on
-//! scheme-mismatched fields, then its address fields and query knobs are
-//! repacked into the `(scheme, body, name, pairs)` 4-tuple that
-//! [`EndpointSpec::build`] consumes. No CLI logic crosses this module.
-//!
-//! [`EndpointSpec`]: crate::endpoint::spec::EndpointSpec
+//! TOML deserialisation into [`TomlConfig`] (`Option<T>` globals,
+//! `[[endpoints]]` round-tripped through
+//! [`crate::endpoint::spec::EndpointSpec::build`]).
 
 use std::path::Path;
 
@@ -51,18 +40,13 @@ impl TomlConfig {
         Self::parse_str(&raw)
     }
 
-    /// Parse a TOML string into a [`TomlConfig`]. The schema is documented in
-    /// [`TomlFile`] / [`TomlEndpoint`] — every TOML key is a strict match
-    /// against those serde structs (`deny_unknown_fields`); per-endpoint
-    /// typed fields are validated against the chosen `type` (e.g. a `serial`
-    /// entry must carry `path`/`baud` and must not carry `bind`/`host`/`port`).
-    /// Filter knobs are accepted in the string form only
-    /// (`block_msgid_in = "33,100-150"`), per CLAUDE.md.
+    /// Parse a TOML string into a [`TomlConfig`]. Schema: [`TomlFile`] /
+    /// [`TomlEndpoint`] with `deny_unknown_fields`; per-endpoint typed fields
+    /// are validated against the chosen `type`. Filter knobs accept the
+    /// string form only (`block_msgid_in = "33,100-150"`).
     ///
-    /// Named `parse_str` (not `from_str`) so it doesn't shadow the
-    /// `std::str::FromStr` trait method; `FromStr` doesn't fit because the
-    /// returned [`Error`] is wider than what the trait's idiomatic
-    /// `FromStr::Err` shape allows.
+    /// Named `parse_str` rather than implementing `FromStr` because the
+    /// returned [`Error`] is wider than the `FromStr::Err` idiom expects.
     pub fn parse_str(text: &str) -> Result<Self, Error> {
         let file: TomlFile = toml::from_str(text).map_err(Error::ConfigParse)?;
         file.into_toml_config()
@@ -151,7 +135,7 @@ struct TomlEndpoint {
     latch_idle_secs: Option<u64>,
     sniffer: Option<bool>,
     group: Option<String>,
-    // filters (string form per CLAUDE.md — array forms are rejected at parse time)
+    // filters (string form only; array forms rejected at parse time)
     allow_msgid_in: Option<String>,
     block_msgid_in: Option<String>,
     allow_msgid_out: Option<String>,
@@ -170,10 +154,8 @@ impl TomlEndpoint {
     fn into_spec(self, index: usize) -> Result<EndpointSpec, Error> {
         let scheme = scheme_from_toml_type(&self.scheme, index, self.name.as_deref())?;
 
-        // Reject wrong-scheme fields *before* synthesising the body so that an
-        // entry carrying both `path` and `bind` surfaces "field 'bind' is not
-        // valid for type 'serial'" — the operator's real mistake — rather than
-        // the body-synthesizer's downstream missing-`baud` complaint.
+        // Reject wrong-scheme fields *before* synthesising the body so the
+        // operator's real mistake surfaces over downstream errors.
         self.reject_disallowed_fields(index, scheme)?;
         let body = self.synthesize_body(index, scheme)?;
         let pairs = self.collect_pairs();
@@ -213,11 +195,8 @@ impl TomlEndpoint {
                 let port = self
                     .port
                     .ok_or_else(|| missing(index, name, scheme, "port"))?;
-                // IPv6 literal hosts must be bracketed in the body grammar so
-                // the rsplit(':') boundary lands at the port colon, not the
-                // last `::` inside the address. Bracketing here is harmless for
-                // IPv4 hostnames (the body parser strips brackets only when
-                // present).
+                // IPv6 hosts must be bracketed so `rsplit(':')` finds the
+                // port colon, not a `::` inside the address.
                 if host.contains(':') {
                     Ok(format!("[{host}]:{port}"))
                 } else {
@@ -625,10 +604,6 @@ type = "carrier_pigeon"
 
     #[test]
     fn filter_array_form_rejected() {
-        // CLAUDE.md: "TOML accepts the string form only — array forms are a
-        // parse-time error." Our serde schema types filter fields as
-        // Option<String>, so an inline array fails at the toml-deserialize
-        // layer.
         let text = r#"
 [[endpoints]]
 type = "tcpc"
@@ -644,9 +619,8 @@ block_msgid_in = [33, 100, 150]
 
     #[test]
     fn propagates_spec_errors_for_invalid_query_value() {
-        // Invalid range (lo > hi) surfaces as a SpecError from the filter
-        // parser; the TOML loader must wrap it in `SpecInToml` so the
-        // entry name + index reach the operator.
+        // Wrap `SpecError` in `SpecInToml` so the entry name + index reach
+        // the operator.
         let text = r#"
 [[endpoints]]
 type = "tcpc"
@@ -706,9 +680,6 @@ port = 5760
 
     #[test]
     fn invalid_explicit_name_rejected() {
-        // CLAUDE.md "`#name` validation": names outside [A-Za-z0-9_-]{1,64}
-        // are fatal. The offending name is surfaced verbatim in both the
-        // wrapper's locator suffix and the inner `SpecError::InvalidName`.
         let text = r#"
 [[endpoints]]
 type = "udps"
@@ -726,9 +697,8 @@ name = "has spaces"
 
     #[test]
     fn serial_path_containing_colon() {
-        // Real-world `/dev/serial/by-id/...` symlinks can carry `:` in the
-        // path. The body parser uses `rfind(':')` so the last colon (before
-        // the baud) wins, leaving the path intact.
+        // `/dev/serial/by-id/...` symlinks carry `:` in the path; the body
+        // parser uses `rfind(':')` so only the baud-prefix colon splits.
         let text = r#"
 [[endpoints]]
 type = "serial"
@@ -746,9 +716,8 @@ baud = 57600
 
     #[test]
     fn unknown_endpoint_field_error_names_the_field() {
-        // The unknown-field error text is part of the contract: operators
-        // grep it to find their typo. Pin that the offending key appears in
-        // the message at least once.
+        // Operators grep error text to find their typo — the offending
+        // key must appear at least once.
         let text = r#"
 [[endpoints]]
 type = "udps"
@@ -769,11 +738,6 @@ totally_made_up = 1
 
     #[test]
     fn multiple_endpoints_preserve_order_and_kind() {
-        // Mixed-scheme TOML with several correctly-formed `[[endpoints]]`
-        // entries: every entry must round-trip into the matching
-        // `EndpointKind`, and the resulting `Vec<EndpointSpec>` must preserve
-        // declaration order (the spawner relies on it for stable
-        // `EndpointId` allocation and stats ordering).
         let text = r#"
 [[endpoints]]
 type = "serial"
@@ -833,12 +797,8 @@ name = "vehicle"
 
     #[test]
     fn duplicate_key_within_endpoint_rejected() {
-        // TOML disallows the same key appearing twice in the same table;
-        // serde's deserializer surfaces this as a parse error before our
-        // schema validation runs. Pin the behaviour so a future move to a
-        // lenient TOML reader (or a swap to `toml-edit`) can't silently
-        // accept "last write wins" semantics and let an operator's
-        // copy-paste typo route to an unintended bind address.
+        // Pin the parse-error behaviour so a future swap to a lenient
+        // reader can't silently accept "last write wins".
         let text = r#"
 [[endpoints]]
 type = "udps"
@@ -919,20 +879,14 @@ bind = "0.0.0.0:14551"
 
     #[test]
     fn explicit_stats_false_distinguishable_from_unset() {
-        // CLAUDE.md merge: `Some(false)` falls through to CLI overrides /
-        // defaults differently than `None`. Pin that an explicit
-        // `stats = false` in TOML survives parsing as `Some(false)` so the
-        // merge step can act on the operator's choice.
+        // `Some(false)` and `None` flow through merge differently — the
+        // explicit `false` must survive parsing.
         let cfg = TomlConfig::parse_str("stats = false\n").expect("must parse");
         assert_eq!(cfg.stats, Some(false));
     }
 
     #[test]
     fn sniffer_true_propagates_to_identity() {
-        // `udps_endpoint_with_filters` covers `sniffer = false`; without a
-        // matching `sniffer = true` test, swapping the bool inside
-        // `collect_pairs` (or `IdentityFlags::apply`) would only break one
-        // value and pass the existing assertions.
         let text = r#"
 [[endpoints]]
 type = "udps"
@@ -949,10 +903,8 @@ sniffer = true
 
     #[test]
     fn disallowed_field_takes_priority_over_missing_field() {
-        // Regression guard for the validation-ordering decision (see
-        // `into_spec`): a serial entry carrying `bind` but lacking `path`
-        // must surface the wrong-field-for-scheme error, not the
-        // downstream missing-path error.
+        // Wrong-field-for-scheme must surface over downstream
+        // missing-required-field — keeps the operator's real mistake first.
         let text = r#"
 [[endpoints]]
 type = "serial"

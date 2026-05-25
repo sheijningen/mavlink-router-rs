@@ -31,11 +31,9 @@ pub fn bind_udp_dual_stack(addr: SocketAddr) -> io::Result<UdpSocket> {
 }
 
 /// Bind a TCP listener with the same dual-stack and reuse semantics as
-/// [`bind_udp_dual_stack`]: `SO_REUSEADDR` on (so a fresh RMR can rebind
-/// without TIME_WAIT delay), `IPV6_V6ONLY` off only when binding `[::]`
-/// (no effect on specific v6 addresses), non-blocking, ready for async
-/// accept. `SO_REUSEPORT` is intentionally not set — see CLAUDE.md ("Port
-/// reuse on `tcps:` and `udps:` binds").
+/// [`bind_udp_dual_stack`]: `SO_REUSEADDR` on (rebind without TIME_WAIT
+/// delay), `IPV6_V6ONLY` off only on `[::]`. `SO_REUSEPORT` intentionally
+/// not set.
 pub fn bind_tcp_dual_stack(addr: SocketAddr) -> io::Result<TcpListener> {
     let domain = match addr {
         SocketAddr::V4(_) => Domain::IPV4,

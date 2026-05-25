@@ -34,13 +34,7 @@ pub const MAX_LATCH_IDLE_SECS: u64 = 86_400;
 const REVERT_TICK: Duration = Duration::from_secs(1);
 
 /// Inputs that distinguish one `udpc:` endpoint from another: where to send,
-/// what to call it, and the latch-idle threshold. The `reconnect_*_ms`
-/// fields are always the hardcoded `tcpc:` curve (CLAUDE.md "Hardcoded
-/// plumbing knobs"); `udpc:` reuses the curve for its local-bind retry.
-/// `identity` carries the filter / sniffer / group bundle (CLAUDE.md
-/// "Filters, group, sniffer travel with the `*Spec`"); the reader applies
-/// the in-filter snapshot, the router applies out-filter / sniffer / group
-/// from the same bundle.
+/// what to call it, and the latch-idle threshold.
 pub struct UdpClientSpec {
     pub host: String,
     pub port: u16,
@@ -54,9 +48,8 @@ pub struct UdpClientSpec {
 
 impl UdpClientSpec {
     /// Build a runtime `UdpClientSpec` from the parsed-but-not-defaulted
-    /// `UdpClientEndpoint` the CLI/TOML layer produced, substituting CLAUDE.md
-    /// defaults for any unset knob. The spawner supplies `endpoint_id` and
-    /// `name` because the parser doesn't allocate IDs.
+    /// `UdpClientEndpoint`, substituting documented defaults for any unset
+    /// knob. The spawner supplies `endpoint_id` and `name`.
     pub fn from_endpoint(
         endpoint: UdpClientEndpoint,
         endpoint_id: EndpointId,
@@ -180,11 +173,9 @@ async fn resolve_host(host: &str, port: u16) -> Vec<IpAddr> {
 }
 
 /// Run a `udpc:` endpoint until the cancellation token fires. Binds a local
-/// socket suitable for the host's resolved family, retrying with the shared
-/// capped-exp backoff on failure (CLAUDE.md "Bind/open failure at startup is
-/// not fatal"); performs an initial DNS resolution (failure is non-fatal —
-/// retried on first send/inbound); then loops over inbound, the revert tick,
-/// the TX queue, and cancellation.
+/// socket for the host's resolved family, retrying with the shared
+/// capped-exp backoff on failure; initial DNS resolution failure is
+/// non-fatal (retried on first send/inbound).
 pub async fn run(spec: UdpClientSpec, wiring: ClientWiring) {
     let span = info_span!("udpc", name = %spec.name);
     run_inner(spec, wiring).instrument(span).await
@@ -337,10 +328,8 @@ async fn handle_inbound(
     session_ctx.stats.store_state(EndpointState::Connected);
 
     framer.buffer_mut().extend_from_slice(data);
-    // `in_filter_drops` here is the union counter: the same slot bumped by
-    // the wrong-source-IP rejection above (CLAUDE.md "In-filter evaluation
-    // in the reader task" — `in_filter_drops` is the union of all
-    // ingress-side drops).
+    // `in_filter_drops` is the union counter for every ingress-side drop;
+    // the wrong-source-IP rejection above bumps the same slot.
     let pipeline = session_ctx
         .forward_inbound_frames(framer, seq_tracker)
         .instrument(tracing::trace_span!("udpc_ingress", %src));
@@ -362,11 +351,8 @@ async fn send_frame(
         if !fresh.is_empty() {
             dest.resolved_ips = fresh;
         }
-        // CLAUDE.md: "writes Reconnecting only on send_to errors and
-        // DNS-resolve failures that prevent any send at all". The frame
-        // we just skipped is one such failure — if the re-resolve also
-        // couldn't produce a target, surface the state to the operator.
-        // The next successful send flips back to Connected below.
+        // No target after re-resolve is a DNS-resolve failure preventing
+        // any send — surface Reconnecting. Next successful send flips back.
         if dest.current_target().is_none() {
             stats.store_state(EndpointState::Reconnecting);
         }
@@ -497,8 +483,8 @@ mod tests {
             addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 5), 50000)),
             last_inbound: Instant::now(),
         });
-        // Even though 192.168.1.6 is in resolved_ips, we're latched on .5
-        // so .6 is now Reject. The latch is a hard lock until idle revert.
+        // 192.168.1.6 is in resolved_ips but the latch on 192.168.1.5 is a hard lock until
+        // idle revert.
         assert_eq!(
             classify_inbound(&dest, v4(192, 168, 1, 6)),
             InboundDecision::Reject

@@ -127,10 +127,8 @@ impl Filters {
     /// `Ok(true)` when consumed, `Ok(false)` when the key isn't ours, or
     /// `Err` on a malformed value.
     pub fn apply(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
-        // Field name IS the query key (locked invariant — `Filters::KEYS` and
-        // the TOML schema spell the same strings), so the match arm is
-        // `stringify!($field)` and there is no separate key literal to keep
-        // in sync with the field set.
+        // Field name IS the query key (`Filters::KEYS` and the TOML schema
+        // spell the same strings) so `stringify!` drives the match.
         macro_rules! axes {
             ($($field:ident: $parser:ident),* $(,)?) => {
                 match key {
@@ -399,7 +397,6 @@ mod tests {
 
     #[test]
     fn block_wins_over_allow_on_overlap() {
-        // CLAUDE.md: "If both are set, Block* wins on overlap."
         let filters = Filters {
             allow_msgid_in: vec![MsgIdRange { lo: 0, hi: 100 }],
             block_msgid_in: vec![MsgIdRange::single(33)],
@@ -586,12 +583,6 @@ mod tests {
     }
 
     // ----- property tests -----
-    //
-    // CLAUDE.md "Testing strategy" requires proptest coverage for the filter
-    // evaluator: "blocklist always wins over allowlist on overlap" plus the
-    // surrounding axis-composition / monotonicity invariants. Properties test
-    // shapes that example-based tests can't enumerate (any allow/block list,
-    // any value, any range overlap).
 
     use proptest::collection::vec;
     use proptest::prelude::*;
@@ -637,9 +628,6 @@ mod tests {
     }
 
     proptest! {
-        // CLAUDE.md "blocklist always wins over allowlist on overlap": no
-        // matter what allow list contains the value, a block range that also
-        // covers the value rejects.
         #[test]
         fn block_wins_on_overlap_msgid(
             (msgid, allow_with_msgid, blocker) in any::<u32>().prop_flat_map(|msgid| {
@@ -700,9 +688,6 @@ mod tests {
             prop_assert!(!filters.passes_in_filter(0, NodeId::new(0, src_comp)));
         }
 
-        // Block-wins-on-overlap also applies to the egress filter — the
-        // locked decision says nothing distinguishes the in/out semantics
-        // beyond the list each filter reads.
         #[test]
         fn block_wins_on_overlap_msgid_out(
             (msgid, allow_with_msgid, blocker) in msgid_value().prop_flat_map(|msgid| {

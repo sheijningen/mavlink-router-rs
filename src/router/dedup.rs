@@ -1,28 +1,9 @@
 //! Frame-hash dedup window — single global structure owned by the router.
+//! Redundant uplink delivering the same frame on two different routing endpoints
+//! still collides on the second arrival.
 //!
-//! Per CLAUDE.md (locked decision "Dedup hash + storage"):
-//!
-//! - **xxh3-64** of the framed bytes (header + payload + CRC + optional
-//!   signature trailer) is the key. The hash is non-cryptographic; the
-//!   redundant-uplink use case it protects (LTE + RFD900 each delivering
-//!   the same vehicle frame) doesn't need cryptographic strength.
-//! - **Single global window** owned by the router — every source endpoint
-//!   inserts into and hits the same window. That's what catches the
-//!   second copy from a redundant uplink even though the two arrivals
-//!   come in on different routing endpoints.
-//! - **`HashSet<u64>` for O(1) membership** paired with a parallel fixed-
-//!   capacity FIFO ring of `(u64 hash, Instant deadline)`. The ring
-//!   drives eviction (TTL expiry from the head; oldest-first when at
-//!   capacity); the set drives lookup.
-//! - **TTL = `dedup_ms`** from CLI / TOML; the window is *disabled* when
-//!   `dedup_ms == 0` (the default) — no allocation, no hashing on the
-//!   hot path.
-//! - **On hit:** drop the frame and bump `dedup_drops` on the source
-//!   endpoint. Pre-learn, pre-dispatch — so a sniffer destination sees
-//!   the *post-dedup* frame set (locked decision "Sniffer + dedup
-//!   ordering").
-//!
-//! The router task is the sole owner; there is no synchronisation.
+//! `HashSet<u64>` for O(1) lookup + parallel FIFO
+//! ring for TTL / capacity eviction. Disabled when `dedup_ms == 0`.
 
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -53,8 +34,7 @@ pub struct DedupWindow {
 
 impl DedupWindow {
     /// Construct a window with the given TTL and capacity. A `ttl` of
-    /// `Duration::ZERO` disables the window (CLAUDE.md: "`dedup_ms == 0`
-    /// turns dedup off").
+    /// `Duration::ZERO` disables the window.
     pub fn new(ttl: Duration, capacity: usize) -> Self {
         let clamped = capacity.max(1);
         Self {
@@ -188,9 +168,8 @@ mod tests {
 
     #[test]
     fn ttl_expiry_releases_set_membership_for_replay() {
-        // Regression guard: TTL-expired hashes must leave the HashSet, not
-        // just the ring — otherwise a "replay after expiry" frame would be
-        // a false positive.
+        // Regression guard: expired hashes must leave the HashSet too,
+        // not just the ring.
         let mut window = DedupWindow::new(Duration::from_millis(10), 16);
         let frame = make_frame(b"repeat");
         assert!(!window.check_and_insert(&frame, at(0)));
@@ -210,10 +189,8 @@ mod tests {
 
     #[test]
     fn hit_is_content_based_not_pointer_based() {
-        // The redundant-uplink use case the window exists to serve delivers
-        // the same frame on two different transports — each producing its
-        // own backing allocation. Dedup must collide on identical content
-        // regardless of which buffer the bytes were copied from.
+        // Redundant uplinks produce independent allocations of identical
+        // content — dedup must collide on content, not buffer identity.
         let mut window = DedupWindow::new(Duration::from_millis(100), 16);
         let content: &[u8] = &[0xFD, 9, 0, 0, 0, 1, 1, 0, 0, 0, 1, 2, 3, 4];
         let first = Bytes::copy_from_slice(content);

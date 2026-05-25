@@ -88,10 +88,9 @@ impl EndpointKind {
     }
 }
 
-/// Hardware flow-control mode for `serial:`. The query-key name
-/// `?flow_control=rtscts|none` is locked (CLAUDE.md Phase 4 contract bullet)
-/// — `rtscts` over `hw` keeps the door open for adding DTR/DSR later without
-/// claiming all hardware-handshake names under a single ambiguous knob.
+/// Hardware flow-control mode for `serial:`. Query-key name is
+/// `?flow_control=rtscts|none` — `rtscts` (not `hw`) keeps the namespace
+/// open for adding DTR/DSR later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SerialFlowControl {
     #[default]
@@ -122,8 +121,8 @@ impl fmt::Display for SerialEndpoint {
 }
 
 /// `udps:` endpoint config. `bind_addr` is fully resolved at parse time —
-/// CLAUDE.md "malformed addresses are fatal" rules out hostnames here, so
-/// every `udps:` reaches the spawner with a concrete `SocketAddr`.
+/// hostnames are rejected, every `udps:` reaches the spawner with a
+/// concrete `SocketAddr`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpServerEndpoint {
     pub bind_addr: SocketAddr,
@@ -179,8 +178,8 @@ impl fmt::Display for UdpClientEndpoint {
 }
 
 /// `tcps:` endpoint config. `bind_addr` is fully resolved at parse time —
-/// CLAUDE.md "malformed addresses are fatal" rules out hostnames here, so
-/// every `tcps:` reaches the spawner with a concrete `SocketAddr`.
+/// hostnames are rejected, every `tcps:` reaches the spawner with a
+/// concrete `SocketAddr`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TcpServerEndpoint {
     pub bind_addr: SocketAddr,

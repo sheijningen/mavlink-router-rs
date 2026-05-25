@@ -1,38 +1,20 @@
-//! Cross-endpoint default values from CLAUDE.md's "Defaults" table.
-//!
-//! Every constant here is consumed by more than one endpoint type. Per-
-//! endpoint exclusives (e.g. `DEFAULT_IDLE_SECS`, `DEFAULT_LATCH_IDLE_SECS`,
-//! `REOPEN_DELAY`) stay in their owning module — only the truly cross-
-//! cutting defaults live here so a consistency change touches one site
-//! instead of five.
+//! Cross-endpoint default values. Per-endpoint exclusives stay in their
+//! owning module.
 
-/// Per-endpoint `BytesMut` initial capacity (reserved after each frame
-/// freeze). Applies to every transport with a framer (`serial:`, `tcpc:`,
-/// `tcps:` accepted children, `udps:` per-peer, `udpc:`). Hardcoded — well
-/// above the MAVLink v2 max signed frame (~280 B), so the framer's
-/// `reserve` path rarely grows; tuning is overkill for an internal buffer.
+/// Per-endpoint `BytesMut` initial capacity. Well above the MAVLink v2 max
+/// signed frame (~280 B) so the framer's `reserve` path rarely grows.
 pub const READ_BUF_BYTES: usize = 8192;
 
-/// Per-endpoint writer queue depth. Drop-oldest via `force_push` on
-/// overflow. Applies to every endpoint that owns a `TxQueue`. Hardcoded
-/// at the user-facing layer (CLAUDE.md "Hardcoded plumbing knobs"); the
-/// spawner sizes every leaf and per-child queue directly from this
-/// const. Tests that need a smaller queue construct `TxQueue::new(N,
-/// ...)` and inject it via `ClientWiring`, so no `*Spec` field exists
-/// for it.
+/// Per-endpoint writer queue depth; drop-oldest via `force_push` on
+/// overflow.
 pub const DEFAULT_TX_QUEUE_FRAMES: usize = 256;
 
-/// Floor of the capped-exponential reconnect curve. Applies to `tcpc:`
-/// reconnects and to `tcps:` / `udps:` initial-bind retries (CLAUDE.md
-/// "TCP/UDP server bind reuses the `tcpc:` backoff curve").
+/// Floor of the capped-exponential reconnect curve.
 pub const DEFAULT_RECONNECT_INITIAL_MS: u64 = 250;
 
-/// Ceiling of the capped-exponential reconnect curve (±20% jitter applied
-/// at draw time). Applies to `tcpc:` reconnects and to `tcps:` / `udps:`
-/// initial-bind retries.
+/// Ceiling of the capped-exponential reconnect curve.
 pub const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
 
-/// Global dedup window capacity (CLAUDE.md "Defaults" table:
-/// `dedup_window_capacity` default 4096). Total `(hash, deadline)`
-/// entries — single window owned by the router.
+/// Total `(hash, deadline)` entries in the single global dedup window
+/// owned by the router.
 pub const DEFAULT_DEDUP_WINDOW_CAPACITY: usize = 4096;

@@ -26,10 +26,7 @@ use super::udp::server::UdpServerSpec;
 use super::wiring::{ClientWiring, ServerWiring};
 use crate::error::Error;
 
-/// Walk the parsed endpoint list and spawn one task per entry. Each spawn
-/// also fires the matching `EndpointAdded` on `event_tx` so the router sees
-/// every registration before any frame stamped with the new `EndpointId`
-/// (CLAUDE.md "Endpoint registration is symmetric").
+/// Spawn one task per parsed endpoint.
 pub async fn spawn_endpoints(
     tasks: &mut JoinSet<()>,
     event_tx: &mpsc::Sender<EndpointEvent>,
@@ -45,16 +42,10 @@ pub async fn spawn_endpoints(
 }
 
 /// Construct the endpoint's runtime handles (`EndpointId`, `Arc<EndpointStats>`,
-/// per-kind `TxQueue`), announce the appropriate lifecycle event to the
-/// router, and spawn the endpoint task. Single `match kind` dispatch — leaf
-/// arms (`tcpc:` / `udpc:` / `serial:`) build a `TxQueue` and emit
-/// `EndpointAdded` with `routable = Some(_)`; parent-listener arms
-/// (`tcps:` / `udps:`) emit `EndpointAdded` with `routable = None`. The
-/// lifecycle event is awaited to completion BEFORE the endpoint task is
-/// spawned so the router's biased select sees the registration before any
-/// frame stamped with the new `EndpointId` (CLAUDE.md "Endpoint
-/// registration is symmetric"). On a closed event channel the spawn is
-/// silently skipped — the rest of the router has already torn down.
+/// per-kind `TxQueue`), announce the lifecycle event, then spawn the
+/// endpoint task. The event is awaited BEFORE the spawn so the router's
+///  biased select sees the registration before any frame stamped with the
+/// new `EndpointId`.
 async fn spawn_endpoint(
     tasks: &mut JoinSet<()>,
     allocator: &Arc<EndpointIdAllocator>,

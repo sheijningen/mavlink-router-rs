@@ -9,9 +9,7 @@ use super::error::SpecError;
 use super::query::{SerialApplier, UdpClientApplier, UdpServerApplier, apply_pairs};
 
 /// Split the post-scheme remainder into `(body, name, query)`. `#name`
-/// precedes `?query` — this ordering is locked because every example in
-/// CLAUDE.md relies on it and the parser is simpler when `#` is searched
-/// before `?` is parsed.
+/// precedes `?query`.
 pub fn split_body_name_query(rest: &str) -> (&str, Option<&str>, Option<&str>) {
     if let Some((body, after_hash)) = rest.split_once('#') {
         if let Some((name, query)) = after_hash.split_once('?') {
@@ -152,9 +150,8 @@ fn host_port_grammar(scheme: Scheme) -> &'static str {
 }
 
 /// Listen-side parser used by `tcps:` and `udps:`: same `host:port` grammar
-/// as `parse_host_port`, but with an additional constraint that the host
-/// must be an IP literal (CLAUDE.md "malformed addresses are fatal" — bind
-/// targets are not resolved at runtime, only dial targets are).
+/// as `parse_host_port`, but the host must be an IP literal — bind targets
+/// are not resolved at runtime, only dial targets are.
 pub(crate) fn parse_listen_addr(body: &str, scheme: Scheme) -> Result<SocketAddr, SpecError> {
     let (host, port) = parse_host_port(body, scheme)?;
     let ip_addr: IpAddr = host.parse().map_err(|_| SpecError::MalformedBody {
@@ -399,13 +396,9 @@ mod tests {
         assert_eq!(spec.name, "vehicle");
     }
 
-    /// `host:port` rejection matrix. The first 7 cases assert
-    /// `SpecError::MalformedBody` only (the structural rejections from
-    /// `parse_host_port`). The last 2 also assert the `must be an IP
-    /// literal` reason: CLAUDE.md "malformed addresses are fatal" + the
-    /// listen-side IP-literal-only rule means a hostname must surface at
-    /// parse time, with a message specific enough to be greppable, so the
-    /// reason substring is part of the contract.
+    /// `host:port` rejection matrix. The last 2 cases additionally assert
+    /// the `must be an IP literal` reason substring — that text is part of
+    /// the operator-visible contract.
     #[rstest]
     #[case::udps_no_port("udps:nohost", None)]
     #[case::udps_bad_port("udps:foo:abc", None)]

@@ -18,25 +18,7 @@ pub struct RouterFrame {
     pub header: ParsedHeader,
 }
 
-/// Lifecycle event on the shared reader→router event channel. Carries enough
-/// for the router to register an endpoint into its routing tables (or drop it)
-/// without ever allocating a per-endpoint handle itself — the spawner / parent
-/// owns construction of `EndpointId`, `TxQueue`, `Arc<EndpointStats>`, and
-/// `IdentityFlags` and announces them here.
-///
-/// `EndpointAdded` is emitted by the top-level spawner for every top-level
-/// endpoint, leaf or listener. Leaves (`tcpc:` / `udpc:` / `serial:`) carry
-/// `routable = Some(_)` so the router can dispatch frames to them; `tcps:` /
-/// `udps:` parent listeners carry `routable = None` — they're configured
-/// endpoints visible in stats but have no `TxQueue` (children own real
-/// readers/writers) and are never iterated as routing destinations. The
-/// router holds them in the same registry; the `None` short-circuits the
-/// per-frame dispatch loop at one branch. `PeerAdded` / `PeerRemoved` are
-/// emitted by `tcps:` listeners (per accepted client) and `udps:` listeners
-/// (per learned peer). There is no top-level `EndpointRemoved` variant in
-/// v1 — top-level endpoints live for the process; on shutdown the router
-/// writes `state = Down` and emits one final synthetic stats line per
-/// CLAUDE.md's "Endpoint registration is symmetric" decision.
+/// Lifecycle events of endpoints on the shared reader→router event channel.
 #[derive(Debug)]
 pub enum EndpointEvent {
     EndpointAdded {

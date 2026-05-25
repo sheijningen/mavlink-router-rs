@@ -328,8 +328,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_read_router_closed_breaks_terminated_but_counts_rx() {
-        // rx counters bump before the send; a closed router still leaves the
-        // frame visible in stats. Locking that behaviour in.
+        // rx counters bump before the send, so a closed router still
+        // leaves the frame visible in stats.
         let bytes = build_v1_heartbeat();
         let mut framer = Framer::with_capacity(64);
         framer.buffer_mut().put_slice(&bytes);
@@ -359,8 +359,6 @@ mod tests {
 
     #[tokio::test]
     async fn handle_read_syncs_framer_counters_to_stats() {
-        // Four garbage bytes ahead of a valid frame produce resync_bytes=4
-        // inside the framer; sync() must forward that delta to shared stats.
         let frame = build_v1_heartbeat();
         let mut buf = vec![0u8; 4];
         buf.extend_from_slice(&frame);
@@ -392,10 +390,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_read_terminated_path_skips_framer_sync() {
-        // Lock in the contract: when forward_inbound_frames short-circuits
-        // with Break(Terminated), the trailing framer_counters.sync() is
-        // intentionally skipped — the session is winding down and the final
-        // resync_bytes/crc_errors delta is allowed to die with it.
+        // On Break(Terminated) the trailing `framer_counters.sync()` is
+        // intentionally skipped — the session is winding down.
         let frame = build_v1_heartbeat();
         let mut buf = vec![0u8; 4];
         buf.extend_from_slice(&frame);
@@ -572,10 +568,8 @@ mod tests {
 
     #[tokio::test]
     async fn in_filter_blocks_frame_and_bumps_drop_counter() {
-        // A frame whose msgid matches `block_msgid_in` must not reach the
-        // router and must increment `in_filter_drops`; `rx_frames` still
-        // bumps because the framer admitted the frame (CLAUDE.md "Counter
-        // overlap: in_filter_drops is the union of all ingress-side drops").
+        // A blocked frame must not reach the router but `rx_frames` still
+        // bumps because the framer admitted it (union-counter rule).
         let bytes = build_v1_heartbeat(); // msgid 0 (HEARTBEAT)
         let mut framer = Framer::with_capacity(128);
         framer.buffer_mut().put_slice(&bytes);
@@ -666,9 +660,8 @@ mod tests {
 
     #[tokio::test]
     async fn seq_tracker_runs_before_in_filter_so_blocked_frame_still_counts() {
-        // CLAUDE.md "Runs before In-filter so the counter reflects link
-        // quality, not policy" — In-filter blocks msgid 0, but rx_lost_est
-        // still bumps by 3 (gap between seq 0 and seq 4).
+        // In-filter blocks msgid 0 but rx_lost_est still bumps by 3 (gap
+        // between seq 0 and seq 4) — counts link quality, not policy.
         let f0 = build_v1_heartbeat_with_seq(0);
         let f4 = build_v1_heartbeat_with_seq(4);
         let mut framer = Framer::with_capacity(128);

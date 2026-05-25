@@ -150,9 +150,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn aborted_waiter_does_not_break_subsequent_wakeup() {
-        // Drop a registered Notify waiter, then verify a fresh waiter still
-        // wakes on the next push. Guards against a regression where the
-        // aborted Notified future would mishandle its permit slot.
+        // Regression: an aborted `Notified` future mishandled its permit
+        // slot and left subsequent waiters wedged.
         let (queue, _) = make_queue(2);
         let aborted = {
             let queue = queue.clone();

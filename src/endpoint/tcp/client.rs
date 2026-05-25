@@ -19,13 +19,7 @@ use super::super::wiring::ClientWiring;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Inputs that distinguish one `tcpc:` endpoint from another: where to dial,
-/// what to call it, and the reconnect curve. The `reconnect_*_ms` fields are
-/// always the hardcoded `tcpc:` curve at the user-facing layer (CLAUDE.md
-/// "Hardcoded plumbing knobs"); the field is exposed on the Spec so tests
-/// can shrink the curve to keep test runtimes tight. `identity` carries the
-/// filter / sniffer / group bundle (CLAUDE.md "Filters, group, sniffer
-/// travel with the `*Spec`"); the reader applies the in-filter snapshot,
-/// the router applies out-filter / sniffer / group from this same bundle.
+/// what to call it, and the reconnect curve.
 pub struct TcpClientSpec {
     pub host: String,
     pub port: u16,
@@ -59,8 +53,7 @@ impl TcpClientSpec {
 
 /// Run a `tcpc:` endpoint until the cancellation token fires. Resolves DNS,
 /// dials with capped-exponential backoff + ±20% jitter, and on every
-/// successful connect drains the TxQueue (frames buffered during the outage
-/// are stale — CLAUDE.md "TX queue on disconnect: drain and discard"). Each
+/// successful connect drains the TxQueue (buffered frames are stale). Each
 /// session reads inbound bytes through a fresh `Framer` and writes outbound
 /// frames pulled from the TxQueue.
 pub async fn run(spec: TcpClientSpec, wiring: ClientWiring) {
@@ -203,7 +196,7 @@ async fn resolve_to_socket_addrs(host: &str, port: u16) -> Vec<SocketAddr> {
     match lookup_host(target.as_str()).await {
         Ok(addrs) => {
             let mut all: Vec<SocketAddr> = addrs.collect();
-            // CLAUDE.md: "prefer v4 on tie, since most MAVLink ecosystems are v4-only".
+            // Prefer v4 on tie — most MAVLink ecosystems are v4-only.
             all.sort_by_key(|addr| match addr.ip() {
                 IpAddr::V4(_) => 0u8,
                 IpAddr::V6(_) => 1u8,

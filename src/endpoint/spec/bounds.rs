@@ -1,9 +1,5 @@
-//! Range-check helpers used by the query-string applier (`query.rs`). Each
-//! helper takes the already-parsed numeric value, the key name (for error
-//! reporting), and the inclusive bounds; on out-of-range it builds
-//! [`SpecError::InvalidQueryValue`] with a uniform `"must be in MIN..=MAX,
-//! got N"` reason so operator-visible error text is consistent across every
-//! knob the parser bounds-checks.
+//! Inclusive-range checks for numeric query-string knobs, surfacing a
+//! uniform `"must be in MIN..=MAX, got N"` [`SpecError::InvalidQueryValue`].
 
 use super::error::SpecError;
 

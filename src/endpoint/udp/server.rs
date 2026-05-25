@@ -64,16 +64,9 @@ struct PeerEntry {
 }
 
 /// Inputs that distinguish one `udps:` listener from another: where to bind,
-/// what to call it, and the peer idle-reap threshold. The `reconnect_*_ms`
-/// fields are always the hardcoded `tcpc:` curve (CLAUDE.md "Hardcoded
-/// plumbing knobs"); the field stays on the Spec so bind-retry tests can
-/// shrink the curve. `peer_capacity` stays mutable for the same reason —
-/// production defaults it to [`DEFAULT_PEER_CAPACITY`], eviction tests
-/// shrink it. `identity` carries the filter / sniffer / group bundle —
-/// inherited by every learned peer at admission time (CLAUDE.md "Sub-
-/// endpoints inherit their parent's `IdentityFlags` by clone at spawn
-/// time"); the per-peer reader applies the in-filter snapshot, the router
-/// applies out-filter / sniffer / group from the same bundle.
+/// what to call it, and the peer idle-reap threshold. `identity` carries
+/// the filter / sniffer / group bundle inherited by every learned peer at
+/// admission time.
 pub struct UdpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,
@@ -109,12 +102,10 @@ impl UdpServerSpec {
 }
 
 /// Run a `udps:` listener until the cancellation token fires. Binding is
-/// retried with the shared capped-exp backoff (CLAUDE.md "Initial bind/dial
-/// failure path"), so a port collision at startup logs at WARN and the
-/// listener attaches as soon as the port frees. Once bound, loops over
-/// `recv_from`, the idle reaper, and cancellation. Each learned peer becomes
-/// a sub-routing endpoint announced via `event_tx` with its own TxQueue and
-/// writer task.
+/// retried with the shared capped-exp backoff, so a port collision at
+/// startup logs at WARN and the listener attaches as soon as the port
+/// frees. Each learned peer becomes a sub-routing endpoint announced via
+/// `event_tx` with its own TxQueue and writer task.
 pub async fn run(spec: UdpServerSpec, wiring: ServerWiring) {
     let span = info_span!("udps", name = %spec.parent_name);
     run_inner(spec, wiring).instrument(span).await
@@ -213,8 +204,8 @@ async fn handle_packet(
     peer.last_seen = Instant::now();
 
     peer.framer.buffer_mut().extend_from_slice(data);
-    // Filters live on the parent listener (uniform across children per
-    // CLAUDE.md); drop credit goes to this peer's stats.
+    // Filters live on the parent listener (uniform across children);
+    // drop credit goes to this peer's stats.
     let session_ctx = SessionCtx {
         endpoint_id: peer.child_id,
         stats: &peer.stats,
@@ -418,8 +409,6 @@ mod tests {
         };
         let spec = UdpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.idle_secs, 10);
-        // Reconnect curve stays at the tcpc defaults — CLAUDE.md "udps: bind-
-        // retry shares the tcpc: curve, no per-listener override".
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     }
@@ -546,14 +535,10 @@ mod tests {
         }
     }
 
-    /// Boundary test for the locked `DEFAULT_PEER_CAPACITY` invariant: when a
-    /// fresh source arrives and the peer table is already at `peer_capacity`,
-    /// `admit_new_peer` must (a) keep the table size at the cap, (b) evict
-    /// the LRU entry by last-seen, (c) admit the new peer, and (d) emit
-    /// `PeerAdded` for the newcomer followed by `PeerRemoved { LruEvicted }`
-    /// for the victim. The production cap is 256 (CLAUDE.md "Hardcoded
-    /// plumbing knobs"); the spec's mutable `peer_capacity` field exists so
-    /// this branch can run against a small N rather than 256 dummy peers.
+    /// At capacity: keep size at cap, evict the LRU by last-seen, admit the
+    /// new peer, emit `PeerAdded` followed by `PeerRemoved { LruEvicted }`.
+    /// `peer_capacity` is shrunk in the fixture so the branch runs against
+    /// a small N rather than 256 dummy peers.
     #[tokio::test]
     async fn admit_new_peer_evicts_lru_when_at_capacity() {
         let mut fx = admission_fixture(3).await;

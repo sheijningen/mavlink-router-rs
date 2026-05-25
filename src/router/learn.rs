@@ -1,17 +1,5 @@
-//! Per-endpoint learn table.
-//!
-//! Each routing endpoint maintains a flat fixed-capacity table of
-//! `(sysid, compid) → last_seen` populated by every valid inbound frame.
-//! The router uses the table for two routing checks: loop prevention
-//! (skip destinations whose learn-set contains the source identity) and
-//! targeted-match (admit a targeted frame only when the destination has
-//! learned the target identity).
-//!
-//! CLAUDE.md mandates: fixed-capacity flat structure (no `HashMap`), LRU
-//! eviction by oldest `last_seen` on insert when full. Default capacity
-//! 32. Endpoints in the same `?group=` share a single learn table via
-//! [`super::group::GroupRegistry`]; this module's `LearnTable` is the
-//! per-endpoint variant used when no group is set.
+//! Per-endpoint `(sysid, compid) → last_seen` learn table with LRU eviction.
+//! Drives the two routing checks: loop-prevention and targeted-matching.
 
 use tokio::time::Instant;
 
@@ -169,11 +157,8 @@ mod tests {
 
     #[test]
     fn touch_return_value_correct_after_capacity_eviction() {
-        // After capacity-induced eviction, `touch` must still return `false`
-        // for a refreshed survivor (entry existed) and `true` for a re-inserted
-        // previously-evicted identity (fresh slot). Guards against a regression
-        // where the find-then-evict-then-insert ordering returned `true`
-        // unconditionally post-eviction.
+        // Regression guard: post-eviction `touch` returned `true`
+        // unconditionally; survivors must still report `false`.
         let mut table = LearnTable::new(3);
         table.touch(NodeId::new(1, 1), now_plus(Duration::from_secs(0)));
         table.touch(NodeId::new(2, 1), now_plus(Duration::from_secs(10)));
@@ -190,8 +175,6 @@ mod tests {
 
     #[test]
     fn refreshed_entry_survives_capacity_pressure() {
-        // Touching the oldest entry must move it ahead of the others so
-        // the next eviction takes someone else. This is the LRU contract.
         let mut table = LearnTable::new(3);
         table.touch(NodeId::new(1, 1), now_plus(Duration::from_secs(0)));
         table.touch(NodeId::new(2, 1), now_plus(Duration::from_secs(10)));
