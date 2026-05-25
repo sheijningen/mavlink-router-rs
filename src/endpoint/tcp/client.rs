@@ -109,13 +109,13 @@ async fn run_inner(spec: TcpClientSpec, wiring: ClientWiring) {
         };
 
         if let Err(err) = configure_tcp_stream(&stream) {
-            warn!(error = %err, "tcpc configure_tcp_stream failed");
+            warn!(error = %err, "configure_tcp_stream failed");
         }
 
         backoff.reset();
         let drained = tx_queue.drain_and_discard();
         if drained > 0 {
-            debug!(drained, "tcpc drained stale frames before resuming");
+            debug!(drained, "drained stale frames before resuming");
         }
         stats.store_state(EndpointState::Connected);
 
@@ -129,15 +129,12 @@ async fn run_inner(spec: TcpClientSpec, wiring: ClientWiring) {
             SessionOutcome::Terminated => {
                 let drained = tx_queue.drain_and_discard();
                 if drained > 0 {
-                    debug!(
-                        drained,
-                        "tcpc discarded in-flight frames on session terminate"
-                    );
+                    debug!(drained, "discarded in-flight frames on session terminate");
                 }
                 return;
             }
             SessionOutcome::Disconnected => {
-                info!("tcpc disconnected; reconnecting");
+                info!("disconnected; reconnecting");
                 stats.store_state(EndpointState::Reconnecting);
                 continue;
             }
@@ -170,7 +167,7 @@ async fn dial_with_dns(host: &str, port: u16, cancel: &CancellationToken) -> Dia
     for target in resolved {
         match connect_one(target, cancel).await {
             DialOutcome::Connected(stream) => {
-                info!(%target, "tcpc connected");
+                info!(%target, "connected");
                 return DialOutcome::Connected(stream);
             }
             DialOutcome::Cancelled => return DialOutcome::Cancelled,
@@ -187,11 +184,11 @@ async fn connect_one(target: SocketAddr, cancel: &CancellationToken) -> DialOutc
         res = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(target)) => match res {
             Ok(Ok(stream)) => DialOutcome::Connected(stream),
             Ok(Err(err)) => {
-                warn!(error = %err, %target, "tcpc connect failed");
+                warn!(error = %err, %target, "connect failed");
                 DialOutcome::Failed
             }
             Err(_) => {
-                warn!(%target, "tcpc connect timed out");
+                warn!(%target, "connect timed out");
                 DialOutcome::Failed
             }
         },
@@ -212,12 +209,12 @@ async fn resolve_to_socket_addrs(host: &str, port: u16) -> Vec<SocketAddr> {
                 IpAddr::V6(_) => 1u8,
             });
             if all.is_empty() {
-                warn!(%host, "tcpc DNS resolution returned no addresses");
+                warn!(%host, "DNS resolution returned no addresses");
             }
             all
         }
         Err(err) => {
-            warn!(error = %err, %host, "tcpc DNS resolution failed");
+            warn!(error = %err, %host, "DNS resolution failed");
             Vec::new()
         }
     }

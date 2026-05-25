@@ -101,7 +101,7 @@ async fn run_inner(spec: SerialSpec, wiring: ClientWiring) {
         // is already pushing fresh ones.
         let drained = tx_queue.drain_and_discard();
         if drained > 0 {
-            debug!(drained, "serial drained stale frames before resuming");
+            debug!(drained, "drained stale frames before resuming");
         }
         stats.store_state(EndpointState::Connected);
 
@@ -117,10 +117,10 @@ async fn run_inner(spec: SerialSpec, wiring: ClientWiring) {
                 return;
             }
             SessionOutcome::Disconnected => {
-                info!("serial disconnected; will retry open");
+                info!("disconnected; will retry open");
                 let drained = tx_queue.drain_and_discard();
                 if drained > 0 {
-                    debug!(drained, "serial discarded in-flight frames on disconnect");
+                    debug!(drained, "discarded in-flight frames on disconnect");
                 }
                 stats.store_state(EndpointState::Reconnecting);
                 // Sleep one reopen interval before reattempting so we don't
@@ -157,11 +157,11 @@ async fn open_until_cancel(
         }
         match try_open(path, baud, flow_control) {
             Ok(stream) => {
-                info!(%path, baud, "serial opened");
+                info!(%path, baud, "opened");
                 return OpenOutcome::Opened(stream);
             }
             Err(err) => {
-                warn!(error = %err, %path, baud, "serial open failed; retrying");
+                warn!(error = %err, %path, baud, "open failed; retrying");
                 if !wait_or_cancel(cancel, REOPEN_DELAY).await {
                     return OpenOutcome::Cancelled;
                 }

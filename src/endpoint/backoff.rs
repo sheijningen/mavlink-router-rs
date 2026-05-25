@@ -27,15 +27,14 @@ pub enum BindOutcome<T> {
 
 /// Drive a fallible bind/open through `Backoff`'s capped-exponential curve
 /// until it succeeds or the cancel token trips. On each failure, logs at
-/// WARN with `<label> bind failed; retrying after backoff` and the formatted
-/// `addr` for context, then sleeps `backoff.next_delay()` against the cancel
-/// token. Resets the backoff on first success so the next failure starts at
-/// the floor again. Used by `tcps:` / `udps:` / `udpc:` to share one bind-
-/// retry shape (CLAUDE.md "Bind/open failure at startup is not fatal").
+/// WARN with the formatted `addr` for context, then sleeps
+/// `backoff.next_delay()` against the cancel token. Resets the backoff on
+/// first success so the next failure starts at the floor again. Used by
+/// `tcps:` / `udps:` / `udpc:` to share one bind-retry shape (CLAUDE.md
+/// "Bind/open failure at startup is not fatal").
 pub async fn bind_with_backoff<T, E, F>(
     cancel: &CancellationToken,
     backoff: &mut Backoff,
-    label: &str,
     addr: impl Display,
     mut bind_fn: F,
 ) -> BindOutcome<T>
@@ -53,7 +52,7 @@ where
                 return BindOutcome::Bound(bound);
             }
             Err(err) => {
-                warn!(error = %err, addr = %addr, "{label} bind failed; retrying after backoff");
+                warn!(error = %err, addr = %addr, "bind failed; retrying after backoff");
                 if !wait_or_cancel(cancel, backoff.next_delay()).await {
                     return BindOutcome::Cancelled;
                 }

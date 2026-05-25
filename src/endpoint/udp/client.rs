@@ -167,12 +167,12 @@ async fn resolve_host(host: &str, port: u16) -> Vec<IpAddr> {
         Ok(addrs) => {
             let ips: Vec<IpAddr> = addrs.map(|addr| addr.ip()).collect();
             if ips.is_empty() {
-                warn!(%host, "udpc DNS resolution returned no addresses");
+                warn!(%host, "DNS resolution returned no addresses");
             }
             ips
         }
         Err(err) => {
-            warn!(error = %err, %host, "udpc DNS resolution failed");
+            warn!(error = %err, %host, "DNS resolution failed");
             Vec::new()
         }
     }
@@ -310,7 +310,7 @@ async fn handle_inbound(
                 .stats
                 .in_filter_drops
                 .fetch_add(1, Ordering::Relaxed);
-            debug!(%src, "udpc inbound from unexpected source dropped");
+            debug!(%src, "inbound from unexpected source dropped");
             return;
         }
         InboundDecision::AcceptAndLatch => {
@@ -318,7 +318,7 @@ async fn handle_inbound(
                 addr: src,
                 last_inbound: Instant::now(),
             });
-            info!(%src, "udpc latched onto reply source");
+            info!(%src, "latched onto reply source");
         }
         InboundDecision::AcceptUpdate => {
             if let Some(latch) = dest.latch.as_mut() {
@@ -354,7 +354,7 @@ async fn send_frame(
     stats: &Arc<EndpointStats>,
 ) {
     let Some(target) = dest.current_target() else {
-        debug!(host = %dest.host, "udpc send skipped — no resolved address");
+        debug!(host = %dest.host, "send skipped — no resolved address");
         let fresh = resolve_host(&dest.host, dest.port).await;
         if !fresh.is_empty() {
             dest.resolved_ips = fresh;
@@ -377,7 +377,7 @@ async fn send_frame(
             stats.store_state(EndpointState::Connected);
         }
         Err(err) => {
-            warn!(error = %err, %target, "udpc send_to failed; re-resolving for next burst");
+            warn!(error = %err, %target, "send_to failed; re-resolving for next burst");
             let fresh = resolve_host(&dest.host, dest.port).await;
             if !fresh.is_empty() {
                 dest.resolved_ips = fresh;
@@ -394,12 +394,12 @@ async fn check_latch_idle(dest: &mut Destination, idle: Duration) {
     if Instant::now().duration_since(latch.last_inbound) < idle {
         return;
     }
-    info!(%latch.addr, "udpc latch idle; reverting to configured");
+    info!(%latch.addr, "latch idle; reverting to configured");
     let fresh = resolve_host(&dest.host, dest.port).await;
     if !fresh.is_empty() {
         dest.resolved_ips = fresh;
     } else {
-        warn!(host = %dest.host, "udpc DNS re-resolve failed on revert; keeping previous resolved IPs");
+        warn!(host = %dest.host, "DNS re-resolve failed on revert; keeping previous resolved IPs");
     }
     dest.latch = None;
 }

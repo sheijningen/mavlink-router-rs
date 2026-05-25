@@ -183,7 +183,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: ServerWiring) {
                         handle_packet(&buf[..bytes_read], src, &mut peers, &mut writer_tasks, &ctx).await;
                     }
                     Err(err) => {
-                        warn!(error = %err, "udps recv_from error");
+                        warn!(error = %err, "recv_from error");
                     }
                 }
             }
@@ -319,7 +319,7 @@ async fn evict_lru_peer(
             reason: PeerRemovalReason::LruEvicted,
         })
         .await;
-    info!(parent_id = %parent_id, %victim, "udps peer LRU-evicted");
+    info!(parent_id = %parent_id, %victim, "peer LRU-evicted");
 }
 
 async fn reap_idle_peers(
@@ -344,7 +344,7 @@ async fn reap_idle_peers(
                     reason: PeerRemovalReason::Idle,
                 })
                 .await;
-            info!(parent_id = %parent_id, %addr, "udps peer idle-reaped");
+            info!(parent_id = %parent_id, %addr, "peer idle-reaped");
         }
     }
 }
@@ -388,7 +388,7 @@ async fn run_peer_writer(
                     Ok(bytes_sent) => stats.add_tx_frame(bytes_sent),
                     Err(err) => {
                         stats.dropped_tx.fetch_add(1, Ordering::Relaxed);
-                        warn!(error = %err, peer = %peer_addr, "udps send_to failed; dropping frame");
+                        warn!(error = %err, peer = %peer_addr, "send_to failed; dropping frame");
                     }
                 }
             }

@@ -87,7 +87,7 @@ async fn run_inner(spec: TcpServerSpec, wiring: ServerWiring) {
         };
         wiring.stats.store_state(EndpointState::Connected);
         let bound_addr = listener.local_addr().unwrap_or(spec.listen_addr);
-        info!(%bound_addr, parent_id = %spec.parent_id, "tcps listening");
+        info!(%bound_addr, parent_id = %spec.parent_id, "listening");
 
         run_accept_loop(listener, &spec, &wiring).await;
 
@@ -116,7 +116,7 @@ async fn run_accept_loop(listener: TcpListener, spec: &TcpServerSpec, wiring: &S
                         // router. Accept errors are typically EMFILE-style
                         // per-connection failures, not listener death; log and
                         // continue.
-                        warn!(error = %err, "tcps accept failed; continuing");
+                        warn!(error = %err, "accept failed; continuing");
                     }
                 }
             }
@@ -137,7 +137,7 @@ async fn accept_one_client(
     children: &mut JoinSet<()>,
 ) {
     if let Err(err) = configure_tcp_stream(&stream) {
-        warn!(error = %err, %peer_addr, "tcps configure_tcp_stream failed on accept");
+        warn!(error = %err, %peer_addr, "configure_tcp_stream failed on accept");
     }
 
     let child_id = wiring.allocator.alloc();
@@ -168,10 +168,10 @@ async fn accept_one_client(
         .await
         .is_err()
     {
-        debug!("tcps event channel closed; dropping accepted client");
+        debug!("event channel closed; dropping accepted client");
         return;
     }
-    info!(parent_id = %spec.parent_id, %peer_addr, %child_id, "tcps client accepted");
+    info!(parent_id = %spec.parent_id, %peer_addr, %child_id, "client accepted");
 
     let child_wiring = ClientWiring {
         frame_tx: wiring.frame_tx.clone(),
@@ -218,7 +218,7 @@ async fn run_client_session(
     // Drain anything still queued for this client; the socket is going away.
     let drained = tx_queue.drain_and_discard();
     if drained > 0 {
-        debug!(%peer_addr, drained, "tcps discarded in-flight frames on session end");
+        debug!(%peer_addr, drained, "discarded in-flight frames on session end");
     }
 
     let reason = match outcome {
@@ -233,7 +233,7 @@ async fn run_client_session(
             reason,
         })
         .await;
-    warn!(parent_id = %parent_id, %peer_addr, %child_id, ?reason, "tcps client session ended");
+    warn!(parent_id = %parent_id, %peer_addr, %child_id, ?reason, "client session ended");
 }
 
 #[cfg(test)]

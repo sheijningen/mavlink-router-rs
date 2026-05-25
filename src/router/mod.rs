@@ -57,7 +57,7 @@ use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace};
+use tracing::{Instrument, debug, info_span, trace};
 
 use crate::endpoint::EndpointId;
 use crate::endpoint::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
@@ -177,7 +177,7 @@ impl Router {
                     stats: stats.clone(),
                     routable: routable_state,
                 };
-                debug!(%id, %name, routable = routable, "router: endpoint added");
+                debug!(%id, %name, routable = routable, "endpoint added");
                 self.routing.insert(id, entry);
                 let _ = self
                     .stats_event_tx
@@ -209,7 +209,7 @@ impl Router {
                         learn: LearnTable::new(LEARN_CAPACITY),
                     }),
                 };
-                debug!(%child_id, %parent_id, %name, "router: peer added");
+                debug!(%child_id, %parent_id, %name, "peer added");
                 self.routing.insert(child_id, entry);
                 let _ = self
                     .stats_event_tx
@@ -240,7 +240,7 @@ impl Router {
                         self.groups.leave(group);
                     }
                     entry.stats.store_state(final_state);
-                    debug!(%child_id, %parent_id, ?reason, ?final_state, "router: peer removed");
+                    debug!(%child_id, %parent_id, ?reason, ?final_state, "peer removed");
                 }
                 let _ = self
                     .stats_event_tx
@@ -362,7 +362,7 @@ impl Router {
                         %src_id,
                         dest_id = %dest_id,
                         msgid = header.msgid,
-                        "router: out-filter blocked frame"
+                        "out-filter blocked frame"
                     );
                 }
                 Decision::LoopBlocked | Decision::TargetMismatch => {}
@@ -396,6 +396,11 @@ impl Router {
 /// frame is taken, so the registry is always at least as caught up as
 /// the frame stream.
 pub async fn run(wiring: RouterWiring) {
+    let span = info_span!("router");
+    run_inner(wiring).instrument(span).await
+}
+
+async fn run_inner(wiring: RouterWiring) {
     let RouterWiring {
         mut frame_rx,
         mut event_rx,
