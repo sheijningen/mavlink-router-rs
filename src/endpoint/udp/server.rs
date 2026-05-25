@@ -254,7 +254,6 @@ async fn admit_new_peer(
         .send(EndpointEvent::PeerAdded {
             parent_id: ctx.spec.parent_id,
             child_id,
-            peer_addr: src,
             name,
             stats: stats.clone(),
             routable: Routable {
@@ -316,7 +315,6 @@ async fn evict_lru_peer(
         .send(EndpointEvent::PeerRemoved {
             parent_id,
             child_id: entry.child_id,
-            peer_addr: victim,
             reason: PeerRemovalReason::LruEvicted,
         })
         .await;
@@ -341,7 +339,6 @@ async fn reap_idle_peers(
                 .send(EndpointEvent::PeerRemoved {
                     parent_id,
                     child_id: entry.child_id,
-                    peer_addr: addr,
                     reason: PeerRemovalReason::Idle,
                 })
                 .await;
@@ -356,13 +353,12 @@ async fn shutdown_all_peers(
     event_tx: &mpsc::Sender<EndpointEvent>,
     writer_tasks: &mut JoinSet<()>,
 ) {
-    for (addr, entry) in peers.drain() {
+    for (_addr, entry) in peers.drain() {
         entry.writer_cancel.cancel();
         let _ = event_tx
             .send(EndpointEvent::PeerRemoved {
                 parent_id,
                 child_id: entry.child_id,
-                peer_addr: addr,
                 reason: PeerRemovalReason::ListenerShutdown,
             })
             .await;
@@ -459,13 +455,9 @@ mod tests {
         let ev = rx.try_recv().unwrap();
         match ev {
             EndpointEvent::PeerRemoved {
-                reason,
-                peer_addr,
-                child_id,
-                ..
+                reason, child_id, ..
             } => {
                 assert_eq!(reason, PeerRemovalReason::LruEvicted);
-                assert_eq!(peer_addr, addr(2));
                 assert_eq!(child_id, EndpointId(1));
             }
             other => panic!("expected PeerRemoved, got {other:?}"),
@@ -493,14 +485,14 @@ mod tests {
         assert!(!peers.contains_key(&addr(3)));
         let mut removed = Vec::new();
         while let Ok(EndpointEvent::PeerRemoved {
-            reason, peer_addr, ..
+            reason, child_id, ..
         }) = rx.try_recv()
         {
             assert_eq!(reason, PeerRemovalReason::Idle);
-            removed.push(peer_addr);
+            removed.push(child_id);
         }
         removed.sort();
-        assert_eq!(removed, vec![addr(1), addr(3)]);
+        assert_eq!(removed, vec![EndpointId(0), EndpointId(2)]);
     }
 
     /// Shared admission-test fixture: a real bound socket, an allocator, a
@@ -596,19 +588,21 @@ mod tests {
         assert!(peers.contains_key(&addr(4)), "new peer should be admitted");
 
         match fx.event_rx.try_recv() {
-            Ok(EndpointEvent::PeerAdded { peer_addr, .. }) => {
-                assert_eq!(peer_addr, addr(4));
+            Ok(EndpointEvent::PeerAdded { name, .. }) => {
+                assert_eq!(name, peer_endpoint_name(&fx.spec.parent_name, addr(4)));
             }
             other => panic!("expected PeerAdded for addr(4), got {other:?}"),
         }
+        // The evicted peer entry carried child_id 11 (addr(2) was inserted with
+        // EndpointId(11) above); its PeerRemoved carries that same child_id.
         match fx.event_rx.try_recv() {
             Ok(EndpointEvent::PeerRemoved {
-                reason, peer_addr, ..
+                reason, child_id, ..
             }) => {
                 assert_eq!(reason, PeerRemovalReason::LruEvicted);
-                assert_eq!(peer_addr, addr(2));
+                assert_eq!(child_id, EndpointId(11));
             }
-            other => panic!("expected PeerRemoved(LruEvicted) for addr(2), got {other:?}"),
+            other => panic!("expected PeerRemoved(LruEvicted) for child 11, got {other:?}"),
         }
         assert!(
             fx.event_rx.try_recv().is_err(),

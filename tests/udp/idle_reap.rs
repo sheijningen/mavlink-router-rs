@@ -11,9 +11,9 @@ use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::{EndpointEvent, PeerRemovalReason};
 use rmr::endpoint::spec::UdpServerEndpoint;
+use rmr::endpoint::{EndpointIdAllocator, peer_endpoint_name};
 
 use crate::common;
 use crate::common::udp::spawn_udps_with_endpoint;
@@ -41,8 +41,10 @@ async fn udps_reaps_peer_after_idle_secs() {
         .await
         .expect("peer send_to listener");
 
+    let expected_name = peer_endpoint_name("a", peer_addr);
     let added = next_peer_added(&mut harness.event_rx).await;
-    assert_eq!(added.peer_addr, peer_addr);
+    assert_eq!(added.name, expected_name);
+    let initial_child_id = added.child_id;
 
     // Drain the inbound frame so the listener task isn't backpressured on
     // frame_tx while we wait for the reaper.
@@ -57,11 +59,9 @@ async fn udps_reaps_peer_after_idle_secs() {
         .expect("event_rx closed before PeerRemoved");
     match removed {
         EndpointEvent::PeerRemoved {
-            peer_addr: addr,
-            reason,
-            ..
+            child_id, reason, ..
         } => {
-            assert_eq!(addr, peer_addr);
+            assert_eq!(child_id, initial_child_id);
             assert_eq!(reason, PeerRemovalReason::Idle);
         }
         other => panic!("expected PeerRemoved{{Idle}}, got {other:?}"),
@@ -75,7 +75,8 @@ async fn udps_reaps_peer_after_idle_secs() {
         .await
         .expect("peer send_to listener (re-learn)");
     let re_added = next_peer_added(&mut harness.event_rx).await;
-    assert_eq!(re_added.peer_addr, peer_addr);
+    assert_eq!(re_added.name, expected_name);
+    assert_ne!(re_added.child_id, initial_child_id);
 
     shutdown_all(&cancel, [harness.task]).await;
 }

@@ -6,7 +6,6 @@ pub mod mavlink;
 pub mod tcp;
 pub mod udp;
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,7 +51,6 @@ pub fn build_v2_heartbeat(seq: u8) -> Vec<u8> {
 pub struct PeerAddedPayload {
     pub parent_id: EndpointId,
     pub child_id: EndpointId,
-    pub peer_addr: SocketAddr,
     pub name: String,
     pub tx_queue: TxQueue,
     pub stats: Arc<EndpointStats>,
@@ -72,14 +70,12 @@ pub async fn next_peer_added(rx: &mut mpsc::Receiver<EndpointEvent>) -> PeerAdde
         EndpointEvent::PeerAdded {
             parent_id,
             child_id,
-            peer_addr,
             name,
             stats,
             routable,
         } => PeerAddedPayload {
             parent_id,
             child_id,
-            peer_addr,
             name,
             tx_queue: routable.tx_queue,
             stats,

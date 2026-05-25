@@ -20,7 +20,9 @@ use tokio_util::sync::CancellationToken;
 
 use rmr::endpoint::events::EndpointEvent;
 use rmr::endpoint::stats::EndpointState;
-use rmr::endpoint::{EndpointIdAllocator, spec::UdpServerEndpoint, udp::server::UdpServerSpec};
+use rmr::endpoint::{
+    EndpointIdAllocator, peer_endpoint_name, spec::UdpServerEndpoint, udp::server::UdpServerSpec,
+};
 
 use crate::common;
 use crate::common::shutdown_all;
@@ -93,12 +95,12 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
     let peer_addr = peer.local_addr().expect("peer local_addr");
     let frame = common::build_v2_heartbeat(0);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    let added_addr = loop {
+    let added_name = loop {
         peer.send_to(&frame, listen_addr)
             .await
             .expect("peer send_to listener");
         match timeout(Duration::from_millis(100), harness.event_rx.recv()).await {
-            Ok(Some(EndpointEvent::PeerAdded { peer_addr, .. })) => break peer_addr,
+            Ok(Some(EndpointEvent::PeerAdded { name, .. })) => break name,
             Ok(Some(other)) => panic!("expected PeerAdded, got {other:?}"),
             Ok(None) => panic!("event_rx closed before listener attached"),
             Err(_) => {
@@ -109,7 +111,7 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
             }
         }
     };
-    assert_eq!(added_addr, peer_addr);
+    assert_eq!(added_name, peer_endpoint_name("udps", peer_addr));
 
     let router_frame = timeout(Duration::from_secs(2), harness.frame_rx.recv())
         .await

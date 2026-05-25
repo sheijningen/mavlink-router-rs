@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -49,7 +48,6 @@ pub enum EndpointEvent {
     PeerAdded {
         parent_id: EndpointId,
         child_id: EndpointId,
-        peer_addr: SocketAddr,
         name: String,
         stats: Arc<EndpointStats>,
         routable: Routable,
@@ -57,7 +55,6 @@ pub enum EndpointEvent {
     PeerRemoved {
         parent_id: EndpointId,
         child_id: EndpointId,
-        peer_addr: SocketAddr,
         reason: PeerRemovalReason,
     },
 }

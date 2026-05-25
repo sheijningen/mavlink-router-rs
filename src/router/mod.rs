@@ -194,7 +194,6 @@ impl Router {
             EndpointEvent::PeerAdded {
                 parent_id,
                 child_id,
-                peer_addr: _,
                 name,
                 stats,
                 routable,
@@ -226,7 +225,6 @@ impl Router {
             EndpointEvent::PeerRemoved {
                 parent_id,
                 child_id,
-                peer_addr: _,
                 reason,
             } => {
                 let final_state = match reason {
@@ -464,7 +462,6 @@ mod tests {
     use crate::endpoint::filters::{Filters, MsgIdRange};
     use crate::mavlink::frame::{NodeId, ParsedHeader, Version};
     use bytes::Bytes;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn header(sysid: u8, compid: u8, target_system: Option<u8>) -> ParsedHeader {
         ParsedHeader {
@@ -476,10 +473,6 @@ mod tests {
             target_system,
             target_component: None,
         }
-    }
-
-    fn fake_addr() -> SocketAddr {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345)
     }
 
     struct EndpointFixture {
@@ -536,7 +529,6 @@ mod tests {
         EndpointEvent::PeerAdded {
             parent_id: parent,
             child_id: fx.id,
-            peer_addr: fake_addr(),
             name: name.to_string(),
             stats: fx.stats.clone(),
             routable: Routable {
@@ -688,7 +680,6 @@ mod tests {
             .handle_event(EndpointEvent::PeerRemoved {
                 parent_id: parent.id,
                 child_id: child.id,
-                peer_addr: fake_addr(),
                 reason: PeerRemovalReason::Idle,
             })
             .await;
@@ -717,7 +708,6 @@ mod tests {
             .handle_event(EndpointEvent::PeerRemoved {
                 parent_id: parent.id,
                 child_id: child.id,
-                peer_addr: fake_addr(),
                 reason: PeerRemovalReason::Disconnected,
             })
             .await;

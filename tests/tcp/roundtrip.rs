@@ -9,8 +9,8 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::events::{EndpointEvent, PeerRemovalReason};
+use rmr::endpoint::{EndpointIdAllocator, peer_endpoint_name};
 
 use crate::common;
 use crate::common::tcp::{connect_with_retry, spawn_tcps};
@@ -45,12 +45,12 @@ async fn round_trip_between_two_tcps_listeners() {
     let added_a = next_peer_added(&mut harness_a.event_rx).await;
     let added_b = next_peer_added(&mut harness_b.event_rx).await;
     assert_eq!(
-        added_a.peer_addr,
-        peer_a.local_addr().expect("peer_a local_addr")
+        added_a.name,
+        peer_endpoint_name("a", peer_a.local_addr().expect("peer_a local_addr"))
     );
     assert_eq!(
-        added_b.peer_addr,
-        peer_b.local_addr().expect("peer_b local_addr")
+        added_b.name,
+        peer_endpoint_name("b", peer_b.local_addr().expect("peer_b local_addr"))
     );
     let peer_a_queue_on_a = added_a.tx_queue;
     let peer_b_queue_on_b = added_b.tx_queue;
@@ -114,16 +114,28 @@ async fn tcps_handles_multiple_clients_and_per_client_disconnect() {
     client1.write_all(&frame_init).await.expect("c1 write");
     client2.write_all(&frame_init).await.expect("c2 write");
 
-    // PeerAdded ordering across two concurrent accepts is non-deterministic.
-    let mut child_addrs = Vec::new();
-    for _ in 0..2 {
-        let added = next_peer_added(&mut harness.event_rx).await;
-        child_addrs.push(added.peer_addr);
-    }
     let client1_local = client1.local_addr().expect("c1 local_addr");
     let client2_local = client2.local_addr().expect("c2 local_addr");
-    assert!(child_addrs.contains(&client1_local));
-    assert!(child_addrs.contains(&client2_local));
+    let client1_name = peer_endpoint_name("a", client1_local);
+    let client2_name = peer_endpoint_name("a", client2_local);
+
+    // PeerAdded ordering across two concurrent accepts is non-deterministic.
+    // Capture each child's id by matching its name back to the originating
+    // client so the later PeerRemoved filter can use child_id directly.
+    let mut client1_child_id = None;
+    let mut client2_child_id = None;
+    for _ in 0..2 {
+        let added = next_peer_added(&mut harness.event_rx).await;
+        if added.name == client1_name {
+            client1_child_id = Some(added.child_id);
+        } else if added.name == client2_name {
+            client2_child_id = Some(added.child_id);
+        } else {
+            panic!("unexpected PeerAdded name: {}", added.name);
+        }
+    }
+    let client1_child_id = client1_child_id.expect("PeerAdded for c1 not observed");
+    let client2_child_id = client2_child_id.expect("PeerAdded for c2 not observed");
 
     for _ in 0..2 {
         timeout(Duration::from_secs(2), harness.frame_rx.recv())
@@ -141,9 +153,9 @@ async fn tcps_handles_multiple_clients_and_per_client_disconnect() {
             .expect("PeerRemoved timeout")
             .expect("event_rx closed");
         if let EndpointEvent::PeerRemoved {
-            peer_addr, reason, ..
+            child_id, reason, ..
         } = event
-            && peer_addr == client1_local
+            && child_id == client1_child_id
         {
             assert_eq!(
                 reason,
@@ -176,9 +188,9 @@ async fn tcps_handles_multiple_clients_and_per_client_disconnect() {
             .expect("PeerRemoved (ListenerShutdown) timeout")
             .expect("event_rx closed");
         if let EndpointEvent::PeerRemoved {
-            peer_addr, reason, ..
+            child_id, reason, ..
         } = event
-            && peer_addr == client2_local
+            && child_id == client2_child_id
         {
             assert_eq!(
                 reason,

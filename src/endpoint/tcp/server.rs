@@ -154,7 +154,6 @@ async fn accept_one_client(
         .send(EndpointEvent::PeerAdded {
             parent_id: spec.parent_id,
             child_id,
-            peer_addr,
             name,
             stats: stats.clone(),
             routable: Routable {
@@ -226,7 +225,6 @@ async fn run_client_session(
         .send(EndpointEvent::PeerRemoved {
             parent_id,
             child_id,
-            peer_addr,
             reason,
         })
         .await;
