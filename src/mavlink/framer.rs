@@ -21,12 +21,8 @@ pub struct Framer {
 
 impl Framer {
     pub fn new() -> Self {
-        Self::with_capacity(READ_BUF_BYTES)
-    }
-
-    pub fn with_capacity(cap: usize) -> Self {
         Self {
-            buf: BytesMut::with_capacity(cap),
+            buf: BytesMut::with_capacity(READ_BUF_BYTES),
             resync_bytes: 0,
             crc_errors: 0,
         }
@@ -182,6 +178,15 @@ impl Framer {
     fn discard_byte(&mut self) {
         self.add_resync(1);
         self.buf.advance(1);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_capacity(cap: usize) -> Self {
+        Self {
+            buf: BytesMut::with_capacity(cap),
+            resync_bytes: 0,
+            crc_errors: 0,
+        }
     }
 }
 

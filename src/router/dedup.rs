@@ -98,16 +98,6 @@ impl DedupWindow {
         false
     }
 
-    /// Current live-entry count. Used by tests; not relied on by the hot
-    /// path.
-    pub fn len(&self) -> usize {
-        self.ring.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.ring.is_empty()
-    }
-
     /// Drop entries from the ring head whose deadline is at or before
     /// `now`. Constant-time amortised: each entry is admitted once and
     /// expired once.
@@ -148,7 +138,7 @@ mod tests {
         for _ in 0..10 {
             assert!(!window.check_and_insert(&make_frame(b"abc"), Instant::now()));
         }
-        assert_eq!(window.len(), 0);
+        assert_eq!(window.ring.len(), 0);
     }
 
     #[test]
@@ -164,7 +154,7 @@ mod tests {
         let mut window = DedupWindow::new(Duration::from_millis(100), 16);
         assert!(!window.check_and_insert(&make_frame(b"frame-a"), at(0)));
         assert!(!window.check_and_insert(&make_frame(b"frame-b"), at(0)));
-        assert_eq!(window.len(), 2);
+        assert_eq!(window.ring.len(), 2);
     }
 
     #[test]
@@ -188,10 +178,10 @@ mod tests {
         // Inserting a third must evict the oldest ("a"). Both b and c
         // remain live; a is gone.
         assert!(!window.check_and_insert(&make_frame(b"c"), at(20)));
-        assert_eq!(window.len(), 2);
+        assert_eq!(window.ring.len(), 2);
         // "a" was evicted, so re-inserting it is a miss again.
         assert!(!window.check_and_insert(&make_frame(b"a"), at(30)));
-        assert_eq!(window.len(), 2, "a's admission evicted b");
+        assert_eq!(window.ring.len(), 2, "a's admission evicted b");
         // "b" is what got evicted by the previous insert.
         assert!(!window.check_and_insert(&make_frame(b"b"), at(40)));
     }
@@ -206,7 +196,7 @@ mod tests {
         assert!(!window.check_and_insert(&frame, at(0)));
         // 30ms — well past TTL.
         assert!(!window.check_and_insert(&frame, at(30)));
-        assert_eq!(window.len(), 1);
+        assert_eq!(window.ring.len(), 1);
     }
 
     #[test]
@@ -215,7 +205,7 @@ mod tests {
         assert!(!window.check_and_insert(&make_frame(b"a"), at(0)));
         // Capacity is 1, so admitting "b" evicts "a".
         assert!(!window.check_and_insert(&make_frame(b"b"), at(0)));
-        assert_eq!(window.len(), 1);
+        assert_eq!(window.ring.len(), 1);
     }
 
     #[test]

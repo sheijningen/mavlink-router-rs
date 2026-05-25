@@ -77,14 +77,6 @@ impl LearnTable {
         self.entries.len()
     }
 
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     fn find(&self, node: NodeId) -> Option<&LearnEntry> {
         self.entries.iter().find(|entry| entry.node == node)
     }
@@ -103,6 +95,11 @@ impl LearnTable {
             return;
         };
         self.entries.swap_remove(index);
+    }
+
+    #[cfg(test)]
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 }
 
@@ -212,10 +209,10 @@ mod tests {
     #[test]
     fn is_empty_and_len_track_inserts() {
         let mut table = LearnTable::new(4);
-        assert!(table.is_empty());
+        assert!(table.entries.is_empty());
         assert_eq!(table.len(), 0);
         table.touch(NodeId::new(1, 1), now_plus(Duration::ZERO));
-        assert!(!table.is_empty());
+        assert!(!table.entries.is_empty());
         assert_eq!(table.len(), 1);
     }
 }

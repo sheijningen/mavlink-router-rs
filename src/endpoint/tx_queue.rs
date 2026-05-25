@@ -73,10 +73,6 @@ impl TxQueue {
     pub fn len(&self) -> usize {
         self.inner.len()
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
 }
 
 #[cfg(test)]
@@ -118,7 +114,7 @@ mod tests {
         queue.push(Bytes::from_static(b"c"));
         let drained = queue.drain_and_discard();
         assert_eq!(drained, 3);
-        assert!(queue.is_empty());
+        assert!(queue.inner.is_empty());
         assert_eq!(stats.dropped_tx.load(Ordering::Relaxed), 3);
     }
 

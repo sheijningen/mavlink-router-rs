@@ -51,17 +51,11 @@ impl SeqTracker {
     /// threshold. A capacity of 0 silently clamps to 1 so the tracker is
     /// never disabled by misconfiguration.
     pub fn new(capacity: usize) -> Self {
-        Self::with_threshold(capacity, DEFAULT_SEQ_GAP_THRESHOLD)
-    }
-
-    /// Construct with an explicit threshold. Used by tests; production
-    /// callers should always go through [`SeqTracker::new`].
-    pub fn with_threshold(capacity: usize, threshold: u8) -> Self {
         let clamped = capacity.max(1);
         Self {
             entries: Vec::with_capacity(clamped),
             capacity: clamped,
-            threshold,
+            threshold: DEFAULT_SEQ_GAP_THRESHOLD,
         }
     }
 
@@ -96,18 +90,6 @@ impl SeqTracker {
         0
     }
 
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     fn find_mut(&mut self, node: NodeId) -> Option<&mut Entry> {
         self.entries.iter_mut().find(|entry| entry.node == node)
     }
@@ -122,6 +104,16 @@ impl SeqTracker {
             return;
         };
         self.entries.swap_remove(index);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_threshold(capacity: usize, threshold: u8) -> Self {
+        let clamped = capacity.max(1);
+        Self {
+            entries: Vec::with_capacity(clamped),
+            capacity: clamped,
+            threshold,
+        }
     }
 }
 
@@ -139,7 +131,7 @@ mod tests {
     fn first_observation_returns_zero() {
         let mut tracker = SeqTracker::new(4);
         assert_eq!(tracker.observe(NodeId::new(1, 1), 0, at(0)), 0);
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.entries.len(), 1);
     }
 
     #[test]
@@ -207,7 +199,7 @@ mod tests {
         tracker.observe(NodeId::new(2, 1), 0, at(10));
         // Insert a third identity — evicts (1, 1), the oldest.
         tracker.observe(NodeId::new(3, 1), 0, at(20));
-        assert_eq!(tracker.len(), 2);
+        assert_eq!(tracker.entries.len(), 2);
         // Now observing (1, 1, 5) — looks like a fresh insert (no prior).
         // Returns 0 even though we'd otherwise infer a gap.
         assert_eq!(tracker.observe(NodeId::new(1, 1), 5, at(30)), 0);
@@ -219,10 +211,10 @@ mod tests {
     #[test]
     fn capacity_zero_clamps_to_one() {
         let mut tracker = SeqTracker::new(0);
-        assert_eq!(tracker.capacity(), 1);
+        assert_eq!(tracker.capacity, 1);
         tracker.observe(NodeId::new(1, 1), 0, at(0));
         // Inserting a second identity evicts the first.
         tracker.observe(NodeId::new(2, 1), 0, at(10));
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.entries.len(), 1);
     }
 }

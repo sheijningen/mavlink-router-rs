@@ -10,9 +10,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::super::EndpointId;
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
-use super::super::defaults::{
-    DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, READ_BUF_BYTES,
-};
+use super::super::defaults::{DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS};
 use super::super::identity_flags::{IdentityFlags, SEQ_TRACKER_CAPACITY};
 use super::super::seq_tracker::SeqTracker;
 use super::super::session::SessionCtx;
@@ -244,7 +242,7 @@ async fn run_inner(spec: UdpClientSpec, wiring: ClientWiring) {
     );
     stats.store_state(EndpointState::Connected);
 
-    let mut framer = Framer::with_capacity(READ_BUF_BYTES);
+    let mut framer = Framer::new();
     let mut framer_counters = FramerCounters::new();
     let mut seq_tracker = SeqTracker::new(SEQ_TRACKER_CAPACITY);
     let mut buf = vec![0u8; MAX_DATAGRAM_BYTES];

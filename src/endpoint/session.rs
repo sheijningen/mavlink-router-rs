@@ -9,7 +9,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
 use super::EndpointId;
-use super::defaults::READ_BUF_BYTES;
 use super::events::RouterFrame;
 use super::filters::Filters;
 use super::identity_flags::SEQ_TRACKER_CAPACITY;
@@ -101,7 +100,7 @@ where
     S: AsyncRead + AsyncWrite,
 {
     let (mut read_half, mut write_half) = tokio::io::split(stream);
-    let mut framer = Framer::with_capacity(READ_BUF_BYTES);
+    let mut framer = Framer::new();
     let mut framer_counters = FramerCounters::new();
     let mut seq_tracker = SeqTracker::new(SEQ_TRACKER_CAPACITY);
 

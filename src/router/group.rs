@@ -33,12 +33,6 @@ pub struct GroupLearn {
     members: usize,
 }
 
-impl GroupLearn {
-    pub fn member_count(&self) -> usize {
-        self.members
-    }
-}
-
 /// Per-name registry of group learn-sets, owned by the router task.
 #[derive(Default)]
 pub struct GroupRegistry {
@@ -81,14 +75,6 @@ impl GroupRegistry {
     pub fn get_mut(&mut self, name: &Arc<str>) -> Option<&mut GroupLearn> {
         self.map.get_mut(name)
     }
-
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
 }
 
 #[cfg(test)]
@@ -109,7 +95,7 @@ mod tests {
         assert_eq!(registry.join(name.clone(), 7), 1);
         let entry = registry.get(&name).expect("group present after join");
         assert_eq!(entry.learn.capacity(), 7);
-        assert_eq!(entry.member_count(), 1);
+        assert_eq!(entry.members, 1);
     }
 
     #[test]
@@ -122,7 +108,7 @@ mod tests {
         assert_eq!(registry.join(name.clone(), 99), 2);
         let entry = registry.get(&name).expect("group still present");
         assert_eq!(entry.learn.capacity(), 7, "capacity must not be resized");
-        assert_eq!(entry.member_count(), 2);
+        assert_eq!(entry.members, 2);
     }
 
     #[test]
@@ -131,7 +117,7 @@ mod tests {
         let name = Arc::<str>::from("uplink");
         registry.join(name.clone(), 4);
         registry.join(name.clone(), 4);
-        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.map.len(), 1);
         registry.leave(&name);
         assert!(registry.get(&name).is_some(), "still has one member");
         registry.leave(&name);
@@ -139,7 +125,7 @@ mod tests {
             registry.get(&name).is_none(),
             "group should be removed at last leave"
         );
-        assert!(registry.is_empty());
+        assert!(registry.map.is_empty());
     }
 
     #[test]
@@ -147,7 +133,7 @@ mod tests {
         let mut registry = GroupRegistry::new();
         let name = Arc::<str>::from("does-not-exist");
         registry.leave(&name);
-        assert!(registry.is_empty());
+        assert!(registry.map.is_empty());
     }
 
     #[test]

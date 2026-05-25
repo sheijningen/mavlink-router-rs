@@ -14,7 +14,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use super::super::EndpointId;
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
-    DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES, READ_BUF_BYTES,
+    DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES,
 };
 use super::super::events::{EndpointEvent, PeerRemovalReason, Routable};
 use super::super::identity_flags::{IdentityFlags, SEQ_TRACKER_CAPACITY};
@@ -264,7 +264,7 @@ async fn handle_packet(
 
         let entry = PeerEntry {
             child_id,
-            framer: Framer::with_capacity(READ_BUF_BYTES),
+            framer: Framer::new(),
             last_seen: Instant::now(),
             framer_counters: FramerCounters::new(),
             seq_tracker: SeqTracker::new(SEQ_TRACKER_CAPACITY),
