@@ -38,57 +38,54 @@ pub fn parse_kind(
     pairs: &[(String, String)],
 ) -> Result<EndpointKind, SpecError> {
     match scheme {
-        Scheme::Serial => parse_serial_body(body).and_then(|(path, baud)| {
+        Scheme::Serial => {
+            let (path, baud) = parse_serial_body(body)?;
             let mut endpoint = SerialEndpoint {
                 path,
                 baud,
                 ..SerialEndpoint::default()
             };
-            apply_pairs(&mut SerialApplier(&mut endpoint), Scheme::Serial, pairs)?;
+            apply_pairs(&mut SerialApplier(&mut endpoint), scheme, pairs)?;
             Ok(EndpointKind::Serial(endpoint))
-        }),
-        Scheme::UdpServer => parse_listen_addr(body, Scheme::UdpServer).and_then(|bind_addr| {
+        }
+        Scheme::UdpServer => {
+            let bind_addr = parse_listen_addr(body, scheme)?;
             let mut endpoint = UdpServerEndpoint {
                 bind_addr,
                 ..UdpServerEndpoint::default()
             };
-            apply_pairs(
-                &mut UdpServerApplier(&mut endpoint),
-                Scheme::UdpServer,
-                pairs,
-            )?;
+            apply_pairs(&mut UdpServerApplier(&mut endpoint), scheme, pairs)?;
             Ok(EndpointKind::UdpServer(endpoint))
-        }),
-        Scheme::UdpClient => parse_host_port(body, Scheme::UdpClient).and_then(|(host, port)| {
+        }
+        Scheme::UdpClient => {
+            let (host, port) = parse_host_port(body, scheme)?;
             let mut endpoint = UdpClientEndpoint {
                 host,
                 port,
                 ..UdpClientEndpoint::default()
             };
-            apply_pairs(
-                &mut UdpClientApplier(&mut endpoint),
-                Scheme::UdpClient,
-                pairs,
-            )?;
+            apply_pairs(&mut UdpClientApplier(&mut endpoint), scheme, pairs)?;
             Ok(EndpointKind::UdpClient(endpoint))
-        }),
-        Scheme::TcpServer => parse_listen_addr(body, Scheme::TcpServer).and_then(|bind_addr| {
+        }
+        Scheme::TcpServer => {
+            let bind_addr = parse_listen_addr(body, scheme)?;
             let mut endpoint = TcpServerEndpoint {
                 bind_addr,
                 ..TcpServerEndpoint::default()
             };
-            apply_pairs(&mut endpoint.identity, Scheme::TcpServer, pairs)?;
+            apply_pairs(&mut endpoint.identity, scheme, pairs)?;
             Ok(EndpointKind::TcpServer(endpoint))
-        }),
-        Scheme::TcpClient => parse_host_port(body, Scheme::TcpClient).and_then(|(host, port)| {
+        }
+        Scheme::TcpClient => {
+            let (host, port) = parse_host_port(body, scheme)?;
             let mut endpoint = TcpClientEndpoint {
                 host,
                 port,
                 ..TcpClientEndpoint::default()
             };
-            apply_pairs(&mut endpoint.identity, Scheme::TcpClient, pairs)?;
+            apply_pairs(&mut endpoint.identity, scheme, pairs)?;
             Ok(EndpointKind::TcpClient(endpoint))
-        }),
+        }
     }
 }
 
