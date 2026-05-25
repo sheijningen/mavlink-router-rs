@@ -78,7 +78,11 @@ fn all_expected_examples_are_populated() {
             .join("deployment")
             .join(name)
             .join("config.toml");
-        assert!(path.exists(), "expected deployment example {}", path.display());
+        assert!(
+            path.exists(),
+            "expected deployment example {}",
+            path.display()
+        );
     }
 }
 
@@ -170,7 +174,11 @@ fn verify_one(path: &Path) {
 
 fn example_toml_files() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for parent in ["examples/simple", "examples/advanced", "examples/deployment"] {
+    for parent in [
+        "examples/simple",
+        "examples/advanced",
+        "examples/deployment",
+    ] {
         let Ok(entries) = std::fs::read_dir(parent) else {
             continue;
         };
