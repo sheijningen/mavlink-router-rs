@@ -1,0 +1,19 @@
+services:
+  rmr:
+    image: ghcr.io/sheijningen/rmr:latest
+    command: ["-c", "/etc/rmr/config.toml"]
+
+    # Simpler than bridge mode: no per-port `ports:` mapping to maintain
+    # and logs/stats show real client addresses instead of the gateway.
+    # Bridge mode works too if every endpoint port is mapped explicitly.
+    network_mode: host
+
+    # Pass the FC UART through.
+    # Keep in sync with devices actually used.
+    devices:
+      - "/dev/ttyAMA0:/dev/ttyAMA0"
+
+    volumes:
+      - ./config.toml:/etc/rmr/config.toml:ro
+
+    restart: unless-stopped

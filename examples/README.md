@@ -24,3 +24,10 @@ Realistic deployment scenarios composing multiple endpoints with routing policy.
 9. [`advanced/fleet-aggregator/`](advanced/fleet-aggregator/config.toml) — Fly a fleet from a single GCS without each drone receiving its siblings' telemetry.
 10. [`advanced/ground-side-local-service/`](advanced/ground-side-local-service/config.toml) — Wire up and route microservices on the ground-side.
 11. [`advanced/redundant-links/`](advanced/redundant-links/) — Run two parallel links to the same flight controller so a single-link failure is invisible to the GCS.
+
+## Deployment
+
+Ready-to-run manifests for running RMR in production. Both ship the same minimal drone-side `config.toml` (a `serial:` flight controller routed to a `udpc:` GCS).
+
+12. [`deployment/docker-compose/`](deployment/docker-compose/) — Run the multi-arch GHCR image with `network_mode: host` and serial device passthrough.
+13. [`deployment/systemd/`](deployment/systemd/) — Run a release binary as a dedicated `rmr` user, with serial access via `DeviceAllow=` and journald logging.

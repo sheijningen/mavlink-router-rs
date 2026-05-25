@@ -1,11 +1,9 @@
-//! Phase 7 tests:
-//!   - every example under `examples/simple/` and `examples/advanced/`
-//!     is a runnable TOML config whose trailing `# rmr ...` block
-//!     produces the same merged [`rmr::config::Config`] as the TOML
-//!     body itself ("each example TOML's trailing `# rmr ...` CLI
-//!     block parses identically to the TOML it accompanies").
-//!   - `rmr --help` renders the endpoint mini-guide ("`rmr --help`
-//!     renders the endpoint mini-guide").
+//! Asserts the documented invariants for shipped examples:
+//!   - every example under `examples/simple/`, `examples/advanced/`,
+//!     and `examples/deployment/` is a runnable TOML config whose
+//!     trailing `# rmr ...` block produces the same merged
+//!     [`rmr::config::Config`] as the TOML body itself.
+//!   - `rmr --help` renders the endpoint mini-guide.
 //!
 //! Example TOML convention enforced here:
 //!   - The TOML body is a normal TOML document.
@@ -73,6 +71,14 @@ fn all_expected_examples_are_populated() {
             let path = Path::new("examples").join(tier).join(name).join(file);
             assert!(path.exists(), "expected example {}", path.display());
         }
+    }
+    let deployment: &[&str] = &["docker-compose", "systemd"];
+    for name in deployment {
+        let path = Path::new("examples")
+            .join("deployment")
+            .join(name)
+            .join("config.toml");
+        assert!(path.exists(), "expected deployment example {}", path.display());
     }
 }
 
@@ -164,7 +170,7 @@ fn verify_one(path: &Path) {
 
 fn example_toml_files() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for parent in ["examples/simple", "examples/advanced"] {
+    for parent in ["examples/simple", "examples/advanced", "examples/deployment"] {
         let Ok(entries) = std::fs::read_dir(parent) else {
             continue;
         };

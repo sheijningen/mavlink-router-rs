@@ -1,0 +1,26 @@
+[Unit]
+Description=Rust MAVLink Router (RMR)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/rmr -c /etc/rmr/config.toml
+User=rmr
+
+# FC UART access. Keep in sync with devices actually used.
+# Group is distro-specific: `dialout` on Debian/Ubuntu, `uucp` on Arch/openSUSE.
+DeviceAllow=/dev/ttyAMA0 rw
+SupplementaryGroups=dialout
+
+# Logs land in journald.
+StandardError=journal
+
+# Survive transient failures; don't loop on a fatal config error.
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+[Install]
+WantedBy=multi-user.target

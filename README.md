@@ -19,21 +19,25 @@ used throughout the docs; the binary is also called `rmr`.)
 Each release attaches binaries for Linux (`x86_64` and `aarch64`, both
 `musl`-static and dynamically-linked `gnu`), macOS (`x86_64` and `aarch64`),
 and Windows (`x86_64`) to the GitHub Release. Verify with the attached
-`SHA256SUMS`.
+`SHA256SUMS`. For a long-running service, see the
+[systemd manifest](examples/deployment/systemd/).
 
 ### Docker
 
 Multi-arch images (`linux/amd64`, `linux/arm64`) are published per
 release to `ghcr.io/sheijningen/rmr` with tags `:<X.Y.Z>`, `:<X.Y>`, and
-`:latest`. Pin to `:<X.Y.Z>` in production. (Image and binary share the
+`:latest`. **Pin to `:<X.Y.Z>` in production**. (Image and binary share the
 short name; the longer `mavlink-router-rs` lives at the GitHub repo and
 README title for discoverability.)
 
 ```sh
 docker run --rm -i -p 14550:14550/udp --device /dev/ttyAMA0 \
-  ghcr.io/sheijningen/rmr:0.1.0 \
+  ghcr.io/sheijningen/rmr:latest \
   serial:/dev/ttyAMA0:115200#fc udps:0.0.0.0:14550#gcs
 ```
+
+For a config-file driven setup, see the
+[Docker Compose manifest](examples/deployment/docker-compose/).
 
 ## Quick start
 
@@ -358,12 +362,6 @@ Docker tags published per release: `:<X.Y.Z>`, `:<X.Y>`, and `:latest`
 (no `:<MAJOR>` tag pre-1.0).
 
 Release notes: [CHANGELOG.md](CHANGELOG.md).
-
-## Deployment
-
-Operational deployment patterns — Docker Compose, systemd unit files,
-device-access notes — ship under `examples/deployment/` once Phase 8
-lands.
 
 ## License
 

@@ -1,0 +1,24 @@
+# Minimal drone-side deployment for the systemd example
+#
+#   ┌──────── Drone ────────┐
+#   │  FC (UART) ◄─► ┌─────┐│
+#   │                │ RMR │┼──► GCS
+#   │                └─────┘│
+#   └───────────────────────┘
+
+[[endpoints]]
+type = "serial"
+name = "fc"
+path = "/dev/ttyAMA0"
+baud = 115200
+
+[[endpoints]]
+type = "udpc"
+name = "gcs"
+host = "10.223.0.10"
+port = 14550
+
+# Equivalent CLI invocation:
+#
+# rmr serial:/dev/ttyAMA0:115200#fc \
+#     udpc:10.223.0.10:14550#gcs
