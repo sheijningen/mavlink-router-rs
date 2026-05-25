@@ -6,6 +6,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::net::{UdpSocket, lookup_host};
 use tokio::time::{Instant, MissedTickBehavior, interval};
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use super::super::EndpointId;
@@ -190,46 +191,42 @@ pub async fn run(spec: UdpClientSpec, wiring: ClientWiring) {
 }
 
 async fn run_inner(spec: UdpClientSpec, wiring: ClientWiring) {
-    let UdpClientSpec {
-        host,
-        port,
-        endpoint_id,
-        name: _,
-        latch_idle_secs,
-        reconnect_initial_ms,
-        reconnect_max_ms,
-        identity,
-    } = spec;
-    let ClientWiring {
-        frame_tx,
-        tx_queue,
-        stats,
-        cancel,
-    } = wiring;
+    let Some((socket, dest)) = bind_local_socket(&spec, &wiring.cancel).await else {
+        return;
+    };
+    log_bind_success(&socket, &dest);
+    wiring.stats.store_state(EndpointState::Connected);
+    event_loop(socket, dest, spec, wiring).await;
+}
 
-    let initial_ips = resolve_host(&host, port).await;
-    let mut dest = Destination {
-        host,
-        port,
+/// Resolve the configured host, choose a local-bind family that can reach
+/// it, and bind a UDP socket with the shared capped-exp backoff. Returns
+/// `None` on cancellation.
+async fn bind_local_socket(
+    spec: &UdpClientSpec,
+    cancel: &CancellationToken,
+) -> Option<(UdpSocket, Destination)> {
+    let initial_ips = resolve_host(&spec.host, spec.port).await;
+    let dest = Destination {
+        host: spec.host.clone(),
+        port: spec.port,
         resolved_ips: initial_ips,
         latch: None,
     };
 
-    let mut backoff = Backoff::new(reconnect_initial_ms, reconnect_max_ms);
+    let mut backoff = Backoff::new(spec.reconnect_initial_ms, spec.reconnect_max_ms);
     let local_bind = pick_local_bind(&dest.resolved_ips);
-    let socket = match bind_with_backoff(&cancel, &mut backoff, "udpc local", local_bind, || {
+    match bind_with_backoff(cancel, &mut backoff, local_bind, || {
         bind_udp_dual_stack(local_bind)
     })
     .await
     {
-        BindOutcome::Bound(socket) => socket,
-        BindOutcome::Cancelled => return,
-    };
-    // Local bind succeeded. udpc has no transport-up/down event in the
-    // socket-lifecycle sense (revert to configured-host is *not* a transport
-    // event per CLAUDE.md), but the task does flip back to Reconnecting on
-    // send_to errors and DNS-resolve failures that leave us with no target —
-    // see `send_frame` for the recovery / failure writes.
+        BindOutcome::Bound(socket) => Some((socket, dest)),
+        BindOutcome::Cancelled => None,
+    }
+}
+
+fn log_bind_success(socket: &UdpSocket, dest: &Destination) {
     let local_addr = socket
         .local_addr()
         .map(|addr| addr.to_string())
@@ -238,10 +235,16 @@ async fn run_inner(spec: UdpClientSpec, wiring: ClientWiring) {
         %local_addr,
         host = %dest.host,
         port = dest.port,
-        "udpc bound and ready"
+        "bound and ready"
     );
-    stats.store_state(EndpointState::Connected);
+}
 
+async fn event_loop(
+    socket: UdpSocket,
+    mut dest: Destination,
+    spec: UdpClientSpec,
+    wiring: ClientWiring,
+) {
     let mut framer = Framer::new();
     let mut framer_counters = FramerCounters::new();
     let mut seq_tracker = SeqTracker::new(SEQ_TRACKER_CAPACITY);
@@ -249,25 +252,25 @@ async fn run_inner(spec: UdpClientSpec, wiring: ClientWiring) {
 
     let mut revert_tick = interval(REVERT_TICK);
     revert_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    // `interval(...)` fires its first tick immediately; skip it so the
+    // `interval(...)` fires its first tick immediately; consume it so the
     // revert check doesn't run before we've had a chance to latch.
     let _ = revert_tick.tick().await;
 
     let session_ctx = SessionCtx {
-        endpoint_id,
-        stats: &stats,
-        frame_tx: &frame_tx,
-        filters: &identity.filters,
+        endpoint_id: spec.endpoint_id,
+        stats: &wiring.stats,
+        frame_tx: &wiring.frame_tx,
+        filters: &spec.identity.filters,
     };
     loop {
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => {
-                tx_queue.drain_and_discard();
+            _ = wiring.cancel.cancelled() => {
+                wiring.tx_queue.drain_and_discard();
                 return;
             }
             _ = revert_tick.tick() => {
-                check_latch_idle(&mut dest, Duration::from_secs(latch_idle_secs)).await;
+                check_latch_idle(&mut dest, Duration::from_secs(spec.latch_idle_secs)).await;
             }
             res = socket.recv_from(&mut buf) => {
                 match res {
@@ -284,12 +287,12 @@ async fn run_inner(spec: UdpClientSpec, wiring: ClientWiring) {
                         .await;
                     }
                     Err(err) => {
-                        warn!(error = %err, "udpc recv_from error");
+                        warn!(error = %err, "recv_from error");
                     }
                 }
             }
-            frame = tx_queue.pop_or_wait() => {
-                send_frame(&socket, &mut dest, frame, &stats).await;
+            frame = wiring.tx_queue.pop_or_wait() => {
+                send_frame(&socket, &mut dest, frame, &wiring.stats).await;
             }
         }
     }

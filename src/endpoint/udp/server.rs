@@ -123,13 +123,9 @@ pub async fn run(spec: UdpServerSpec, wiring: ServerWiring) {
 async fn run_inner(spec: UdpServerSpec, wiring: ServerWiring) {
     let mut backoff = Backoff::new(spec.reconnect_initial_ms, spec.reconnect_max_ms);
 
-    let socket = match bind_with_backoff(
-        &wiring.cancel,
-        &mut backoff,
-        "udps",
-        spec.listen_addr,
-        || bind_udp_dual_stack(spec.listen_addr),
-    )
+    let socket = match bind_with_backoff(&wiring.cancel, &mut backoff, spec.listen_addr, || {
+        bind_udp_dual_stack(spec.listen_addr)
+    })
     .await
     {
         BindOutcome::Bound(s) => Arc::new(s),
@@ -137,7 +133,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: ServerWiring) {
     };
     wiring.stats.store_state(EndpointState::Connected);
     let bound_addr = socket.local_addr().unwrap_or(spec.listen_addr);
-    info!(%bound_addr, parent_id = %spec.parent_id, "udps listening");
+    info!(%bound_addr, parent_id = %spec.parent_id, "listening");
 
     let mut peers: HashMap<SocketAddr, PeerEntry> = HashMap::new();
     let mut buf = vec![0u8; MAX_DATAGRAM_BYTES];
@@ -207,71 +203,8 @@ async fn handle_packet(
     writer_tasks: &mut JoinSet<()>,
     ctx: &ListenerCtx<'_>,
 ) {
-    if !peers.contains_key(&src) {
-        let child_id = ctx.wiring.allocator.alloc();
-        // The first packet from this source IS the transport-up event for the
-        // learned peer, so the Arc lands in Connected before it reaches the
-        // router.
-        let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
-        let tx_queue = TxQueue::new(DEFAULT_TX_QUEUE_FRAMES, stats.clone());
-        let writer_cancel = ctx.wiring.cancel.child_token();
-        let name = peer_endpoint_name(&ctx.spec.parent_name, src);
-        let writer_span = info_span!("udps_peer", name = %name);
-
-        // Announce PeerAdded before LRU-evicting and before spawning the writer:
-        // a closed router event channel here means the router is gone, and
-        // destroying an existing peer's state in vain (silent PeerRemoved that
-        // nobody receives) is worse than just dropping the new packet. The
-        // peer inherits the parent listener's IdentityFlags by clone per
-        // CLAUDE.md "Sub-endpoints inherit their parent's IdentityFlags by
-        // clone at spawn time".
-        if ctx
-            .wiring
-            .event_tx
-            .send(EndpointEvent::PeerAdded {
-                parent_id: ctx.spec.parent_id,
-                child_id,
-                peer_addr: src,
-                name,
-                stats: stats.clone(),
-                routable: Routable {
-                    tx_queue: tx_queue.clone(),
-                    identity: ctx.spec.identity.clone(),
-                },
-            })
-            .await
-            .is_err()
-        {
-            debug!("udps event channel closed; dropping admitted peer");
-            return;
-        }
-        info!(parent_id = %ctx.spec.parent_id, %src, "udps peer added");
-
-        if peers.len() >= ctx.spec.peer_capacity {
-            evict_lru_peer(peers, ctx.spec.parent_id, &ctx.wiring.event_tx).await;
-        }
-
-        writer_tasks.spawn(
-            run_peer_writer(
-                ctx.socket.clone(),
-                src,
-                tx_queue,
-                stats.clone(),
-                writer_cancel.clone(),
-            )
-            .instrument(writer_span),
-        );
-
-        let entry = PeerEntry {
-            child_id,
-            framer: Framer::new(),
-            last_seen: Instant::now(),
-            framer_counters: FramerCounters::new(),
-            seq_tracker: SeqTracker::new(SEQ_TRACKER_CAPACITY),
-            stats,
-            writer_cancel,
-        };
-        peers.insert(src, entry);
+    if !peers.contains_key(&src) && !admit_new_peer(src, peers, writer_tasks, ctx).await {
+        return;
     }
 
     let Some(peer) = peers.get_mut(&src) else {
@@ -280,10 +213,8 @@ async fn handle_packet(
     peer.last_seen = Instant::now();
 
     peer.framer.buffer_mut().extend_from_slice(data);
-    // CLAUDE.md: "filters apply uniformly to every admitted child of a
-    // listener, so the listener evaluates against its own IdentityFlags
-    // rather than re-looking-up the peer's identical clone; only the drop
-    // credit goes to the peer's Arc<EndpointStats>".
+    // Filters live on the parent listener (uniform across children per
+    // CLAUDE.md); drop credit goes to this peer's stats.
     let session_ctx = SessionCtx {
         endpoint_id: peer.child_id,
         stats: &peer.stats,
@@ -297,6 +228,76 @@ async fn handle_packet(
         return;
     }
     peer.framer_counters.sync(&peer.framer, &peer.stats);
+}
+
+/// Admit a brand-new peer learned from `src`. Returns `false` when the
+/// event channel is closed (router gone) so the caller drops the packet
+/// without touching the existing peer table. Announces `PeerAdded` *before*
+/// evicting the LRU victim: a silent failure here must not destroy real
+/// state in vain.
+async fn admit_new_peer(
+    src: SocketAddr,
+    peers: &mut HashMap<SocketAddr, PeerEntry>,
+    writer_tasks: &mut JoinSet<()>,
+    ctx: &ListenerCtx<'_>,
+) -> bool {
+    let child_id = ctx.wiring.allocator.alloc();
+    let stats = Arc::new(EndpointStats::new(EndpointState::Connected));
+    let tx_queue = TxQueue::new(DEFAULT_TX_QUEUE_FRAMES, stats.clone());
+    let writer_cancel = ctx.wiring.cancel.child_token();
+    let name = peer_endpoint_name(&ctx.spec.parent_name, src);
+    let writer_span = info_span!("udps_peer", name = %name);
+
+    if ctx
+        .wiring
+        .event_tx
+        .send(EndpointEvent::PeerAdded {
+            parent_id: ctx.spec.parent_id,
+            child_id,
+            peer_addr: src,
+            name,
+            stats: stats.clone(),
+            routable: Routable {
+                tx_queue: tx_queue.clone(),
+                identity: ctx.spec.identity.clone(),
+            },
+        })
+        .await
+        .is_err()
+    {
+        debug!("event channel closed; dropping admitted peer");
+        return false;
+    }
+    info!(parent_id = %ctx.spec.parent_id, %src, "peer added");
+
+    if peers.len() >= ctx.spec.peer_capacity {
+        evict_lru_peer(peers, ctx.spec.parent_id, &ctx.wiring.event_tx).await;
+    }
+
+    writer_tasks.spawn(
+        run_peer_writer(
+            ctx.socket.clone(),
+            src,
+            tx_queue,
+            stats.clone(),
+            writer_cancel.clone(),
+        )
+        .instrument(writer_span),
+    );
+
+    peers.insert(
+        src,
+        PeerEntry {
+            child_id,
+            framer: Framer::new(),
+            last_seen: Instant::now(),
+            framer_counters: FramerCounters::new(),
+            seq_tracker: SeqTracker::new(SEQ_TRACKER_CAPACITY),
+            stats,
+            writer_cancel,
+        },
+    );
+    true
 }
 
 async fn evict_lru_peer(
@@ -502,16 +503,20 @@ mod tests {
         assert_eq!(removed, vec![addr(1), addr(3)]);
     }
 
-    /// Boundary test for the locked `DEFAULT_PEER_CAPACITY` invariant: when a
-    /// fresh source arrives and the peer table is already at `peer_capacity`,
-    /// `handle_packet` must (a) keep the table size at the cap, (b) evict the
-    /// LRU entry by last-seen, (c) admit the new peer, and (d) emit
-    /// `PeerAdded` for the newcomer followed by `PeerRemoved { LruEvicted }`
-    /// for the victim. The production cap is 256 (CLAUDE.md "Hardcoded
-    /// plumbing knobs"); the spec's mutable `peer_capacity` field exists so
-    /// this branch can run against a small N rather than 256 dummy peers.
-    #[tokio::test]
-    async fn handle_packet_evicts_lru_when_at_capacity() {
+    /// Shared admission-test fixture: a real bound socket, an allocator, a
+    /// frame/event channel pair, and a `UdpServerSpec` whose `peer_capacity`
+    /// is whatever the test needs. Returns the receivers alongside the
+    /// owning fixture so the caller can assert on emitted lifecycle events.
+    struct AdmissionFixture {
+        socket: Arc<UdpSocket>,
+        spec: UdpServerSpec,
+        wiring: ServerWiring,
+        cancel: CancellationToken,
+        _frame_rx: mpsc::Receiver<RouterFrame>,
+        event_rx: mpsc::Receiver<EndpointEvent>,
+    }
+
+    async fn admission_fixture(peer_capacity: usize) -> AdmissionFixture {
         let socket = Arc::new(
             UdpSocket::bind("127.0.0.1:0")
                 .await
@@ -520,29 +525,50 @@ mod tests {
         let allocator = Arc::new(EndpointIdAllocator::new());
         let parent_id = allocator.alloc();
         let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
-        let (event_tx, mut event_rx) = mpsc::channel::<EndpointEvent>(16);
+        let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(16);
         let cancel = CancellationToken::new();
         let spec = UdpServerSpec {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             parent_id,
             parent_name: "test".to_string(),
             idle_secs: DEFAULT_IDLE_SECS,
-            peer_capacity: 3,
+            peer_capacity,
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
             reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
             identity: IdentityFlags::default(),
         };
         let wiring = ServerWiring {
-            allocator: allocator.clone(),
+            allocator,
             frame_tx,
             event_tx,
             cancel: cancel.clone(),
             stats: Arc::new(EndpointStats::default()),
         };
+        AdmissionFixture {
+            socket,
+            spec,
+            wiring,
+            cancel,
+            _frame_rx,
+            event_rx,
+        }
+    }
+
+    /// Boundary test for the locked `DEFAULT_PEER_CAPACITY` invariant: when a
+    /// fresh source arrives and the peer table is already at `peer_capacity`,
+    /// `admit_new_peer` must (a) keep the table size at the cap, (b) evict
+    /// the LRU entry by last-seen, (c) admit the new peer, and (d) emit
+    /// `PeerAdded` for the newcomer followed by `PeerRemoved { LruEvicted }`
+    /// for the victim. The production cap is 256 (CLAUDE.md "Hardcoded
+    /// plumbing knobs"); the spec's mutable `peer_capacity` field exists so
+    /// this branch can run against a small N rather than 256 dummy peers.
+    #[tokio::test]
+    async fn admit_new_peer_evicts_lru_when_at_capacity() {
+        let mut fx = admission_fixture(3).await;
         let ctx = ListenerCtx {
-            socket: socket.clone(),
-            spec: &spec,
-            wiring: &wiring,
+            socket: fx.socket.clone(),
+            spec: &fx.spec,
+            wiring: &fx.wiring,
         };
 
         let mut peers: HashMap<SocketAddr, PeerEntry> = HashMap::new();
@@ -553,11 +579,15 @@ mod tests {
         assert_eq!(
             peers.len(),
             3,
-            "pre-condition: table must be at peer_capacity before handle_packet"
+            "pre-condition: table must be at peer_capacity before admit_new_peer"
         );
         let mut writer_tasks: JoinSet<()> = JoinSet::new();
 
-        handle_packet(&[], addr(4), &mut peers, &mut writer_tasks, &ctx).await;
+        let admitted = admit_new_peer(addr(4), &mut peers, &mut writer_tasks, &ctx).await;
+        assert!(
+            admitted,
+            "admission must succeed when event channel is open"
+        );
 
         assert_eq!(peers.len(), 3, "table size should stay at peer_capacity");
         assert!(!peers.contains_key(&addr(2)), "LRU peer should be evicted");
@@ -565,13 +595,13 @@ mod tests {
         assert!(peers.contains_key(&addr(3)));
         assert!(peers.contains_key(&addr(4)), "new peer should be admitted");
 
-        match event_rx.try_recv() {
+        match fx.event_rx.try_recv() {
             Ok(EndpointEvent::PeerAdded { peer_addr, .. }) => {
                 assert_eq!(peer_addr, addr(4));
             }
             other => panic!("expected PeerAdded for addr(4), got {other:?}"),
         }
-        match event_rx.try_recv() {
+        match fx.event_rx.try_recv() {
             Ok(EndpointEvent::PeerRemoved {
                 reason, peer_addr, ..
             }) => {
@@ -581,49 +611,33 @@ mod tests {
             other => panic!("expected PeerRemoved(LruEvicted) for addr(2), got {other:?}"),
         }
         assert!(
-            event_rx.try_recv().is_err(),
+            fx.event_rx.try_recv().is_err(),
             "no further lifecycle events expected"
         );
 
-        cancel.cancel();
+        fx.cancel.cancel();
         writer_tasks.shutdown().await;
     }
 
     /// Regression: when the router event channel is already closed and a
-    /// brand-new peer arrives at capacity, `handle_packet` must NOT evict an
-    /// existing peer just to drop the new one. Reordering the announce ahead
-    /// of the LRU eviction guarantees we never destroy real state in vain.
+    /// brand-new peer arrives at capacity, `admit_new_peer` must return
+    /// `false` WITHOUT evicting an existing peer to make room. Announcing
+    /// `PeerAdded` ahead of the LRU eviction guarantees we never destroy
+    /// real state in vain.
     #[tokio::test]
-    async fn handle_packet_with_closed_event_tx_does_not_evict() {
-        let socket = Arc::new(
-            UdpSocket::bind("127.0.0.1:0")
-                .await
-                .expect("bind ctx socket"),
-        );
-        let allocator = Arc::new(EndpointIdAllocator::new());
-        let parent_id = allocator.alloc();
-        let (frame_tx, _frame_rx) = mpsc::channel::<RouterFrame>(8);
-        let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(8);
-        let cancel = CancellationToken::new();
-        let spec = UdpServerSpec {
-            listen_addr: "127.0.0.1:0".parse().unwrap(),
-            parent_id,
-            parent_name: "test".to_string(),
-            idle_secs: DEFAULT_IDLE_SECS,
-            peer_capacity: 2,
-            reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,
-            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
-            identity: IdentityFlags::default(),
-        };
-        let wiring = ServerWiring {
-            allocator: allocator.clone(),
-            frame_tx,
-            event_tx,
-            cancel,
-            stats: Arc::new(EndpointStats::default()),
-        };
+    async fn admit_new_peer_with_closed_event_tx_does_not_evict() {
+        let AdmissionFixture {
+            socket,
+            spec,
+            wiring,
+            event_rx,
+            ..
+        } = admission_fixture(2).await;
+        // Close the event channel so PeerAdded send fails immediately.
+        drop(event_rx);
+
         let ctx = ListenerCtx {
-            socket: socket.clone(),
+            socket,
             spec: &spec,
             wiring: &wiring,
         };
@@ -633,10 +647,11 @@ mod tests {
         peers.insert(addr(2), dummy_peer(EndpointId(11), Duration::from_secs(60)));
         let mut writer_tasks: JoinSet<()> = JoinSet::new();
 
-        // Close the event channel so PeerAdded send fails immediately.
-        drop(event_rx);
-
-        handle_packet(&[], addr(3), &mut peers, &mut writer_tasks, &ctx).await;
+        let admitted = admit_new_peer(addr(3), &mut peers, &mut writer_tasks, &ctx).await;
+        assert!(
+            !admitted,
+            "admission must fail when event channel is closed"
+        );
 
         assert_eq!(peers.len(), 2, "no peer should have been evicted");
         assert!(peers.contains_key(&addr(1)), "addr(1) should remain");

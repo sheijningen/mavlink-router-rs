@@ -73,18 +73,15 @@ async fn run_inner(spec: TcpServerSpec, wiring: ServerWiring) {
     let mut backoff = Backoff::new(spec.reconnect_initial_ms, spec.reconnect_max_ms);
 
     loop {
-        let listener = match bind_with_backoff(
-            &wiring.cancel,
-            &mut backoff,
-            "tcps",
-            spec.listen_addr,
-            || bind_tcp_dual_stack(spec.listen_addr),
-        )
-        .await
-        {
-            BindOutcome::Bound(l) => l,
-            BindOutcome::Cancelled => return,
-        };
+        let listener =
+            match bind_with_backoff(&wiring.cancel, &mut backoff, spec.listen_addr, || {
+                bind_tcp_dual_stack(spec.listen_addr)
+            })
+            .await
+            {
+                BindOutcome::Bound(l) => l,
+                BindOutcome::Cancelled => return,
+            };
         wiring.stats.store_state(EndpointState::Connected);
         let bound_addr = listener.local_addr().unwrap_or(spec.listen_addr);
         info!(%bound_addr, parent_id = %spec.parent_id, "listening");

@@ -54,6 +54,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -64,6 +65,7 @@ use crate::endpoint::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
 use crate::endpoint::identity_flags::{IdentityFlags, LEARN_CAPACITY};
 use crate::endpoint::stats::{EndpointState, EndpointStats};
 use crate::endpoint::tx_queue::TxQueue;
+use crate::mavlink::frame::ParsedHeader;
 use crate::stats::StatsEvent;
 
 use decide::{Decision, decide as decide_for_dest};
@@ -251,10 +253,31 @@ impl Router {
     }
 
     fn handle_frame(&mut self, router_frame: RouterFrame) {
-        // Field-disjoint split-borrow: `routing`, `groups`, and `dedup`
-        // become independent `&mut` references so the same source-endpoint
-        // lookup that gates dedup can ALSO touch the per-endpoint learn-set
-        // when the source has no group — no second hashmap lookup, no
+        let RouterFrame {
+            endpoint_id: src_id,
+            frame,
+            header,
+        } = router_frame;
+        if !self.update_source_routing(src_id, &frame, &header, Instant::now()) {
+            return;
+        }
+        self.dispatch_to_destinations(src_id, &frame, &header);
+    }
+
+    /// Validate the source endpoint, run dedup, then touch the source's
+    /// effective learn-set and publish its current length to stats. Returns
+    /// `false` when the frame is suppressed (unknown source, non-routable
+    /// source, dedup hit, or missing group entry).
+    fn update_source_routing(
+        &mut self,
+        src_id: EndpointId,
+        frame: &Bytes,
+        header: &ParsedHeader,
+        now: Instant,
+    ) -> bool {
+        // Field-disjoint split-borrow confined to this method: one
+        // `routing.get_mut` gates dedup AND touches the per-endpoint
+        // learn-set when the source has no group — no second lookup, no
         // `expect` revalidating an invariant we just observed.
         let Router {
             routing,
@@ -262,72 +285,59 @@ impl Router {
             dedup,
             stats_event_tx: _,
         } = self;
-        let RouterFrame {
-            endpoint_id: src_id,
-            frame,
-            header,
-        } = router_frame;
-        let now = Instant::now();
 
-        // A frame from a registered-but-non-routable endpoint (a parent
-        // listener) is a spawner bug — parents have no reader and cannot
-        // emit a `RouterFrame` — but the same DEBUG-then-drop handles both
-        // that and the genuine unknown-id case.
-        let (src_stats, learn_len) = {
-            let Some(src_entry) = routing.get_mut(&src_id) else {
-                debug!(%src_id, "router: frame from unknown endpoint; dropped");
-                return;
-            };
-            let src_stats = src_entry.stats.clone();
-            let Some(src_routable) = src_entry.routable.as_mut() else {
-                debug!(%src_id, "router: frame from non-routable endpoint; dropped");
-                return;
-            };
+        let Some(src_entry) = routing.get_mut(&src_id) else {
+            debug!(%src_id, "frame from unknown endpoint; dropped");
+            return false;
+        };
+        let src_stats = src_entry.stats.clone();
+        let Some(src_routable) = src_entry.routable.as_mut() else {
+            debug!(%src_id, "frame from non-routable endpoint; dropped");
+            return false;
+        };
 
-            // Dedup runs BEFORE learn and per-destination dispatch
-            // (CLAUDE.md "Sniffer + dedup ordering": sniffer destinations
-            // see the post-dedup frame set). Disabled when `dedup_ms == 0`
-            // — `check_and_insert` is then a no-op `false`.
-            if dedup.check_and_insert(&frame, now) {
-                src_stats.dedup_drops.fetch_add(1, Ordering::Relaxed);
-                trace!(%src_id, "router: dedup suppressed duplicate frame");
-                return;
+        // Dedup runs BEFORE learn (CLAUDE.md "Sniffer + dedup ordering":
+        // sniffer destinations see the post-dedup frame set). No-op when
+        // `dedup_ms == 0`.
+        if dedup.check_and_insert(frame, now) {
+            src_stats.dedup_drops.fetch_add(1, Ordering::Relaxed);
+            trace!(%src_id, "dedup suppressed duplicate frame");
+            return false;
+        }
+
+        // Always publish the current learn-set size — group siblings may
+        // have inserted between our touches, so the unconditional store
+        // is the only way every member's stats reflect the current size.
+        let learn_len = match &src_routable.identity.group {
+            Some(name) => {
+                let Some(group) = groups.get_mut(name) else {
+                    debug!(%src_id, ?name, "source group missing; dropped");
+                    return false;
+                };
+                group.learn.touch(header.source, now);
+                group.learn.len()
             }
-
-            // Touch the source's effective learn-set (per-endpoint or
-            // shared via a group). Always publish the current length to
-            // the source's `learn_entries` — when the source's learn is a
-            // group's table, other members may have inserted between our
-            // touches, so the cheap unconditional store is the only way
-            // every member's stats reflect the current group size.
-            let learn_len = match &src_routable.identity.group {
-                Some(name) => {
-                    let Some(group) = groups.get_mut(name) else {
-                        debug!(%src_id, ?name, "router: source group missing; dropped");
-                        return;
-                    };
-                    group.learn.touch(header.source, now);
-                    group.learn.len()
-                }
-                None => {
-                    src_routable.learn.touch(header.source, now);
-                    src_routable.learn.len()
-                }
-            };
-            (src_stats, learn_len)
+            None => {
+                src_routable.learn.touch(header.source, now);
+                src_routable.learn.len()
+            }
         };
         src_stats
             .learn_entries
             .store(learn_len as u64, Ordering::Relaxed);
+        true
+    }
 
-        for (dest_id, dest_ep) in routing.iter() {
+    /// Per-destination decision: for every registered endpoint other than
+    /// the source, look up the effective learn-set (per-endpoint or shared
+    /// via the destination's group), run [`decide_for_dest`], and either
+    /// push into the destination's TxQueue or credit `out_filter_drops`.
+    /// Parent listeners (`routable == None`) are skipped at one branch.
+    fn dispatch_to_destinations(&self, src_id: EndpointId, frame: &Bytes, header: &ParsedHeader) {
+        for (dest_id, dest_ep) in self.routing.iter() {
             if *dest_id == src_id {
                 continue;
             }
-            // Parent listeners (`routable == None`) are skipped here at
-            // one branch per registry slot — the type-level distinction
-            // lives on `RegisteredEndpoint.routable` rather than in a
-            // separate map.
             let Some(dest_routable) = &dest_ep.routable else {
                 continue;
             };
@@ -335,9 +345,9 @@ impl Router {
                 Some(name) => {
                     // Single-task ownership: groups.leave is only called
                     // from handle_event, which is mutually exclusive with
-                    // this iteration over routing. A registered group
-                    // member always has its entry present.
-                    let group = groups.get(name);
+                    // this iteration. A registered group member always
+                    // has its entry present.
+                    let group = self.groups.get(name);
                     debug_assert!(group.is_some(), "group entry vanished mid-dispatch");
                     match group {
                         Some(group) => &group.learn,
@@ -346,14 +356,13 @@ impl Router {
                 }
                 None => &dest_routable.learn,
             };
-            match decide_for_dest(&header, dest_learn, &dest_routable.identity) {
+            match decide_for_dest(header, dest_learn, &dest_routable.identity) {
                 Decision::Admit => {
                     dest_routable.tx_queue.push(frame.clone());
                 }
                 Decision::OutFilterBlocked => {
-                    // Only out-filter rejections are credited to a counter
-                    // — loop-prevent and target-mismatch are the everyday
-                    // no-op rejections.
+                    // Only out-filter rejections get a counter — loop-prevent
+                    // and target-mismatch are the everyday no-op rejections.
                     dest_ep
                         .stats
                         .out_filter_drops
@@ -382,7 +391,7 @@ impl Router {
                 %id,
                 name = %entry.name,
                 routable = entry.routable.is_some(),
-                "router: shutdown finalize"
+                "shutdown finalize"
             );
             let _ = self.stats_event_tx.send(StatsEvent::Finalize { id }).await;
         }
