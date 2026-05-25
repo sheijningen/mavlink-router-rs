@@ -182,7 +182,6 @@ mod tests {
     fn capacity_zero_is_clamped_to_one() {
         let mut window = DedupWindow::new(Duration::from_millis(50), 0);
         assert!(!window.check_and_insert(&make_frame(b"a"), at(0)));
-        // Capacity is 1, so admitting "b" evicts "a".
         assert!(!window.check_and_insert(&make_frame(b"b"), at(0)));
         assert_eq!(window.ring.len(), 1);
     }

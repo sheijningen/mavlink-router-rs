@@ -101,12 +101,10 @@ impl Config {
     pub fn merge(toml: Option<TomlConfig>, cli: CliConfig) -> Result<MergeOutcome, Error> {
         let toml = toml.unwrap_or_default();
 
-        // Within-source duplicate detection runs *before* the cross-source
-        // override pass — otherwise a CLI override could silently mask a
-        // duplicate in TOML (or vice versa): both colliding TOML entries
-        // would drop into `overridden_names` and the operator's typo would
-        // be invisible. The locked decision is "within-source dups remain
-        // fatal" regardless of what the other source does.
+        // Run within-source duplicate detection *before* the cross-source
+        // override pass; otherwise a CLI override could silently mask a
+        // duplicate in TOML (both colliding entries would drop into
+        // `overridden_names` and the operator's typo would be invisible).
         check_unique_names(&toml.endpoints)?;
         check_unique_names(&cli.endpoints)?;
 

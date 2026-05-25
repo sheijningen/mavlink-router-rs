@@ -88,7 +88,6 @@ async fn run_inner(spec: SerialSpec, wiring: ClientWiring) {
             }
         };
 
-        // Drain frames queued while re-opening; they're stale.
         let drained = tx_queue.drain_and_discard();
         if drained > 0 {
             debug!(drained, "drained stale frames before resuming");

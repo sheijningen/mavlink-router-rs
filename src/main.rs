@@ -34,11 +34,8 @@ async fn main() -> ExitCode {
         }
     };
 
-    // Merge yields override names alongside the config — they can't be
-    // `tracing::warn!`d here yet because the subscriber isn't installed
-    // (init_tracing reads the merged log level, which doesn't exist until
-    // merge returns). Emit them in the post-init pass below so they
-    // actually reach the operator.
+    // Overrides surface as data, not WARN — the subscriber isn't installed
+    // yet (init_tracing reads the merged log level).
     let (cfg, overrides) = match Config::merge(toml, cli_cfg) {
         Ok(outcome) => (outcome.config, outcome.overridden_names),
         Err(err) => {

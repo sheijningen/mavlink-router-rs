@@ -40,9 +40,8 @@ fn every_example_toml_matches_its_cli_block() {
     }
 }
 
-/// Sanity-check: every example dir CLAUDE.md Phase 7 enumerates must
-/// carry the TOML(s) it advertises. The canary catches "we shipped
-/// Phase 7 with empty placeholder dirs".
+/// Sanity-check: every expected example dir must carry the TOML(s) it
+/// advertises. The canary catches empty placeholder dirs.
 #[test]
 fn all_expected_examples_are_populated() {
     let single: &[(&str, &str)] = &[

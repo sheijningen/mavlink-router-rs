@@ -1,7 +1,6 @@
-//! CLAUDE.md "Initial bind/dial failure path" for `udps:`: a listener whose
-//! initial bind fails (port held by a previous process) enters the shared
-//! capped-exp backoff loop, stays alive across attempts, and attaches as soon
-//! as the port frees.
+//! A `udps:` listener whose initial bind fails (port held by a previous
+//! process) enters the shared capped-exp backoff loop, stays alive across
+//! attempts, and attaches as soon as the port frees.
 //!
 //! Linux/macOS only: on these platforms two unprivileged UDP binds to the
 //! exact same address fail with EADDRINUSE even with `SO_REUSEADDR` (that flag
@@ -40,9 +39,8 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
     let listen_addr = probe.local_addr().expect("probe local_addr");
 
     // Short backoff so we don't have to wait long for udps to attach. The
-    // reconnect curve isn't exposed as a `*Endpoint` query knob (CLAUDE.md
-    // "udps: bind-retry shares the tcpc: curve, no per-listener override"),
-    // so we build the Spec from defaults then mutate.
+    // reconnect curve isn't exposed as a `*Endpoint` query knob, so we
+    // build the Spec from defaults then mutate.
     let endpoint = UdpServerEndpoint {
         bind_addr: listen_addr,
         ..UdpServerEndpoint::default()

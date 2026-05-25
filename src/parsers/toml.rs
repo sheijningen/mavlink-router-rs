@@ -933,7 +933,6 @@ host = "drone.local"
 
     #[test]
     fn error_message_omits_name_when_unset() {
-        // No `''` should appear for an entry without `name`.
         let text = r#"
 [[endpoints]]
 type = "udps"

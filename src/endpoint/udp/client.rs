@@ -323,13 +323,10 @@ async fn handle_inbound(
     }
     // An accepted inbound proves the peer is reachable on this socket — flip
     // the state out of any prior Reconnecting (a previous send_to may have
-    // failed before the peer responded over this same path). Idempotent on
-    // the common already-Connected case.
+    // failed before the peer responded over this same path).
     session_ctx.stats.store_state(EndpointState::Connected);
 
     framer.buffer_mut().extend_from_slice(data);
-    // `in_filter_drops` is the union counter for every ingress-side drop;
-    // the wrong-source-IP rejection above bumps the same slot.
     let pipeline = session_ctx
         .forward_inbound_frames(framer, seq_tracker)
         .instrument(tracing::trace_span!("udpc_ingress", %src));

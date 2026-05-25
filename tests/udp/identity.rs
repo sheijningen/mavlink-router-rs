@@ -1,6 +1,5 @@
 //! `udps:` learned peers must inherit a clone of the parent listener's
-//! `IdentityFlags` via `PeerAdded` (CLAUDE.md "Sub-endpoints inherit their
-//! parent's IdentityFlags by clone at spawn time").
+//! `IdentityFlags` via `PeerAdded`.
 
 use std::sync::Arc;
 

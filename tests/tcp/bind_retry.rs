@@ -39,9 +39,8 @@ async fn tcps_attaches_when_pre_held_port_is_freed() {
     let listen_addr = probe.local_addr().expect("probe local_addr");
 
     // Short backoff so we don't have to wait long for tcps to attach. The
-    // reconnect curve isn't exposed as a `*Endpoint` query knob (CLAUDE.md
-    // "TCP/UDP server bind reuses the `tcpc:` backoff curve, no per-listener
-    // override"), so we build the Spec from defaults then mutate.
+    // reconnect curve isn't exposed as a `*Endpoint` query knob, so we
+    // build the Spec from defaults then mutate.
     let endpoint = TcpServerEndpoint {
         bind_addr: listen_addr,
         ..TcpServerEndpoint::default()

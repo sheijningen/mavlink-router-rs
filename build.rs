@@ -317,16 +317,11 @@ fn compute_offsets(fields: &[ParsedField]) -> (Option<u8>, Option<u8>) {
 /// Compute the value of `RMR_VERSION_STRING` and emit it as a cargo env
 /// var consumed by `clap`'s `#[command(version = env!(...))]`.
 ///
-/// Two shapes per the CLAUDE.md "Release strategy" locked decision:
-///   - `<X.Y.Z>` when HEAD is exactly the release tag `v<X.Y.Z>` (so
-///     `rmr --version` on a tagged-commit build prints just the version).
-///   - `<X.Y.Z> (sha <short>, built <RFC 3339 UTC>)` otherwise — a main
-///     build between releases disambiguates against the GitHub Release
-///     via the short SHA, and the timestamp narrows things further when
-///     two unreleased builds share a parent commit.
+/// Two shapes:
+///   - `<X.Y.Z>` when HEAD is exactly the release tag `v<X.Y.Z>`.
+///   - `<X.Y.Z> (sha <short>, built <RFC 3339 UTC>)` otherwise.
 ///
-/// Falls back to bare `<X.Y.Z>` when git is not available (cargo install
-/// from a source tarball, sandboxed build environments).
+/// Falls back to bare `<X.Y.Z>` when git is not available.
 fn emit_version_string() {
     let pkg_version = env!("CARGO_PKG_VERSION");
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -368,10 +363,7 @@ fn head_matches_release_tag(pkg_version: &str) -> bool {
 }
 
 fn git_short_sha() -> Option<String> {
-    // Match the SHA width in CLAUDE.md's "Release strategy" example
-    // (`sha abc1234, built …`). Git's `--short` default is 7; setting it
-    // explicitly documents the intent and survives any future
-    // `core.abbrev` config drift.
+    // Pin to 7 chars; survives any future `core.abbrev` drift.
     let out = Command::new("git")
         .args(["rev-parse", "--short=7", "HEAD"])
         .output()

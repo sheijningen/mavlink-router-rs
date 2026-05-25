@@ -1,8 +1,7 @@
 //! `tcps:` per-child seq tracker: a frame stream with a gap in `seq`
 //! must bump the child's `rx_lost_est` to reflect the inferred losses.
-//! CLAUDE.md ingress pipeline step 2 ("Seq-loss accounting — reader
-//! task ... Runs before In-filter so the counter reflects link
-//! quality, not policy").
+//! The reader runs the seq tracker before In-filter so the counter
+//! reflects link quality, not policy.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

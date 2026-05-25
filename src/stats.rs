@@ -290,9 +290,6 @@ fn handle_event(
             let Some(entry) = registry.remove(&id) else {
                 return;
             };
-            // With output disabled the registry mirror still runs, but
-            // skipping the enqueue keeps stdout clean and avoids growing
-            // the queue or hitting the BrokenPipe path.
             if !emit_lines {
                 return;
             }

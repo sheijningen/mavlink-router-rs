@@ -320,9 +320,7 @@ impl Router {
     }
 
     async fn shutdown_sweep(&mut self) {
-        // Sub-endpoints normally exit via PeerRemoved; any survivor here
-        // missed its removal event before cancel — Down is the safe
-        // terminal value.
+        // Survivors here missed their PeerRemoved before cancel.
         for (id, entry) in self.routing.drain() {
             entry.stats.store_state(EndpointState::Down);
             trace!(
@@ -371,11 +369,9 @@ async fn run_inner(wiring: RouterWiring) {
         }
     }
 
-    // Drain any lifecycle events the parent listeners managed to send
-    // between cancel firing and the router's drop of `event_rx`. Catches
-    // in-flight `PeerRemoved`s so the stats task's mirror sees the right
-    // final-state for every sub-endpoint that was torn down during the
-    // drain window.
+    // Drain in-flight lifecycle events sent between cancel firing and
+    // `event_rx` being dropped, so the stats mirror reflects the right
+    // final state for sub-endpoints torn down in the drain window.
     while let Ok(event) = event_rx.try_recv() {
         router.handle_event(event).await;
     }

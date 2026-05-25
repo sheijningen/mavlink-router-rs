@@ -7,8 +7,8 @@
 //! the final value observed in the shared `Arc<EndpointStats>` after
 //! `cancel` + join is `Down` (the router's shutdown write), not a
 //! lingering `Connected` (the task's last write before observing cancel).
-//! That's the CLAUDE.md split-authority rule: "once an endpoint task
-//! observes the cancellation token, it must not write `state` again".
+//! Endpoint tasks must stop writing `state` once they observe cancel; the
+//! router's `Down` write is then guaranteed last.
 //!
 //! Two cases cover both sides of the unified registry: leaf top-level
 //! endpoints (`EndpointAdded` with `routable = Some(_)`) and parent

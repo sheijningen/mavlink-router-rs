@@ -1,9 +1,7 @@
-//! End-to-end TCP reconnect behaviour under sustained UDP ingress.
-//! Verifies the locked decision "TX queue on disconnect: drain and
-//! discard, never replay": when a `tcpc:` peer drops, frames in the
-//! writer's queue must be discarded before the link is reestablished, so
-//! the GCS on the other side never sees stale telemetry ahead of fresh
-//! frames after a flap.
+//! End-to-end TCP reconnect behaviour under sustained UDP ingress. When a
+//! `tcpc:` peer drops, frames in the writer's queue must be discarded
+//! before the link is reestablished, so the GCS on the other side never
+//! sees stale telemetry ahead of fresh frames after a flap.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -277,16 +275,16 @@ async fn tcpc_survives_repeated_flaps_under_sustained_ingress() {
     result.expect("rmr::run errored");
 }
 
-/// Binary-driven flap-cycle test that asserts the CLAUDE.md "`dropped_tx`
-/// accounting" bullet at the wire level. Spawns `rmr --stats`, drops the
-/// downstream `tcps:` listener, and floods the `udps:` ingress with a
-/// >256-frame burst per cycle so the `tcpc:` writer queue (at the
-/// hardcoded `DEFAULT_TX_QUEUE_FRAMES = 256`) overflows on the router-side
-/// `force_push` path on top of the writer-side `drain_and_discard` path on
+/// Binary-driven flap-cycle test that asserts `dropped_tx` accounting at
+/// the wire level. Spawns `rmr --stats`, drops the downstream `tcps:`
+/// listener, and floods the `udps:` ingress with a >256-frame burst per
+/// cycle so the `tcpc:` writer queue (at the hardcoded
+/// `DEFAULT_TX_QUEUE_FRAMES = 256`) overflows on the router-side
+/// `force_push` path on top of the writer-side `drain_and_discard` on
 /// reconnect. After two flap cycles, parses stdout JSON-Lines and asserts
 /// the tcpc endpoint's `dropped_tx` counter climbed past a wide-margin
-/// floor. Unix-only — same signal-portability caveat as the binary
-/// shutdown_soak case.
+/// floor. Unix-only — same signal-portability caveat as
+/// `binary_shutdown_soak`.
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn binary_tcpc_flap_cycles_drive_dropped_tx_counter() {

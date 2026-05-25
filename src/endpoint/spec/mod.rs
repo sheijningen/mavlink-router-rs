@@ -118,13 +118,10 @@ impl EndpointSpec {
         Self::build(scheme, body, explicit_name, &pairs)
     }
 
-    /// Construct an [`EndpointSpec`] from an already-tokenised input. Used by
-    /// both [`EndpointSpec::parse`] (CLI strings) and the TOML config parser:
-    /// the TOML side synthesises `body` from typed fields (`bind_addr`,
-    /// `host`/`port`, `path`/`baud`) and `pairs` from typed identity / common
-    /// / filter fields, then funnels through this single entry point so the
-    /// "one parser for both CLI and TOML" locked decision is enforced by
-    /// type-system reuse rather than by convention.
+    /// Construct an [`EndpointSpec`] from an already-tokenised input. Shared
+    /// entry point for [`EndpointSpec::parse`] (CLI strings) and the TOML
+    /// config parser, which synthesises `body` and `pairs` from its typed
+    /// fields and funnels through here.
     pub fn build(
         scheme: Scheme,
         body: &str,

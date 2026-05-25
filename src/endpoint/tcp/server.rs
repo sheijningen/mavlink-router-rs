@@ -79,12 +79,6 @@ async fn run_inner(spec: TcpServerSpec, wiring: ServerWiring) {
         info!(%bound_addr, parent_id = %spec.parent_id, "listening");
 
         run_accept_loop(listener, &spec, &wiring).await;
-
-        // Today accept_loop only returns on cancellation, so the top-of-loop
-        // cancel check terminates `run_inner` on the next iteration. Falling
-        // through (rather than an explicit `return`) leaves the door open for
-        // a future listener-fatal exit path to re-enter `bind_tcp_dual_stack`
-        // with the same backoff curve.
     }
 }
 
@@ -110,9 +104,6 @@ async fn run_accept_loop(listener: TcpListener, spec: &TcpServerSpec, wiring: &S
         }
     }
 
-    // Cancellation has fired; the children share the cancel token so their
-    // sessions are already unwinding. Wait for each to drain and emit its
-    // final PeerRemoved event.
     while children.join_next().await.is_some() {}
 }
 

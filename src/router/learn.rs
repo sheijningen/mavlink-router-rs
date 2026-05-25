@@ -181,7 +181,7 @@ mod tests {
         table.touch(NodeId::new(3, 1), now_plus(Duration::from_secs(20)));
         // Refresh sysid=1 to "now" — it's the freshest after this.
         assert!(!table.touch(NodeId::new(1, 1), now_plus(Duration::from_secs(30))));
-        // Inserting a fourth must evict sysid=2 (now the oldest), not sysid=1.
+
         table.touch(NodeId::new(4, 1), now_plus(Duration::from_secs(40)));
         assert!(table.contains(NodeId::new(1, 1)));
         assert!(!table.contains(NodeId::new(2, 1)));

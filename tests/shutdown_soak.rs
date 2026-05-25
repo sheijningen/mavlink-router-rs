@@ -4,8 +4,7 @@
 //! TCP client pointing at an unbound port (stuck in Reconnecting forever)
 //! — and assert that:
 //!
-//! - every spawned task joins within the 5s wall-clock shutdown budget
-//!   documented in CLAUDE.md ("Shutdown timing" locked decision),
+//! - every spawned task joins within the 5s wall-clock shutdown budget,
 //! - the function returns `Ok(())` (no panic propagated),
 //! - the total elapsed time stays comfortably under the budget.
 //!
@@ -56,10 +55,9 @@ async fn shutdown_drains_every_endpoint_within_budget() {
     let started = Instant::now();
     cancel.cancel();
 
-    // Per CLAUDE.md "Shutdown timing": 5s overall wall-clock; the harness's
-    // own per-task drain is 2s. We give the join itself 7s of headroom so a
-    // flaky CI tick doesn't pretend to be a real hang; the elapsed assertion
-    // below is what enforces the actual budget.
+    // 5s overall shutdown budget; per-task drain is 2s. The join gets 7s of
+    // headroom so a flaky CI tick doesn't pretend to be a real hang; the
+    // elapsed assertion below enforces the actual budget.
     let result = timeout(Duration::from_secs(7), handle)
         .await
         .expect("rmr::run did not return within shutdown grace + headroom")
@@ -155,12 +153,10 @@ async fn shutdown_drains_with_inflight_udp_traffic() {
 /// Binary-driven shutdown soak: spawn `rmr` as a subprocess with `--stats`,
 /// send SIGTERM while it's serving endpoints, assert it exits 0 within the
 /// wall-clock budget AND that every registered endpoint's last JSON-Line on
-/// stdout has a terminal `state` (`down`/`idle`) — the literal CLAUDE.md
-/// Phase 6 bullet "assert every registered endpoint emits its final
-/// synthetic stats line with the right terminal state". Unix-only because
-/// the Windows side of the signal contract has no portable analogue to
-/// SIGTERM (kill-on-Windows terminates without running the in-process
-/// cancellation handler).
+/// stdout has a terminal `state` (`down`/`idle`). Unix-only because the
+/// Windows side of the signal contract has no portable analogue to SIGTERM
+/// (kill-on-Windows terminates without running the in-process cancellation
+/// handler).
 #[cfg(unix)]
 #[test]
 fn binary_shutdown_emits_final_synthetic_stats_lines() {

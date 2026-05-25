@@ -1,9 +1,8 @@
 //! Global dedup window end-to-end through `rmr::run`. Router unit
 //! tests cover the algorithm against synthetic channels; this binary is the
 //! transport-level proof that, with `dedup_ms > 0`, an identical frame
-//! delivered by two distinct ingress endpoints is forwarded to a downstream
-//! destination exactly once — the redundant-uplink scenario CLAUDE.md cites
-//! as the motivating use case.
+//! delivered by two distinct ingress endpoints (the redundant-uplink
+//! scenario) is forwarded to a downstream destination exactly once.
 
 #[path = "common/mod.rs"]
 mod common;
