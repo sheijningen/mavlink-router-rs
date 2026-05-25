@@ -141,7 +141,6 @@ struct TomlEndpoint {
     #[serde(rename = "type")]
     scheme: String,
     name: Option<String>,
-    // scheme-specific (only the subset for the chosen scheme is allowed)
     path: Option<String>,
     baud: Option<u32>,
     flow_control: Option<String>,
@@ -150,7 +149,6 @@ struct TomlEndpoint {
     port: Option<u16>,
     idle_secs: Option<u64>,
     latch_idle_secs: Option<u64>,
-    // identity
     sniffer: Option<bool>,
     group: Option<String>,
     // filters (string form per CLAUDE.md — array forms are rejected at parse time)

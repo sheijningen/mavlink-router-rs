@@ -211,7 +211,6 @@ async fn run_client_session(
         filters: &identity.filters,
     };
     let outcome = run_session(stream, &ctx, &tx_queue, &cancel).await;
-    // Drain anything still queued for this client; the socket is going away.
     let drained = tx_queue.drain_and_discard();
     if drained > 0 {
         debug!(%peer_addr, drained, "discarded in-flight frames on session end");

@@ -54,7 +54,6 @@ fn crc_type(type_name: &str) -> &str {
 
 pub(crate) fn crc_extra_for_message(msg_name: &str, fields: &[CrcExtraField<'_>]) -> u8 {
     let mut base: Vec<&CrcExtraField<'_>> = fields.iter().filter(|field| !field.is_extension).collect();
-    // Stable sort by element size, descending.
     base.sort_by(|left, right| type_size(right.type_name).cmp(&type_size(left.type_name)));
 
     let mut crc = CRC_INIT;
