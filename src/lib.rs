@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{Instrument, info, info_span, warn};
 
 use crate::config::Config;
 use crate::endpoint::defaults::DEFAULT_DEDUP_WINDOW_CAPACITY;
@@ -176,9 +176,13 @@ fn estimate_registry_size(specs: &[EndpointSpec]) -> usize {
 }
 
 fn spawn_router(tasks: &mut JoinSet<()>, wiring: RouterWiring) {
-    tasks.spawn(async move {
-        router::run(wiring).await;
-    });
+    let span = info_span!("router");
+    tasks.spawn(
+        async move {
+            router::run(wiring).await;
+        }
+        .instrument(span),
+    );
 }
 
 fn spawn_stats(
@@ -187,9 +191,13 @@ fn spawn_stats(
     cancel: CancellationToken,
     cfg: StatsRunConfig,
 ) {
-    tasks.spawn(async move {
-        stats::run(stats_event_rx, cancel, cfg, tokio::io::stdout()).await;
-    });
+    let span = info_span!("stats");
+    tasks.spawn(
+        async move {
+            stats::run(stats_event_rx, cancel, cfg, tokio::io::stdout()).await;
+        }
+        .instrument(span),
+    );
 }
 
 #[cfg(test)]
