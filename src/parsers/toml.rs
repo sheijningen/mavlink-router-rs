@@ -262,65 +262,32 @@ impl TomlEndpoint {
         if let Some(value) = self.group.as_ref() {
             pairs.push(("group".to_string(), value.clone()));
         }
-        push_str_pair(&mut pairs, "allow_msgid_in", self.allow_msgid_in.as_deref());
-        push_str_pair(&mut pairs, "block_msgid_in", self.block_msgid_in.as_deref());
-        push_str_pair(
-            &mut pairs,
-            "allow_msgid_out",
-            self.allow_msgid_out.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "block_msgid_out",
-            self.block_msgid_out.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "allow_src_sys_in",
-            self.allow_src_sys_in.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "block_src_sys_in",
-            self.block_src_sys_in.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "allow_src_sys_out",
-            self.allow_src_sys_out.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "block_src_sys_out",
-            self.block_src_sys_out.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "allow_src_comp_in",
-            self.allow_src_comp_in.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "block_src_comp_in",
-            self.block_src_comp_in.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "allow_src_comp_out",
-            self.allow_src_comp_out.as_deref(),
-        );
-        push_str_pair(
-            &mut pairs,
-            "block_src_comp_out",
-            self.block_src_comp_out.as_deref(),
-        );
+        // Field name IS the query key, so `stringify!` keeps the two in lockstep
+        // (same pattern as `filters.rs::Filters::apply`).
+        macro_rules! push_filter_pairs {
+            ($($field:ident),* $(,)?) => {
+                $(
+                    if let Some(value) = self.$field.as_deref() {
+                        pairs.push((stringify!($field).to_string(), value.to_string()));
+                    }
+                )*
+            };
+        }
+        push_filter_pairs! {
+            allow_msgid_in,
+            block_msgid_in,
+            allow_msgid_out,
+            block_msgid_out,
+            allow_src_sys_in,
+            block_src_sys_in,
+            allow_src_sys_out,
+            block_src_sys_out,
+            allow_src_comp_in,
+            block_src_comp_in,
+            allow_src_comp_out,
+            block_src_comp_out,
+        }
         pairs
-    }
-}
-
-fn push_str_pair(pairs: &mut Vec<(String, String)>, key: &str, val: Option<&str>) {
-    if let Some(value) = val {
-        pairs.push((key.to_string(), value.to_string()));
     }
 }
 
