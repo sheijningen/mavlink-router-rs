@@ -56,3 +56,4 @@ lto = "thin"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
+len_without_is_empty = "allow"

@@ -224,6 +224,7 @@ pub fn parse_specs(raw: &[String]) -> Result<Vec<EndpointSpec>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn parse_minimal() {
@@ -449,7 +450,6 @@ mod tests {
 
     #[test]
     fn version_flag_exposes_emitted_string() {
-        use clap::CommandFactory;
         let cmd = Cli::command();
         let rendered = cmd.get_version().expect("version present");
         assert_eq!(rendered, env!("RMR_VERSION_STRING"));
@@ -457,8 +457,6 @@ mod tests {
 
     #[test]
     fn long_help_contains_endpoint_guide() {
-        use clap::CommandFactory;
-
         let mut cmd = Cli::command();
         let mut buf = Vec::new();
         cmd.write_long_help(&mut buf).expect("write_long_help");

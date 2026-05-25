@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+#[cfg(unix)]
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -10,7 +12,7 @@ use tracing::warn;
 /// emission). Tasks still alive at this point are aborted; the overall
 /// wall-clock budget [`SHUTDOWN_GRACE`] then bounds how long we wait for
 /// the abort to land.
-pub const PER_TASK_DRAIN: Duration = Duration::from_secs(2);
+const PER_TASK_DRAIN: Duration = Duration::from_secs(2);
 
 /// CLAUDE.md "Shutdown timing": overall wall-clock budget on shutdown.
 /// Hardcoded — operator policy doesn't apply here, the constant is a
@@ -27,7 +29,6 @@ pub async fn watch_for_shutdown_signal(token: CancellationToken) {
 
     #[cfg(unix)]
     let sigterm = async {
-        use tokio::signal::unix::{SignalKind, signal};
         match signal(SignalKind::terminate()) {
             Ok(mut sigterm_stream) => {
                 sigterm_stream.recv().await;
