@@ -61,7 +61,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info_span, trace};
 
 use crate::endpoint::EndpointId;
-use crate::endpoint::events::{EndpointEvent, PeerRemovalReason, RouterFrame};
+use crate::endpoint::events::{EndpointEvent, PeerRemovalReason, Routable, RouterFrame};
 use crate::endpoint::identity_flags::{IdentityFlags, LEARN_CAPACITY};
 use crate::endpoint::stats::{EndpointState, EndpointStats};
 use crate::endpoint::tx_queue::TxQueue;
@@ -155,6 +155,44 @@ impl Router {
         }
     }
 
+    fn build_routable_state(&mut self, payload: Routable) -> RoutableState {
+        if let Some(group) = &payload.identity.group {
+            self.groups.join(group.clone(), LEARN_CAPACITY);
+        }
+        RoutableState {
+            tx_queue: payload.tx_queue,
+            identity: payload.identity,
+            learn: LearnTable::new(LEARN_CAPACITY),
+        }
+    }
+
+    async fn register_routable(
+        &mut self,
+        id: EndpointId,
+        name: String,
+        stats: Arc<EndpointStats>,
+        routable_state: Option<RoutableState>,
+    ) {
+        let routable = routable_state.is_some();
+        self.routing.insert(
+            id,
+            RegisteredEndpoint {
+                name: name.clone(),
+                stats: stats.clone(),
+                routable: routable_state,
+            },
+        );
+        let _ = self
+            .stats_event_tx
+            .send(StatsEvent::Register {
+                id,
+                name,
+                stats,
+                routable,
+            })
+            .await;
+    }
+
     async fn handle_event(&mut self, event: EndpointEvent) {
         match event {
             EndpointEvent::EndpointAdded {
@@ -163,32 +201,9 @@ impl Router {
                 stats,
                 routable,
             } => {
-                let routable_state = routable.map(|payload| {
-                    if let Some(group) = &payload.identity.group {
-                        self.groups.join(group.clone(), LEARN_CAPACITY);
-                    }
-                    RoutableState {
-                        tx_queue: payload.tx_queue,
-                        identity: payload.identity,
-                        learn: LearnTable::new(LEARN_CAPACITY),
-                    }
-                });
-                let routable = routable_state.is_some();
-                let entry = RegisteredEndpoint {
-                    name: name.clone(),
-                    stats: stats.clone(),
-                    routable: routable_state,
-                };
-                debug!(%id, %name, routable = routable, "endpoint added");
-                self.routing.insert(id, entry);
-                let _ = self
-                    .stats_event_tx
-                    .send(StatsEvent::Register {
-                        id,
-                        name,
-                        stats,
-                        routable,
-                    })
+                let routable_state = routable.map(|payload| self.build_routable_state(payload));
+                debug!(%id, %name, routable = routable_state.is_some(), "endpoint added");
+                self.register_routable(id, name, stats, routable_state)
                     .await;
             }
             EndpointEvent::PeerAdded {
@@ -198,28 +213,9 @@ impl Router {
                 stats,
                 routable,
             } => {
-                if let Some(group) = &routable.identity.group {
-                    self.groups.join(group.clone(), LEARN_CAPACITY);
-                }
-                let entry = RegisteredEndpoint {
-                    name: name.clone(),
-                    stats: stats.clone(),
-                    routable: Some(RoutableState {
-                        tx_queue: routable.tx_queue,
-                        identity: routable.identity,
-                        learn: LearnTable::new(LEARN_CAPACITY),
-                    }),
-                };
+                let routable_state = self.build_routable_state(routable);
                 debug!(%child_id, %parent_id, %name, "peer added");
-                self.routing.insert(child_id, entry);
-                let _ = self
-                    .stats_event_tx
-                    .send(StatsEvent::Register {
-                        id: child_id,
-                        name,
-                        stats,
-                        routable: true,
-                    })
+                self.register_routable(child_id, name, stats, Some(routable_state))
                     .await;
             }
             EndpointEvent::PeerRemoved {
