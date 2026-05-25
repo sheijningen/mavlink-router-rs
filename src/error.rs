@@ -47,9 +47,7 @@ pub enum Error {
         reason: String,
     },
 
-    #[error(
-        "dedup_ms = {requested}ms exceeds maximum of {max}ms"
-    )]
+    #[error("dedup_ms = {requested}ms exceeds maximum of {max}ms")]
     DedupMsTooLarge { requested: u64, max: u64 },
 }
 

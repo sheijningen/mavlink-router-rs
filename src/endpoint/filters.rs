@@ -77,72 +77,28 @@ pub struct Filters {
 impl fmt::Debug for Filters {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut entry = formatter.debug_struct("Filters");
-        let lists: &[(&str, &dyn fmt::Debug, bool)] = &[
-            (
-                "allow_msgid_in",
-                &self.allow_msgid_in,
-                self.allow_msgid_in.is_empty(),
-            ),
-            (
-                "block_msgid_in",
-                &self.block_msgid_in,
-                self.block_msgid_in.is_empty(),
-            ),
-            (
-                "allow_msgid_out",
-                &self.allow_msgid_out,
-                self.allow_msgid_out.is_empty(),
-            ),
-            (
-                "block_msgid_out",
-                &self.block_msgid_out,
-                self.block_msgid_out.is_empty(),
-            ),
-            (
-                "allow_src_sys_in",
-                &self.allow_src_sys_in,
-                self.allow_src_sys_in.is_empty(),
-            ),
-            (
-                "block_src_sys_in",
-                &self.block_src_sys_in,
-                self.block_src_sys_in.is_empty(),
-            ),
-            (
-                "allow_src_sys_out",
-                &self.allow_src_sys_out,
-                self.allow_src_sys_out.is_empty(),
-            ),
-            (
-                "block_src_sys_out",
-                &self.block_src_sys_out,
-                self.block_src_sys_out.is_empty(),
-            ),
-            (
-                "allow_src_comp_in",
-                &self.allow_src_comp_in,
-                self.allow_src_comp_in.is_empty(),
-            ),
-            (
-                "block_src_comp_in",
-                &self.block_src_comp_in,
-                self.block_src_comp_in.is_empty(),
-            ),
-            (
-                "allow_src_comp_out",
-                &self.allow_src_comp_out,
-                self.allow_src_comp_out.is_empty(),
-            ),
-            (
-                "block_src_comp_out",
-                &self.block_src_comp_out,
-                self.block_src_comp_out.is_empty(),
-            ),
-        ];
-        for (name, value, empty) in lists {
-            if !empty {
-                entry.field(name, value);
-            }
+        macro_rules! fields {
+            ($($field:ident),* $(,)?) => {
+                $(
+                    if !self.$field.is_empty() {
+                        entry.field(stringify!($field), &self.$field);
+                    }
+                )*
+            };
+        }
+        fields! {
+            allow_msgid_in,
+            block_msgid_in,
+            allow_msgid_out,
+            block_msgid_out,
+            allow_src_sys_in,
+            block_src_sys_in,
+            allow_src_sys_out,
+            block_src_sys_out,
+            allow_src_comp_in,
+            block_src_comp_in,
+            allow_src_comp_out,
+            block_src_comp_out,
         }
         entry.finish()
     }
@@ -171,56 +127,36 @@ impl Filters {
     /// `Ok(true)` when consumed, `Ok(false)` when the key isn't ours, or
     /// `Err` on a malformed value.
     pub fn apply(&mut self, key: &str, value: &str) -> Result<bool, SpecError> {
-        match key {
-            "allow_msgid_in" => {
-                self.allow_msgid_in = parse_msgid_ranges(value, "allow_msgid_in")?;
-                Ok(true)
-            }
-            "block_msgid_in" => {
-                self.block_msgid_in = parse_msgid_ranges(value, "block_msgid_in")?;
-                Ok(true)
-            }
-            "allow_msgid_out" => {
-                self.allow_msgid_out = parse_msgid_ranges(value, "allow_msgid_out")?;
-                Ok(true)
-            }
-            "block_msgid_out" => {
-                self.block_msgid_out = parse_msgid_ranges(value, "block_msgid_out")?;
-                Ok(true)
-            }
-            "allow_src_sys_in" => {
-                self.allow_src_sys_in = parse_u8_ranges(value, "allow_src_sys_in")?;
-                Ok(true)
-            }
-            "block_src_sys_in" => {
-                self.block_src_sys_in = parse_u8_ranges(value, "block_src_sys_in")?;
-                Ok(true)
-            }
-            "allow_src_sys_out" => {
-                self.allow_src_sys_out = parse_u8_ranges(value, "allow_src_sys_out")?;
-                Ok(true)
-            }
-            "block_src_sys_out" => {
-                self.block_src_sys_out = parse_u8_ranges(value, "block_src_sys_out")?;
-                Ok(true)
-            }
-            "allow_src_comp_in" => {
-                self.allow_src_comp_in = parse_u8_ranges(value, "allow_src_comp_in")?;
-                Ok(true)
-            }
-            "block_src_comp_in" => {
-                self.block_src_comp_in = parse_u8_ranges(value, "block_src_comp_in")?;
-                Ok(true)
-            }
-            "allow_src_comp_out" => {
-                self.allow_src_comp_out = parse_u8_ranges(value, "allow_src_comp_out")?;
-                Ok(true)
-            }
-            "block_src_comp_out" => {
-                self.block_src_comp_out = parse_u8_ranges(value, "block_src_comp_out")?;
-                Ok(true)
-            }
-            _ => Ok(false),
+        // Field name IS the query key (locked invariant — `Filters::KEYS` and
+        // the TOML schema spell the same strings), so the match arm is
+        // `stringify!($field)` and there is no separate key literal to keep
+        // in sync with the field set.
+        macro_rules! axes {
+            ($($field:ident: $parser:ident),* $(,)?) => {
+                match key {
+                    $(
+                        stringify!($field) => {
+                            self.$field = $parser(value, stringify!($field))?;
+                            Ok(true)
+                        }
+                    )*
+                    _ => Ok(false),
+                }
+            };
+        }
+        axes! {
+            allow_msgid_in: parse_msgid_ranges,
+            block_msgid_in: parse_msgid_ranges,
+            allow_msgid_out: parse_msgid_ranges,
+            block_msgid_out: parse_msgid_ranges,
+            allow_src_sys_in: parse_u8_ranges,
+            block_src_sys_in: parse_u8_ranges,
+            allow_src_sys_out: parse_u8_ranges,
+            block_src_sys_out: parse_u8_ranges,
+            allow_src_comp_in: parse_u8_ranges,
+            block_src_comp_in: parse_u8_ranges,
+            allow_src_comp_out: parse_u8_ranges,
+            block_src_comp_out: parse_u8_ranges,
         }
     }
 
