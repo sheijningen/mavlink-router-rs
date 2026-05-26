@@ -1,0 +1,272 @@
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare-release:
+    name: prepare-release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version from tag
+        id: resolve
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          VERSION="${REF#refs/tags/v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid tag format '$REF' (expected refs/tags/vX.Y.Z)"
+            exit 1
+          fi
+          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "version=$VERSION"            >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION"               >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/$OWNER_LC/rmr" >> "$GITHUB_OUTPUT"
+      - name: Refuse re-tag of an existing release
+        # A force-pushed tag would re-fire this workflow, mutate the immutable
+        # :<X.Y.Z> docker tag, and only fail at the gh-release-create step
+        # after the docker push completed. Aborting here keeps the contract loud
+        # and early.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ steps.resolve.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; refusing to overwrite"
+            exit 1
+          fi
+      - name: Extract CHANGELOG section for this release
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          awk -v header="## [$VERSION] - " '
+              index($0, header) == 1 { in_section = 1; next }
+              in_section && /^## / { in_section = 0 }
+              in_section { print }
+          ' CHANGELOG.md > release-notes.md
+          if [[ ! -s release-notes.md ]]; then
+              echo "::error::No CHANGELOG.md section found for $VERSION"
+              exit 1
+          fi
+          cat release-notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+  ci:
+    name: ci (${{ matrix.os }})
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - uses: dtolnay/rust-toolchain@1.85
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo +nightly fmt --check
+        run: cargo +nightly fmt --check
+      - name: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test --all-features
+        run: cargo test --all-features
+
+  build-binaries:
+    name: build ${{ matrix.target }}
+    needs: [prepare-release, ci]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            need_musl_tools: true
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            need_musl_tools: true
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            ext: .exe
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl-tools (Linux musl targets)
+        if: matrix.need_musl_tools == true
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Test on this target
+        # Every matrix runner hosts the target arch natively
+        run: cargo test --locked --all-features --target ${{ matrix.target }}
+      - name: Rename binary
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          SRC="target/${TARGET}/release/rmr${EXT}"
+          OUT="rmr-${VERSION}-${TARGET}${EXT}"
+          mv "$SRC" "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rmr-${{ needs.prepare-release.outputs.version }}-${{ matrix.target }}
+          path: rmr-${{ needs.prepare-release.outputs.version }}-${{ matrix.target }}${{ matrix.ext }}
+          if-no-files-found: error
+          retention-days: 7
+
+  aggregate-sha256sums:
+    name: aggregate SHA256SUMS
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Verify every matrix binary arrived
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd artifacts
+          ls -la
+          missing=0
+          for file in \
+              "rmr-${VERSION}-x86_64-unknown-linux-musl" \
+              "rmr-${VERSION}-aarch64-unknown-linux-musl" \
+              "rmr-${VERSION}-x86_64-unknown-linux-gnu" \
+              "rmr-${VERSION}-aarch64-unknown-linux-gnu" \
+              "rmr-${VERSION}-x86_64-pc-windows-msvc.exe" \
+              "rmr-${VERSION}-aarch64-apple-darwin"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Missing expected artifact: $file"
+              missing=1
+            fi
+          done
+          exit "$missing"
+      - name: Compute SHA256SUMS over every binary
+        run: |
+          set -euo pipefail
+          cd artifacts
+          # One deterministic pass: every artifact, sorted for stable output.
+          sha256sum rmr-* | LC_ALL=C sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: artifacts/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  docker:
+    name: build and push multi-arch Docker image
+    needs: [prepare-release, build-binaries, aggregate-sha256sums]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Stage musl binaries for Docker build context
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          cp "artifacts/rmr-${VERSION}-x86_64-unknown-linux-musl" rmr-amd64
+          cp "artifacts/rmr-${VERSION}-aarch64-unknown-linux-musl" rmr-arm64
+          chmod +x rmr-amd64 rmr-arm64
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.prepare-release.outputs.image }}
+          tags: |
+            type=raw,value=${{ needs.prepare-release.outputs.version }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.licenses=Apache-2.0
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  publish-release:
+    name: publish GitHub Release
+    needs: [prepare-release, aggregate-sha256sums, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create GitHub Release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --title "$TAG" \
+            --notes-file artifacts/release-notes.md \
+            artifacts/rmr-* artifacts/SHA256SUMS

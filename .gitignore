@@ -1,1 +1,6 @@
 /target
+
+# scripts/release.sh intermediaries
+Cargo.toml.tmp
+Cargo.lock.tmp
+CHANGELOG.md.tmp

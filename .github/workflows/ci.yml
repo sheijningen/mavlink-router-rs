@@ -22,7 +22,7 @@ jobs:
         with:
           components: rustfmt
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.85
         with:
           components: clippy
 

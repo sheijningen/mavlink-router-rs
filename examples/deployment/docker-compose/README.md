@@ -6,7 +6,7 @@ Runs RMR from the multi-arch docker image.
 
 1. **Pick an image tag**. The shipped `docker-compose.yml` uses
    `:latest` for convenience. In production, pin to a specific release
-   (`:0.1.0`, `:0.1`).
+   (`:0.1.0`).
 
 2. **Adapt the manifest and config to your host**:
 

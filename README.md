@@ -25,8 +25,8 @@ and Windows (`x86_64`) to the GitHub Release. Verify with the attached
 ### Docker
 
 Multi-arch images (`linux/amd64`, `linux/arm64`) are published per
-release to `ghcr.io/sheijningen/rmr` with tags `:<X.Y.Z>`, `:<X.Y>`, and
-`:latest`. **Pin to `:<X.Y.Z>` in production**. (Image and binary share the
+release to `ghcr.io/sheijningen/rmr` with tags `:<X.Y.Z>` and `:latest`.
+**Pin to `:<X.Y.Z>` in production**. (Image and binary share the
 short name; the longer `mavlink-router-rs` lives at the GitHub repo and
 README title for discoverability.)
 
@@ -345,7 +345,7 @@ CI runs three checks on every push; all three must pass locally
 before pushing:
 
 ```sh
-cargo fmt --check
+cargo +nightly fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-features
 ```
@@ -357,9 +357,8 @@ may break compatibility. Cargo treats `0.1` and `0.2` as incompatible.
 There is no maintained `0.1.x` patch line once `0.2.0` ships;
 development is single-track.
 
-Pin to a fully-qualified version (`:0.1.0`, not `:0.1`) in production.
-Docker tags published per release: `:<X.Y.Z>`, `:<X.Y>`, and `:latest`
-(no `:<MAJOR>` tag pre-1.0).
+Pin to a fully-qualified version (`:0.1.0`) in production. Docker tags
+published per release: `:<X.Y.Z>` and `:latest`.
 
 Release notes: [CHANGELOG.md](CHANGELOG.md).
 
