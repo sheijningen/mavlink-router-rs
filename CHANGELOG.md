@@ -10,6 +10,8 @@ under `### Changed` so a reader can spot the break without diffing the code.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-26
+
 ### Added
 
 - Endpoints: `serial:`, `udps:`, `udpc:`, `tcps:`, `tcpc:`. Cross-platform
