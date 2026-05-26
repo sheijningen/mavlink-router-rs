@@ -160,6 +160,7 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+          pattern: 'rmr-*'
       - name: Verify every matrix binary arrived
         env:
           VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -208,6 +209,7 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+          pattern: 'rmr-*-linux-musl'
       - name: Stage musl binaries for Docker build context
         env:
           VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -235,6 +237,9 @@ jobs:
             org.opencontainers.image.licenses=Apache-2.0
       - name: Build and push
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_SUMMARY: "false"
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: .
           file: Dockerfile
@@ -255,6 +260,7 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+          pattern: '{rmr-*,SHA256SUMS,release-notes}'
       - name: Create GitHub Release and upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
