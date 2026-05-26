@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn build_line_captures_every_counter_documented_in_claude_md() {
+    fn build_line_serialises_full_counter_schema() {
         let stats = EndpointStats::default();
         stats.rx_frames.fetch_add(7, Ordering::Relaxed);
         stats.tx_frames.fetch_add(8, Ordering::Relaxed);

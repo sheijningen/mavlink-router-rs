@@ -22,8 +22,7 @@ use crate::error::Error;
 /// Endpoint mini-guide shown by `rmr --help` (clap's `after_long_help`).
 /// Documents the spec grammar, the five schemes, and the most-used query
 /// keys so the binary is self-documenting at the terminal without a man
-/// page or a separate hosted docs site. See the project README for the
-/// full design rationale.
+/// page or a separate hosted docs site.
 const ENDPOINT_GUIDE: &str = "Endpoints:
   ENDPOINT := SCHEME:BODY[#name][?key1=val1&key2=val2&...]
 
@@ -71,7 +70,7 @@ Filter query keys — any scheme:
   is applied on incoming traffic at the source endpoint; `*_out`
   is applied on outgoing traffic per destination endpoint.
 
-Worked examples, design doc, and full TOML config reference:
+Worked examples and full TOML config reference:
   https://github.com/sheijningen/mavlink-router-rs
 ";
 

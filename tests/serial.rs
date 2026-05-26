@@ -72,8 +72,7 @@ async fn run_returns_when_cancelled_while_open_retrying() {
 async fn run_returns_when_cancelled_while_open_retrying_rtscts() {
     // RtsCts variant: same shape as the None case; what we're proving is that
     // `?flow_control=rtscts` flows through `SerialSpec → try_open` without
-    // tripping the reopen loop. Production parity test for the locked Phase 4
-    // contract — every other test path uses `None`.
+    // tripping the reopen loop. Every other test path uses `None`.
     assert_run_cancels_cleanly_with(SerialFlowControl::RtsCts).await;
 }
 
