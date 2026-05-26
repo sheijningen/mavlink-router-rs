@@ -1,21 +1,6 @@
-//! Typed MAVLink frame fixtures for integration tests.
-//!
-//! Two layers:
-//! - [`TestFrame`] is a fluent builder that owns the wire layout: STX, header
-//!   byte order (v1 vs v2), payload-length byte, CRC computation, and the
-//!   optional signature trailer. Tests describe a frame by its fields; the
-//!   builder produces the bytes.
-//! - [`MavPayload`] is a tiny trait implemented by the few typed payload
-//!   structs we need ([`Heartbeat`], [`Ping`], [`SysStatus`]). Each payload
-//!   carries its `MSGID` and `CRC_EXTRA` as associated constants and knows how
-//!   to serialise itself to the size-sorted byte layout MAVLink prescribes.
-//!
-//! The `crc_extra` constants here are anchored by the build-support unit
-//! tests in `build_support/crc_extra.rs` (which compute them via the same
-//! algorithm `build.rs` runs at build time and compare against the published
-//! reference values). The CRC algorithm itself comes from the production
-//! [`rmr::mavlink::crc::Crc16`] type — no second implementation in the test
-//! fixtures.
+//! Typed MAVLink frame fixtures for integration tests: [`TestFrame`] is a
+//! fluent builder over the wire layout, and [`MavPayload`] is the trait
+//! its typed payloads implement.
 
 use rmr::mavlink::crc::Crc16;
 use rmr::mavlink::frame::{STX_V1, STX_V2, V2_IFLAG_SIGNED, V2_SIGNATURE_LEN};

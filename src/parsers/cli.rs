@@ -1,15 +1,4 @@
-//! CLI deserialisation.
-//!
-//! Parses argv via clap into a [`Cli`], then [`Cli::into_cli_config`] turns
-//! the raw argv values into a typed [`CliConfig`]. Globals on `CliConfig`
-//! are `Option<T>` so the merge step in [`crate::config`] can distinguish
-//! "operator omitted `--log-level`" from "operator passed `--log-level info`":
-//! the former falls through to the TOML value (if any) and then to the
-//! default, the latter overrides both.
-//!
-//! Endpoint argv strings are parsed by [`EndpointSpec::parse`] — the same
-//! body / query / applier machinery the TOML side reaches via
-//! [`EndpointSpec::build`]. Neither input layer references the other.
+//! CLI deserialisation into [`CliConfig`].
 
 use std::path::PathBuf;
 

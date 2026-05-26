@@ -1,7 +1,5 @@
-//! `udps:` per-peer In-filter coverage. A blocked-msgid frame must increment
-//! the peer's `in_filter_drops` and never reach the router's `frame_rx`.
-//! The listener evaluates against its own `IdentityFlags` (uniform across
-//! children); only the drop credit goes to the peer's stats.
+//! `udps:` per-peer In-filter: a blocked-msgid frame bumps the peer's
+//! `in_filter_drops` and never reaches the router's `frame_rx`.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

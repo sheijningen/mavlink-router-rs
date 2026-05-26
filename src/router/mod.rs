@@ -380,14 +380,6 @@ async fn run_inner(wiring: RouterWiring) {
 
 #[cfg(test)]
 mod tests {
-    //! Router internals exercised through direct `&mut self` method calls
-    //! on a privately-constructed [`Router`]. No `tokio::spawn`, no
-    //! `tokio::time::sleep` polling, no cancellation-token plumbing —
-    //! every assertion runs against state that's deterministic the
-    //! instant `handle_event` / `handle_frame` / `shutdown_sweep` returns.
-    //! Full-pipeline coverage of the select loop, biased ordering, and
-    //! cancel-driven drain lives in the integration tests under
-    //! `tests/spawner_e2e.rs`, `tests/shutdown.rs`, and `tests/shutdown_soak.rs`.
 
     use bytes::Bytes;
 

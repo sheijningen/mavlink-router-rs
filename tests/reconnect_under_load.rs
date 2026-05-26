@@ -1,7 +1,6 @@
-//! End-to-end TCP reconnect behaviour under sustained UDP ingress. When a
-//! `tcpc:` peer drops, frames in the writer's queue must be discarded
-//! before the link is reestablished, so the GCS on the other side never
-//! sees stale telemetry ahead of fresh frames after a flap.
+//! End-to-end: under sustained UDP ingress, a `tcpc:` flap discards
+//! queued frames before reconnect so the peer never sees stale telemetry
+//! ahead of fresh frames.
 
 #[path = "common/mod.rs"]
 mod common;

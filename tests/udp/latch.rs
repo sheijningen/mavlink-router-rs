@@ -1,15 +1,6 @@
-//! `udpc:` reply-source latching: portable cases.
-//!
-//! Covers:
-//!   - Ephemeral-port latch: a peer replying from a different source port (same
-//!     IP) causes the next outbound frame to go to the latched port, not the
-//!     configured one.
-//!   - Idle revert: after `latch_idle_secs` of silence the latch drops and
-//!     outbound returns to the configured `host:port`.
-//!
-//! Unrelated-source-IP rejection is covered by unit tests in `udp/client.rs`
-//! (it's not portably testable on macOS/Windows where 127.0.0.0/8 isn't all
-//! loopback).
+//! `udpc:` reply-source latching: ephemeral-port latch and idle revert.
+//! Unrelated-source-IP rejection lives in `udp/client.rs` unit tests
+//! (not portably testable across loopback semantics here).
 
 use std::sync::Arc;
 use std::time::Duration;

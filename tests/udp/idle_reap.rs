@@ -1,8 +1,6 @@
-//! End-to-end: a `udps:` listener reaps a learned peer after its `idle_secs`
-//! window elapses with no inbound traffic, and announces the eviction on
-//! the event channel with `PeerRemovalReason::Idle`. Exercises the real
-//! reaper interval rather than the unit-test path that calls
-//! `reap_idle_peers` directly.
+//! End-to-end: a `udps:` reaps a learned peer after its `idle_secs`
+//! window and announces `PeerRemovalReason::Idle` via the real reaper
+//! interval.
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -1,9 +1,6 @@
-//! Frame-hash dedup window — single global structure owned by the router.
-//! Redundant uplink delivering the same frame on two different routing endpoints
-//! still collides on the second arrival.
-//!
-//! `HashSet<u64>` for O(1) lookup + parallel FIFO
-//! ring for TTL / capacity eviction. Disabled when `dedup_ms == 0`.
+//! Global frame-hash dedup window owned by the router: `HashSet<u64>` for
+//! O(1) lookup paired with a FIFO ring for TTL / capacity eviction.
+//! Disabled when `dedup_ms == 0`.
 
 use std::collections::{HashSet, VecDeque};
 use std::time::Duration;

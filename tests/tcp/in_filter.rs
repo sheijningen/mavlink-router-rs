@@ -1,8 +1,5 @@
-//! `tcps:` per-child In-filter coverage. A child accepted from a listener
-//! whose `block_msgid_in` covers the frame's msgid must increment that
-//! child's `in_filter_drops` and never deliver the frame to the router's
-//! `frame_rx`. The child's reader runs inside
-//! `run_session::forward_inbound_frames`.
+//! `tcps:` child In-filter: a blocked-msgid frame bumps the child's
+//! `in_filter_drops` and never reaches the router's `frame_rx`.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

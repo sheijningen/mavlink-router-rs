@@ -1,3 +1,5 @@
+//! Compile-time msgid table backing CRC validation and targeted routing.
+
 use super::generated::SORTED;
 
 /// One row of the build-time `SORTED` msgid table — everything the router

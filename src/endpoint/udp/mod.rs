@@ -1,3 +1,6 @@
+//! UDP transports. Two schemes are supported: `udps:` (server with
+//! multi-peer learning) and `udpc:` (client with reply-source latching).
+
 pub mod client;
 pub mod server;
 

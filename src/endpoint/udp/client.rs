@@ -124,6 +124,9 @@ fn canonical_ip(ip: IpAddr) -> IpAddr {
     }
 }
 
+/// Decide what to do with an inbound packet. Latching is **IP-scoped**:
+/// only a source IP that matches a currently-resolved address for the
+/// configured host is allowed to latch the destination.
 fn classify_inbound(dest: &Destination, src_ip: IpAddr) -> InboundDecision {
     let src = canonical_ip(src_ip);
     if let Some(latch) = &dest.latch {
@@ -373,6 +376,8 @@ async fn send_frame(
     }
 }
 
+/// Revert the latch back to the configured `host:port` if the latched peer
+/// has been silent for `idle`.
 async fn check_latch_idle(dest: &mut Destination, idle: Duration) {
     let Some(latch) = dest.latch else {
         return;

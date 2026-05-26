@@ -1,3 +1,5 @@
+//! Re-exports the compile-time MAVLink msgid table emitted by `build.rs`:
+//! a `&[(u32, MsgEntry)]` sorted ascending by msgid for binary search.
 //! Re-exports the compile-time MAVLink msgid table emitted by `build.rs`.
 //!
 //! The included file defines:
@@ -9,15 +11,6 @@
 //!     ...
 //! ];
 //! ```
-//!
-//! sorted ascending by msgid so `msgid_table::lookup` can binary-search it.
-//! For each `<message>` in the parsed dialects, `build.rs` computes:
-//!
-//! - `crc_extra` via `build_support/crc_extra.rs::crc_extra_for_message`, the
-//!   build-side implementation of the algorithm.
-//! - `target_sys_offset` / `target_comp_offset` — payload offsets of the
-//!   `target_system` / `target_component` fields when present, else `None`.
-
 use super::msgid_table::MsgEntry;
 
 include!(concat!(env!("OUT_DIR"), "/generated_msgid_table.rs"));

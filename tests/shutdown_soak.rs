@@ -1,16 +1,7 @@
-//! End-to-end shutdown drain through `rmr::run`. Cancel the router mid-run
-//! with a mix of endpoints in different lifecycle states — a UDP server
-//! (Connected via bind), a UDP client (Connected via local bind), and a
-//! TCP client pointing at an unbound port (stuck in Reconnecting forever)
-//! — and assert that:
-//!
-//! - every spawned task joins within the 5s wall-clock shutdown budget,
-//! - the function returns `Ok(())` (no panic propagated),
-//! - the total elapsed time stays comfortably under the budget.
-//!
-//! A binary-driven `#[cfg(unix)]` case below spawns `rmr` as a subprocess
-//! and delivers SIGTERM, exercising the same `CancellationToken`-driven
-//! drain via the binary's signal handler.
+//! End-to-end shutdown: cancel the router with endpoints in mixed
+//! lifecycle states and assert every task joins within the 5s budget. A
+//! `#[cfg(unix)]` case below drives the same drain through SIGTERM on the
+//! `rmr` binary.
 
 #[path = "common/mod.rs"]
 mod common;

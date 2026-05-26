@@ -1,18 +1,7 @@
-//! Integration coverage for the router writing `EndpointState::Down` on the
-//! shutdown sweep with **live** endpoint/listener tasks in the loop.
-//!
-//! Unit tests in `src/router/mod.rs` exercise `shutdown_sweep` with fake
-//! registry entries. These tests pin the system-level invariant: with a
-//! real task running alongside the router and writing `Connected` on bind,
-//! the final value observed in the shared `Arc<EndpointStats>` after
-//! `cancel` + join is `Down` (the router's shutdown write), not a
-//! lingering `Connected` (the task's last write before observing cancel).
-//! Endpoint tasks must stop writing `state` once they observe cancel; the
-//! router's `Down` write is then guaranteed last.
-//!
-//! Two cases cover both sides of the unified registry: leaf top-level
-//! endpoints (`EndpointAdded` with `routable = Some(_)`) and parent
-//! listeners (`EndpointAdded` with `routable = None`).
+//! Integration: with live endpoint/listener tasks running, the router's
+//! shutdown sweep is the last writer to `EndpointStats::state`, so the
+//! final observed value is `Down`. Covers both leaf endpoints and parent
+//! listeners.
 
 #[path = "common/mod.rs"]
 mod common;

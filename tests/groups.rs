@@ -1,18 +1,5 @@
-//! Endpoint-group end-to-end through `rmr::run`. Router unit tests cover
-//! [`GroupRegistry`](rmr::router::group) and the shared-learn-set decision
-//! in [`rmr::router`] against synthetic channels. This binary is the
-//! transport-level proof that, on real UDP endpoints:
-//!   1. members of the same `?group=` share a learn-set, so a frame whose
-//!      source identity was admitted via one member is loop-blocked at
-//!      every other member; and
-//!   2. members do **not** share filters — each member's per-endpoint
-//!      out-filter applies independently.
-//!
-//! Per-endpoint stats independence (the third leg of the group contract)
-//! is left to the router unit test `group_members_do_not_share_stats` in
-//! `src/router/mod.rs`; this file pins the UDP-only contract so a refactor
-//! that lost the shared learn-set (or leaked a filter across the group)
-//! surfaces immediately.
+//! End-to-end on UDP: members of the same `?group=` share a learn-set
+//! (siblings loop-block each other) but do not share filters.
 
 #[path = "common/mod.rs"]
 mod common;

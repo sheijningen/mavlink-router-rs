@@ -14,6 +14,8 @@ pub const STX_V1: u8 = 0xFE;
 /// Start-of-frame byte for MAVLink v2.
 pub const STX_V2: u8 = 0xFD;
 
+/// The v2 incompat-flag bit indicating a signed frame. Signed frames are forwarded
+/// byte-for-byte with the 13-byte trailer included in the framed `Bytes`.
 pub const V2_IFLAG_SIGNED: u8 = 0x01;
 pub const V2_SIGNATURE_LEN: usize = 13;
 

@@ -1,19 +1,6 @@
-//! Asserts the documented invariants for shipped examples:
-//!   - every example under `examples/simple/`, `examples/advanced/`,
-//!     and `examples/deployment/` is a runnable TOML config whose
-//!     trailing `# rmr ...` block produces the same merged
-//!     [`rmr::config::Config`] as the TOML body itself.
-//!   - `rmr --help` renders the endpoint mini-guide.
-//!
-//! Example TOML convention enforced here:
-//!   - The TOML body is a normal TOML document.
-//!   - The file ends with a contiguous run of `#`-prefixed comment lines.
-//!   - The first such line (top of the block) starts with `# rmr ` (or
-//!     is exactly `# rmr`); the rest are continuations.
-//!   - A trailing backslash inside a comment body joins the next line
-//!     onto the same command (shell-style line continuation).
-//!   - No shell quoting is required — every CLI value in our examples
-//!     is a single whitespace-free token.
+//! Asserts every shipped example TOML's trailing `# rmr ...` block parses
+//! to the same `Config` as the TOML body, and that `rmr --help` renders
+//! the endpoint mini-guide.
 
 use std::path::{Path, PathBuf};
 
@@ -24,13 +11,6 @@ use rmr::config::Config;
 use rmr::parsers::cli::Cli;
 use rmr::parsers::toml::TomlConfig;
 
-/// Every `*.toml` under `examples/simple/` and `examples/advanced/` must
-/// be a valid example: its body parses as a TOML config and its trailing
-/// `# rmr ...` block produces the same merged [`Config`] as the TOML
-/// body itself. Multi-RMR scenarios (e.g. paired drone+ground
-/// deployments) carry one TOML per role under the same example dir, so
-/// the test walks every `.toml` file rather than a single
-/// `config.toml`.
 #[test]
 fn every_example_toml_matches_its_cli_block() {
     for path in example_toml_files() {

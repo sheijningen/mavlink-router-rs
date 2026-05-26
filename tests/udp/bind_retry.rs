@@ -1,12 +1,6 @@
-//! A `udps:` listener whose initial bind fails (port held by a previous
-//! process) enters the shared capped-exp backoff loop, stays alive across
-//! attempts, and attaches as soon as the port frees.
-//!
-//! Linux/macOS only: on these platforms two unprivileged UDP binds to the
-//! exact same address fail with EADDRINUSE even with `SO_REUSEADDR` (that flag
-//! lets a fresh process rebind after TIME_WAIT, but TIME_WAIT does not apply
-//! to UDP — the second bind just collides). Windows behaviour with
-//! `SO_REUSEADDR` differs and is out of scope here.
+//! `udps:` whose initial bind fails enters the backoff loop and attaches
+//! once the port frees. Unix-only — Windows `SO_REUSEADDR` semantics let
+//! the second UDP bind collide differently.
 
 #![cfg(unix)]
 

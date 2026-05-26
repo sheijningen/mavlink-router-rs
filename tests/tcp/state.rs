@@ -1,13 +1,6 @@
-//! Endpoint state transitions for `tcps:` and `tcpc:` under the
-//! split-authority rule on [`EndpointStats::state`].
-//!
-//! The endpoint task owns the `Connected` / `Reconnecting` writes; the
-//! router owns `Idle` / `Down`. These tests prove the endpoint side fires
-//! the transitions at the right edges — `Reconnecting → Connected` after
-//! bind/connect succeeds, and `Connected → Reconnecting` on a `tcpc:`
-//! disconnect-with-retry.
-//!
-//! [`EndpointStats::state`]: rmr::endpoint::stats::EndpointStats::state
+//! `tcps:`/`tcpc:` state transitions on the endpoint-owned half of
+//! `EndpointStats::state`: `Reconnecting → Connected` on bind/connect and
+//! `Connected → Reconnecting` on `tcpc:` disconnect.
 
 use std::sync::Arc;
 use std::time::Duration;

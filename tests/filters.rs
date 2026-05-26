@@ -1,8 +1,5 @@
-//! Out-filter end-to-end through `rmr::run`. Router unit tests cover the
-//! per-destination decision against synthetic channels; this binary is the
-//! transport-level proof that a `?block_msgid_out=` on a real `udpc:`
-//! actually suppresses the frame at the wire while a non-matching msgid
-//! still reaches the destination.
+//! End-to-end: `?block_msgid_out=` on a `udpc:` suppresses that msgid at
+//! the wire while other msgids still reach the destination.
 
 #[path = "common/mod.rs"]
 mod common;

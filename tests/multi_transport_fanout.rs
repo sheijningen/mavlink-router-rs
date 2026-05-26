@@ -1,15 +1,5 @@
-//! End-to-end routing matrix on three mixed transports. Spawns one
-//! `rmr::run` instance with `udps:` + `udpc:` + `tcps:` and three
-//! cooperating fake peers (one per routing endpoint). Each test injects a
-//! frame at one peer and asserts which of the other peers receive it,
-//! covering the three routing invariants:
-//!
-//! - **Loop prevention** — a frame from peer A reaches B and C but not
-//!   back to A.
-//! - **Broadcast fan-out** — a broadcast frame reaches everyone but the
-//!   source.
-//! - **Targeted routing** — a frame whose `target_system` was learned only
-//!   on one endpoint reaches that endpoint and not the others.
+//! End-to-end routing matrix across `udps:` + `udpc:` + `tcps:`:
+//! loop prevention, broadcast fan-out, and targeted routing.
 
 #[path = "common/mod.rs"]
 mod common;
