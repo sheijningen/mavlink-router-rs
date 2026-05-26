@@ -7,14 +7,15 @@ use std::time::Duration;
 
 use rmr::endpoint::EndpointIdAllocator;
 use rmr::endpoint::spec::TcpClientEndpoint;
+use rmr::endpoint::stats::EndpointState;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use crate::common;
-use crate::common::shutdown_all;
 use crate::common::tcp::spawn_tcpc_with;
+use crate::common::{shutdown_all, wait_for_state};
 
 #[tokio::test]
 async fn tcpc_reconnects_after_server_disconnect() {
@@ -103,10 +104,25 @@ async fn tcpc_drains_queue_on_reconnect() {
         .await
         .expect("initial accept timeout")
         .expect("initial accept");
-    drop(server_stream);
+    wait_for_state(
+        &harness.stats,
+        EndpointState::Connected,
+        "after initial accept",
+    )
+    .await;
 
-    // Push frames while tcpc is in its backoff sleep so the next connect
-    // observes a non-empty queue to drain.
+    // Drop the listener too so the redial fails and Reconnecting is
+    // observable; then wait, so frames pushed below can't be drained onto
+    // the half-closed socket before the disconnect surfaces.
+    drop(server_stream);
+    drop(listener);
+    wait_for_state(
+        &harness.stats,
+        EndpointState::Reconnecting,
+        "after disconnect",
+    )
+    .await;
+
     let stale = common::build_v2_heartbeat(42);
     let pre_drop = harness
         .stats
@@ -117,6 +133,7 @@ async fn tcpc_drains_queue_on_reconnect() {
     }
     assert_eq!(harness.tx_queue.len(), 3, "stale frames should be queued");
 
+    let listener = TcpListener::bind(listen_addr).await.expect("rebind");
     let (mut server_stream2, _peer2) = timeout(Duration::from_secs(3), listener.accept())
         .await
         .expect("reconnect accept timeout")
