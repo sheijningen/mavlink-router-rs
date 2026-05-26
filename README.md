@@ -318,7 +318,7 @@ crates.io.
 
 ### Building from source
 
-Edition 2024, MSRV `1.85`.
+Rust Edition 2024, MSRV `1.88`.
 
 ```sh
 git clone https://github.com/sheijningen/mavlink-router-rs

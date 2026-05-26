@@ -2,7 +2,7 @@
 name = "rmr"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["Stefan Alexander van Heijningen"]
 license = "Apache-2.0"
 description = "Rust MAVLink Router — transparent MAVLink forwarder"
