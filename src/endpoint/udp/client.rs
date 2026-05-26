@@ -583,11 +583,10 @@ mod tests {
         assert_eq!(stats.tx_frames.load(Ordering::Relaxed), 1);
     }
 
-    /// send_to to port 0 returns EINVAL on Unix (an invalid destination);
-    /// the task writes Reconnecting in response. Gated to unix because
-    /// WinSock's sendto-to-port-0 behaviour isn't documented to fail
-    /// synchronously.
-    #[cfg(unix)]
+    /// A synchronous send_to error flips state to Reconnecting. Linux-only:
+    /// only Linux rejects a port-0 send synchronously; WinSock and Darwin
+    /// accept it silently.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn send_frame_send_to_error_writes_reconnecting() {
         let sender = UdpSocket::bind("127.0.0.1:0").await.expect("send bind");
@@ -649,9 +648,9 @@ mod tests {
     }
 
     /// Recovery: a Reconnecting endpoint that sends successfully flips
-    /// back to Connected. Pins the two-way transition. Unix-only because
+    /// back to Connected. Pins the two-way transition. Linux-only because
     /// the failure leg uses port-0 send_to (see above).
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn send_frame_recovers_from_reconnecting_on_success() {
         let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("recv bind");
