@@ -1,7 +1,7 @@
 # Ground-side RMR with two local services: an ADS-B feed publishing
 # ADSB_VEHICLE traffic to the GCS, and a tracking antenna controller.
-# The ADS-B feed is configured to emit with sysid 250 and the tracker
-# with 251.
+# Both are local-only and must never reach the drone, so the uplink
+# blocks them by endpoint name.
 #
 #   ┌── Drone ──┐                ┌─────────────────────────── Ground ────────────────────────────┐
 #   │           │                │                                                               │
@@ -14,13 +14,13 @@
 #                                │                              └──────┘                         │
 #                                └───────────────────────────────────────────────────────────────┘
 
-# Uplink to the drone over UDP. Block local-only sysids.
+# Uplink to the drone over UDP. Block the local-only services.
 [[endpoints]]
 type = "udpc"
 name = "radio"
 host = "192.168.10.20"
 port = 14550
-block_src_sys_out = "250,251"  # ADS-B & Tracking antenna
+block_src_endpoint_out = "adsb,tracker"
 
 # GCS on the local LAN.
 [[endpoints]]
@@ -46,7 +46,7 @@ allow_msgid_out = "33"  # GLOBAL_POSITION_INT
 
 # Equivalent CLI invocation:
 #
-# rmr udpc:192.168.10.20:14550#radio?block_src_sys_out=250,251 \
+# rmr udpc:192.168.10.20:14550#radio?block_src_endpoint_out=adsb,tracker \
 #     tcps:0.0.0.0:5760#gcs \
 #     udps:127.0.0.1:14555#adsb?allow_msgid_in=246&allow_src_comp_in=156 \
 #     udps:127.0.0.1:14556#tracker?allow_msgid_in=30&allow_msgid_out=33
