@@ -125,11 +125,21 @@ Most-used query keys:
 | `idle_secs=N`             | 60      | `udps:` peer expiry on inactivity                    |
 | `latch_idle_secs=N`       | 30      | `udpc:` revert to configured host after silence      |
 
-Per-endpoint filters are 12 axes
-(`{allow,block}_{msgid,src_sys,src_comp}_{in,out}`), each a
-comma-separated list of decimal integers and inclusive `lo-hi` ranges —
-e.g. `block_msgid_in=33,100-150,32`. Hex literals and symbolic msgid
-names are intentionally not accepted.
+Per-endpoint filters come in two kinds.
+
+**Endpoint axis — `allow_src_endpoint_out` / `block_src_endpoint_out`.**
+Keyed on the *source endpoint's name* and applied at egress, to control
+which endpoints' traffic a destination receives. This filter solves
+most of what a user may want to achieve. The other filters become useful
+only when an endpoint needs some of a source's messages but not all.
+
+**Value axes — the 12
+`{allow,block}_{msgid,src_sys,src_comp}_{in,out}`.** Match on frame
+*contents* (msgid, source sysid, source compid), each a comma-separated
+list of decimal integers and inclusive `lo-hi` ranges — e.g.
+`block_msgid_in=33,100-150,32`. Reach for these to pass *some* of an
+endpoint's traffic but not all. Hex literals and symbolic msgid names
+are intentionally not accepted.
 
 > **Filter direction (`_in` vs `_out`).**
 >
@@ -208,6 +218,8 @@ sniffer = true                 # diagnostic endpoint
 # filters are strings; integer-and-range grammar same as CLI
 block_msgid_in = "33,100-150"
 allow_src_sys_out = "1,5-10"
+# endpoint axis: comma-separated endpoint names, not ranges
+allow_src_endpoint_out = "fc"
 ```
 
 **Config validation and CLI/TOML merge rules:**
