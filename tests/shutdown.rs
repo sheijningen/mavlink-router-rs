@@ -113,6 +113,7 @@ async fn router_writes_down_on_cancel_for_leaf_top_level_endpoint() {
             routable: Some(Routable {
                 tx_queue: tx_queue.clone(),
                 identity: identity.clone(),
+                endpoint_name: std::sync::Arc::from("uc"),
             }),
         })
         .await

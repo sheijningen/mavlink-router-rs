@@ -22,10 +22,12 @@ pub enum Decision {
 /// learn table and identity. See module docs for the step order; sniffer
 /// short-circuits to `Admit`, loop-prevent and target-match are silent
 /// rejections, out-filter is the one rejection counted in stats.
+/// `src_endpoint_name` is consulted only by the `src_endpoint_out` axis.
 pub fn decide(
     header: &ParsedHeader,
     dest_learn: &LearnTable,
     dest_identity: &IdentityFlags,
+    src_endpoint_name: &str,
 ) -> Decision {
     if dest_identity.sniffer {
         return Decision::Admit;
@@ -35,7 +37,7 @@ pub fn decide(
     }
     if !dest_identity
         .filters
-        .passes_out_filter(header.msgid, header.source)
+        .passes_out_filter(header.msgid, header.source, src_endpoint_name)
     {
         return Decision::OutFilterBlocked;
     }
@@ -136,7 +138,7 @@ mod tests {
         // msgid has no target field at all (HEARTBEAT-shaped).
         let header = header_at(1, 1, None, None);
         assert_eq!(
-            decide(&header, &empty_learn(), &plain_identity()),
+            decide(&header, &empty_learn(), &plain_identity(), "src"),
             Decision::Admit
         );
     }
@@ -145,7 +147,7 @@ mod tests {
     fn broadcast_target_sys_zero_admitted() {
         let header = header_at(1, 1, Some(0), Some(7));
         assert_eq!(
-            decide(&header, &empty_learn(), &plain_identity()),
+            decide(&header, &empty_learn(), &plain_identity(), "src"),
             Decision::Admit
         );
     }
@@ -154,7 +156,7 @@ mod tests {
     fn fully_targeted_match_admitted() {
         let header = header_at(99, 99, Some(5), Some(10));
         assert_eq!(
-            decide(&header, &learn_with(&[(5, 10)]), &plain_identity()),
+            decide(&header, &learn_with(&[(5, 10)]), &plain_identity(), "src"),
             Decision::Admit
         );
     }
@@ -163,7 +165,12 @@ mod tests {
     fn fully_targeted_miss_rejected_as_target_mismatch() {
         let header = header_at(99, 99, Some(5), Some(10));
         assert_eq!(
-            decide(&header, &learn_with(&[(5, 11), (6, 10)]), &plain_identity()),
+            decide(
+                &header,
+                &learn_with(&[(5, 11), (6, 10)]),
+                &plain_identity(),
+                "src"
+            ),
             Decision::TargetMismatch
         );
     }
@@ -172,11 +179,11 @@ mod tests {
     fn half_target_compid_zero_matches_any_compid() {
         let header = header_at(99, 99, Some(5), Some(0));
         assert_eq!(
-            decide(&header, &learn_with(&[(5, 200)]), &plain_identity()),
+            decide(&header, &learn_with(&[(5, 200)]), &plain_identity(), "src"),
             Decision::Admit
         );
         assert_eq!(
-            decide(&header, &learn_with(&[(6, 200)]), &plain_identity()),
+            decide(&header, &learn_with(&[(6, 200)]), &plain_identity(), "src"),
             Decision::TargetMismatch
         );
     }
@@ -186,11 +193,11 @@ mod tests {
         // CHANGE_OPERATOR_CONTROL-shaped: only target_system carried.
         let header = header_at(99, 99, Some(5), None);
         assert_eq!(
-            decide(&header, &learn_with(&[(5, 200)]), &plain_identity()),
+            decide(&header, &learn_with(&[(5, 200)]), &plain_identity(), "src"),
             Decision::Admit
         );
         assert_eq!(
-            decide(&header, &learn_with(&[(6, 200)]), &plain_identity()),
+            decide(&header, &learn_with(&[(6, 200)]), &plain_identity(), "src"),
             Decision::TargetMismatch
         );
     }
@@ -202,7 +209,7 @@ mod tests {
         let header = header_at(1, 1, Some(5), Some(10));
         let learn = learn_with(&[(1, 1), (5, 10)]);
         assert_eq!(
-            decide(&header, &learn, &plain_identity()),
+            decide(&header, &learn, &plain_identity(), "src"),
             Decision::LoopBlocked
         );
     }
@@ -212,7 +219,7 @@ mod tests {
         let header = header_at(1, 1, Some(0), None);
         let learn = learn_with(&[(1, 1)]);
         assert_eq!(
-            decide(&header, &learn, &plain_identity()),
+            decide(&header, &learn, &plain_identity(), "src"),
             Decision::LoopBlocked
         );
     }
@@ -221,7 +228,7 @@ mod tests {
     fn empty_learn_rejects_fully_targeted_frame() {
         let header = header_at(99, 99, Some(5), Some(10));
         assert_eq!(
-            decide(&header, &empty_learn(), &plain_identity()),
+            decide(&header, &empty_learn(), &plain_identity(), "src"),
             Decision::TargetMismatch
         );
     }
@@ -231,7 +238,7 @@ mod tests {
         // 0-wildcard compid must not bypass the empty-learn check.
         let header = header_at(99, 99, Some(5), Some(0));
         assert_eq!(
-            decide(&header, &empty_learn(), &plain_identity()),
+            decide(&header, &empty_learn(), &plain_identity(), "src"),
             Decision::TargetMismatch
         );
     }
@@ -240,7 +247,7 @@ mod tests {
     fn empty_learn_rejects_half_target_no_compid_field() {
         let header = header_at(99, 99, Some(5), None);
         assert_eq!(
-            decide(&header, &empty_learn(), &plain_identity()),
+            decide(&header, &empty_learn(), &plain_identity(), "src"),
             Decision::TargetMismatch
         );
     }
@@ -255,7 +262,7 @@ mod tests {
             ..Filters::default()
         });
         assert_eq!(
-            decide(&header, &empty_learn(), &identity),
+            decide(&header, &empty_learn(), &identity, "src"),
             Decision::OutFilterBlocked
         );
     }
@@ -270,7 +277,10 @@ mod tests {
             ..Filters::default()
         });
         let learn = learn_with(&[(1, 1)]);
-        assert_eq!(decide(&header, &learn, &identity), Decision::LoopBlocked);
+        assert_eq!(
+            decide(&header, &learn, &identity, "src"),
+            Decision::LoopBlocked
+        );
     }
 
     #[test]
@@ -281,9 +291,12 @@ mod tests {
         });
         let allowed = header_with_msgid(0, 1, 1);
         let blocked = header_with_msgid(1, 1, 1);
-        assert_eq!(decide(&allowed, &empty_learn(), &identity), Decision::Admit);
         assert_eq!(
-            decide(&blocked, &empty_learn(), &identity),
+            decide(&allowed, &empty_learn(), &identity, "src"),
+            Decision::Admit
+        );
+        assert_eq!(
+            decide(&blocked, &empty_learn(), &identity, "src"),
             Decision::OutFilterBlocked
         );
     }
@@ -297,11 +310,11 @@ mod tests {
         let header_blocked = header_with_msgid(0, 7, 1);
         let header_passes = header_with_msgid(0, 8, 1);
         assert_eq!(
-            decide(&header_blocked, &empty_learn(), &identity),
+            decide(&header_blocked, &empty_learn(), &identity, "src"),
             Decision::OutFilterBlocked
         );
         assert_eq!(
-            decide(&header_passes, &empty_learn(), &identity),
+            decide(&header_passes, &empty_learn(), &identity, "src"),
             Decision::Admit
         );
     }
@@ -315,12 +328,53 @@ mod tests {
         let header_blocked = header_with_msgid(0, 1, 9);
         let header_passes = header_with_msgid(0, 1, 10);
         assert_eq!(
-            decide(&header_blocked, &empty_learn(), &identity),
+            decide(&header_blocked, &empty_learn(), &identity, "src"),
             Decision::OutFilterBlocked
         );
         assert_eq!(
-            decide(&header_passes, &empty_learn(), &identity),
+            decide(&header_passes, &empty_learn(), &identity, "src"),
             Decision::Admit
+        );
+    }
+
+    #[test]
+    fn out_filter_src_endpoint_axis_block_rejects() {
+        let identity = identity_with_filters(Filters {
+            block_src_endpoint_out: vec![std::sync::Arc::from("noisy")],
+            ..Filters::default()
+        });
+        let header = header_with_msgid(0, 1, 1);
+        assert_eq!(
+            decide(&header, &empty_learn(), &identity, "noisy"),
+            Decision::OutFilterBlocked
+        );
+        assert_eq!(
+            decide(&header, &empty_learn(), &identity, "quiet"),
+            Decision::Admit
+        );
+    }
+
+    #[test]
+    fn out_filter_src_endpoint_axis_allow_restricts() {
+        let identity = identity_with_filters(Filters {
+            allow_src_endpoint_out: vec![
+                std::sync::Arc::from("alpha"),
+                std::sync::Arc::from("beta"),
+            ],
+            ..Filters::default()
+        });
+        let header = header_with_msgid(0, 1, 1);
+        assert_eq!(
+            decide(&header, &empty_learn(), &identity, "alpha"),
+            Decision::Admit
+        );
+        assert_eq!(
+            decide(&header, &empty_learn(), &identity, "beta"),
+            Decision::Admit
+        );
+        assert_eq!(
+            decide(&header, &empty_learn(), &identity, "gamma"),
+            Decision::OutFilterBlocked
         );
     }
 
@@ -334,7 +388,7 @@ mod tests {
             ..Filters::default()
         });
         assert_eq!(
-            decide(&header, &empty_learn(), &identity),
+            decide(&header, &empty_learn(), &identity, "src"),
             Decision::OutFilterBlocked
         );
     }
@@ -346,7 +400,7 @@ mod tests {
         let header = header_at(1, 1, None, None);
         let learn = learn_with(&[(1, 1)]);
         assert_eq!(
-            decide(&header, &learn, &sniffer_identity()),
+            decide(&header, &learn, &sniffer_identity(), "src"),
             Decision::Admit
         );
     }
@@ -362,7 +416,10 @@ mod tests {
             },
             ..IdentityFlags::default()
         };
-        assert_eq!(decide(&header, &empty_learn(), &identity), Decision::Admit);
+        assert_eq!(
+            decide(&header, &empty_learn(), &identity, "src"),
+            Decision::Admit
+        );
     }
 
     #[test]
@@ -371,7 +428,7 @@ mod tests {
         // still admits (diagnostic tap behavior).
         let header = header_at(99, 99, Some(5), Some(10));
         assert_eq!(
-            decide(&header, &empty_learn(), &sniffer_identity()),
+            decide(&header, &empty_learn(), &sniffer_identity(), "src"),
             Decision::Admit
         );
     }

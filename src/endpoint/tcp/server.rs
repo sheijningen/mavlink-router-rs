@@ -138,6 +138,7 @@ async fn accept_one_client(
             routable: Routable {
                 tx_queue: tx_queue.clone(),
                 identity: spec.identity.clone(),
+                endpoint_name: spec.parent_name.clone(),
             },
         })
         .await

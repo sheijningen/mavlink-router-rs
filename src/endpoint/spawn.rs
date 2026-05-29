@@ -191,6 +191,7 @@ async fn prepare_leaf(
             routable: Some(Routable {
                 tx_queue: tx_queue.clone(),
                 identity,
+                endpoint_name: Arc::from(name),
             }),
         })
         .await

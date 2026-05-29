@@ -249,6 +249,7 @@ async fn admit_new_peer(
             routable: Routable {
                 tx_queue: tx_queue.clone(),
                 identity: ctx.spec.identity.clone(),
+                endpoint_name: ctx.spec.parent_name.clone(),
             },
         })
         .await

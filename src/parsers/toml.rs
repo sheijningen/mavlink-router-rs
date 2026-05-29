@@ -148,6 +148,8 @@ struct TomlEndpoint {
     block_src_comp_in: Option<String>,
     allow_src_comp_out: Option<String>,
     block_src_comp_out: Option<String>,
+    allow_src_endpoint_out: Option<String>,
+    block_src_endpoint_out: Option<String>,
 }
 
 impl TomlEndpoint {
@@ -286,6 +288,8 @@ impl TomlEndpoint {
             block_src_comp_in,
             allow_src_comp_out,
             block_src_comp_out,
+            allow_src_endpoint_out,
+            block_src_endpoint_out,
         }
         pairs
     }
@@ -399,6 +403,66 @@ allow_src_sys_out = "1,5-10"
         assert!(!ep.identity.sniffer);
         assert_eq!(ep.identity.filters.block_msgid_in.len(), 2);
         assert_eq!(ep.identity.filters.allow_src_sys_out.len(), 2);
+    }
+
+    #[test]
+    fn tcpc_endpoint_with_src_endpoint_out_filter() {
+        let text = r#"
+[[endpoints]]
+type = "tcpc"
+host = "radio.local"
+port = 5760
+name = "radio"
+block_src_endpoint_out = "local_service,fc"
+"#;
+        let cfg = TomlConfig::parse_str(text).expect("must parse");
+        let spec = &cfg.endpoints[0];
+        assert_eq!(spec.name, "radio");
+        let ep = match &spec.kind {
+            EndpointKind::TcpClient(endpoint) => endpoint,
+            other => panic!("expected tcpc, got {other:?}"),
+        };
+        let names: Vec<&str> = ep
+            .identity
+            .filters
+            .block_src_endpoint_out
+            .iter()
+            .map(|entry| entry.as_ref())
+            .collect();
+        assert_eq!(names, vec!["local_service", "fc"]);
+    }
+
+    #[test]
+    fn toml_array_form_for_src_endpoint_out_rejected() {
+        // Filter lists are a comma-separated string; array form must error.
+        let text = r#"
+[[endpoints]]
+type = "tcpc"
+host = "h"
+port = 1
+block_src_endpoint_out = ["a", "b"]
+"#;
+        assert!(
+            matches!(TomlConfig::parse_str(text), Err(Error::ConfigParse(_))),
+            "array form must be rejected as a TOML parse error"
+        );
+    }
+
+    #[test]
+    fn toml_invalid_endpoint_name_in_filter_rejected() {
+        let text = r#"
+[[endpoints]]
+type = "tcpc"
+host = "h"
+port = 1
+block_src_endpoint_out = "bad.name"
+"#;
+        let err = TomlConfig::parse_str(text).expect_err("must reject invalid name");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("block_src_endpoint_out"),
+            "error must name the offending key; got: {msg}"
+        );
     }
 
     #[test]
@@ -803,6 +867,8 @@ bind = "0.0.0.0:14551"
             "block_src_comp_in" => filters.block_src_comp_in.len(),
             "allow_src_comp_out" => filters.allow_src_comp_out.len(),
             "block_src_comp_out" => filters.block_src_comp_out.len(),
+            "allow_src_endpoint_out" => filters.allow_src_endpoint_out.len(),
+            "block_src_endpoint_out" => filters.block_src_endpoint_out.len(),
             other => panic!("unknown filter axis: {other}"),
         }
     }
@@ -829,6 +895,8 @@ bind = "0.0.0.0:14551"
     #[case("block_src_comp_in")]
     #[case("allow_src_comp_out")]
     #[case("block_src_comp_out")]
+    #[case("allow_src_endpoint_out")]
+    #[case("block_src_endpoint_out")]
     fn each_filter_knob_round_trips(#[case] axis: &str) {
         let text = format!(
             "[[endpoints]]\ntype = \"tcpc\"\nhost = \"h\"\nport = 1\n{axis} = \"1,5-10\"\n"
