@@ -39,7 +39,7 @@ async fn udps_attaches_when_pre_held_port_is_freed() {
         ..UdpServerEndpoint::default()
     };
     let parent_id = allocator.alloc();
-    let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps".to_string());
+    let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps".into());
     spec.reconnect_initial_ms = 50;
     spec.reconnect_max_ms = 250;
     let mut harness = spawn_udps_with_spec(&allocator, cancel.clone(), spec);

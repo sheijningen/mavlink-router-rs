@@ -172,7 +172,7 @@ async fn router_writes_down_on_cancel_for_parent_listener() {
         bind_addr: listen_addr,
         ..TcpServerEndpoint::default()
     };
-    let spec = TcpServerSpec::from_endpoint(endpoint, parent_id, "ts".to_string());
+    let spec = TcpServerSpec::from_endpoint(endpoint, parent_id, "ts".into());
 
     harness
         .event_tx

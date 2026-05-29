@@ -137,7 +137,7 @@ async fn spawn_endpoint(
             if !prepare_parent_listener(event_tx, endpoint_id, &name, stats.clone()).await {
                 return Ok(());
             }
-            let spec = TcpServerSpec::from_endpoint(ep, endpoint_id, name);
+            let spec = TcpServerSpec::from_endpoint(ep, endpoint_id, Arc::from(name));
             let wiring = ServerWiring {
                 allocator: allocator.clone(),
                 frame_tx: frame_tx.clone(),
@@ -153,7 +153,7 @@ async fn spawn_endpoint(
             if !prepare_parent_listener(event_tx, endpoint_id, &name, stats.clone()).await {
                 return Ok(());
             }
-            let spec = UdpServerSpec::from_endpoint(ep, endpoint_id, name);
+            let spec = UdpServerSpec::from_endpoint(ep, endpoint_id, Arc::from(name));
             let wiring = ServerWiring {
                 allocator: allocator.clone(),
                 frame_tx: frame_tx.clone(),
