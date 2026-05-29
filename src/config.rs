@@ -712,7 +712,7 @@ mod tests {
         // its peers from forwarding to one another (they share that name).
         let config = Config {
             endpoints: vec![endpoint(
-                "tcpc:gcs.local:5760#radio?block_src_endpoint_out=radio",
+                "tcps:0.0.0.0:5760#radio?block_src_endpoint_out=radio",
             )],
             ..Config::default()
         };

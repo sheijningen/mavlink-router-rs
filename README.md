@@ -132,6 +132,8 @@ Keyed on the *source endpoint's name* and applied at egress, to control
 which endpoints' traffic a destination receives. This filter solves
 most of what a user may want to achieve. The other filters become useful
 only when an endpoint needs some of a source's messages but not all.
+All clients of a `udps:`/`tcps:` server share that server's `#name`, so
+they are matched as one source and cannot be told apart by this axis.
 
 **Value axes — the 12
 `{allow,block}_{msgid,src_sys,src_comp}_{in,out}`.** Match on frame
