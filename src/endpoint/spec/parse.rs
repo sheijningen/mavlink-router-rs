@@ -233,6 +233,17 @@ pub fn validate_name(name: &str) -> Result<(), SpecError> {
     Ok(())
 }
 
+pub fn validate_name_value(value: &str, key: &'static str) -> Result<(), SpecError> {
+    if name_matches_regex(value) {
+        Ok(())
+    } else {
+        Err(SpecError::InvalidQueryValue {
+            key,
+            reason: format!("'{value}': must match [A-Za-z0-9_-]+"),
+        })
+    }
+}
+
 pub fn sanitize_for_name(text: &str) -> String {
     text.chars()
         .map(|ch| {
