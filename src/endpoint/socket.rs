@@ -25,9 +25,42 @@ pub fn bind_udp_dual_stack(addr: SocketAddr) -> io::Result<UdpSocket> {
     if matches!(addr, SocketAddr::V6(v6) if v6.ip().is_unspecified()) {
         sock.set_only_v6(false)?;
     }
+
+    #[cfg(windows)]
+    disable_udp_conn_reset(&sock)?;
+
     sock.set_nonblocking(true)?;
     sock.bind(&addr.into())?;
     UdpSocket::from_std(sock.into())
+}
+
+/// Clear `SIO_UDP_CONNRESET` so a `send_to` to a vanished peer no longer makes
+/// the next `recv_from` fail with `WSAECONNRESET` — matching Linux.
+#[cfg(windows)]
+fn disable_udp_conn_reset(sock: &Socket) -> io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+
+    use windows_sys::Win32::Networking::WinSock::{SIO_UDP_CONNRESET, WSAIoctl};
+
+    let disabled: u32 = 0;
+    let mut bytes_returned: u32 = 0;
+    let result = unsafe {
+        WSAIoctl(
+            sock.as_raw_socket() as usize,
+            SIO_UDP_CONNRESET,
+            (&raw const disabled).cast(),
+            core::mem::size_of::<u32>() as u32,
+            core::ptr::null_mut(),
+            0,
+            &raw mut bytes_returned,
+            core::ptr::null_mut(),
+            None,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Bind a TCP listener with the same dual-stack and reuse semantics as
@@ -221,5 +254,31 @@ mod tests {
 
         let again = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
         let _ = bind_udp_dual_stack(again).expect("rebind same port");
+    }
+
+    /// Regression guard for the `SIO_UDP_CONNRESET` clear: after a `send_to` to
+    /// a closed port, `recv_from` must stay pending rather than complete with
+    /// the stale `WSAECONNRESET`. Windows-only.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn udp_recv_ignores_stale_conn_reset_from_unreachable_peer() {
+        let sock = bind_udp_dual_stack(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .expect("bind sender");
+
+        // A closed loopback port: claim one by binding, then drop it.
+        let dead = bind_udp_dual_stack(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .expect("bind dead");
+        let dead_addr = dead.local_addr().expect("dead local_addr");
+        drop(dead);
+
+        sock.send_to(b"x", dead_addr).await.expect("send_to closed");
+
+        let mut buf = [0u8; 64];
+        let result =
+            tokio::time::timeout(Duration::from_millis(200), sock.recv_from(&mut buf)).await;
+        assert!(
+            result.is_err(),
+            "recv_from must stay pending, not return a stale WSAECONNRESET: {result:?}"
+        );
     }
 }
