@@ -118,7 +118,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: ServerWiring) {
     })
     .await
     {
-        BindOutcome::Bound(s) => Arc::new(s),
+        BindOutcome::Bound(socket) => Arc::new(socket),
         BindOutcome::Cancelled => return,
     };
     wiring.stats.store_state(EndpointState::Connected);
@@ -301,7 +301,7 @@ async fn evict_lru_peer(
     parent_id: EndpointId,
     event_tx: &mpsc::Sender<EndpointEvent>,
 ) {
-    let Some((&victim, _)) = peers.iter().min_by_key(|(_, e)| e.last_seen) else {
+    let Some((&victim, _)) = peers.iter().min_by_key(|(_, peer)| peer.last_seen) else {
         return;
     };
     let Some(entry) = peers.remove(&victim) else {

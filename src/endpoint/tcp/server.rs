@@ -73,7 +73,7 @@ async fn run_inner(spec: TcpServerSpec, wiring: ServerWiring) {
             })
             .await
             {
-                BindOutcome::Bound(l) => l,
+                BindOutcome::Bound(listener) => listener,
                 BindOutcome::Cancelled => return,
             };
         wiring.stats.store_state(EndpointState::Connected);
