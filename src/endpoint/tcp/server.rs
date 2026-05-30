@@ -85,6 +85,7 @@ async fn run_accept_loop(listener: TcpListener, spec: &TcpServerSpec, wiring: &S
     let mut children: JoinSet<()> = JoinSet::new();
 
     loop {
+        reap_finished(&mut children);
         tokio::select! {
             biased;
             _ = wiring.cancel.cancelled() => break,
@@ -104,6 +105,11 @@ async fn run_accept_loop(listener: TcpListener, spec: &TcpServerSpec, wiring: &S
     }
 
     while children.join_next().await.is_some() {}
+}
+
+/// Drop the handles of children that have already finished.
+fn reap_finished(children: &mut JoinSet<()>) {
+    while children.try_join_next().is_some() {}
 }
 
 async fn accept_one_client(
@@ -212,6 +218,8 @@ async fn run_client_session(
 
 #[cfg(test)]
 mod tests {
+    use tokio_util::sync::CancellationToken;
+
     use super::*;
 
     #[test]
@@ -220,5 +228,31 @@ mod tests {
         let spec = TcpServerSpec::from_endpoint(ep, EndpointId(0), "n".into());
         assert_eq!(spec.reconnect_initial_ms, DEFAULT_RECONNECT_INITIAL_MS);
         assert_eq!(spec.reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
+    }
+
+    #[tokio::test]
+    async fn reap_finished_drops_only_completed_children() {
+        let token = CancellationToken::new();
+        let mut children: JoinSet<()> = JoinSet::new();
+        children.spawn(async {});
+        children.spawn(async {});
+        let blocker = token.clone();
+        children.spawn(async move { blocker.cancelled().await });
+
+        while children.len() > 1 {
+            tokio::task::yield_now().await;
+            reap_finished(&mut children);
+        }
+        assert_eq!(
+            children.len(),
+            1,
+            "completed children reaped, blocked one kept"
+        );
+
+        token.cancel();
+        while !children.is_empty() {
+            tokio::task::yield_now().await;
+            reap_finished(&mut children);
+        }
     }
 }

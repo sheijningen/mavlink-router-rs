@@ -142,6 +142,7 @@ async fn run_inner(spec: UdpServerSpec, wiring: ServerWiring) {
     };
 
     loop {
+        reap_finished(&mut writer_tasks);
         tokio::select! {
             biased;
             _ = wiring.cancel.cancelled() => {
@@ -175,6 +176,11 @@ async fn run_inner(spec: UdpServerSpec, wiring: ServerWiring) {
             }
         }
     }
+}
+
+/// Drop the handles of peer-writer tasks that have already finished.
+fn reap_finished(writer_tasks: &mut JoinSet<()>) {
+    while writer_tasks.try_join_next().is_some() {}
 }
 
 /// Bundle of references the listener loop hands to its packet-handling
@@ -640,5 +646,31 @@ mod tests {
             writer_tasks.is_empty(),
             "no writer task should have spawned for the dropped peer"
         );
+    }
+
+    #[tokio::test]
+    async fn reap_finished_drops_only_completed_writers() {
+        let token = CancellationToken::new();
+        let mut writer_tasks: JoinSet<()> = JoinSet::new();
+        writer_tasks.spawn(async {});
+        writer_tasks.spawn(async {});
+        let blocker = token.clone();
+        writer_tasks.spawn(async move { blocker.cancelled().await });
+
+        while writer_tasks.len() > 1 {
+            tokio::task::yield_now().await;
+            reap_finished(&mut writer_tasks);
+        }
+        assert_eq!(
+            writer_tasks.len(),
+            1,
+            "completed writers reaped, blocked one kept"
+        );
+
+        token.cancel();
+        while !writer_tasks.is_empty() {
+            tokio::task::yield_now().await;
+            reap_finished(&mut writer_tasks);
+        }
     }
 }
