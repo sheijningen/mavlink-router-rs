@@ -14,6 +14,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use super::super::backoff::{Backoff, BindOutcome, bind_with_backoff};
 use super::super::defaults::{
     DEFAULT_RECONNECT_INITIAL_MS, DEFAULT_RECONNECT_MAX_MS, DEFAULT_TX_QUEUE_FRAMES,
+    SOCKET_ERROR_RETRY_DELAY,
 };
 use super::super::events::{EndpointEvent, PeerRemovalReason, Routable};
 use super::super::identity_flags::{IdentityFlags, SEQ_TRACKER_CAPACITY};
@@ -24,7 +25,7 @@ use super::super::spec::UdpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats, FramerCounters};
 use super::super::tx_queue::TxQueue;
 use super::super::wiring::ServerWiring;
-use super::super::{EndpointId, peer_endpoint_name};
+use super::super::{EndpointId, peer_endpoint_name, wait_or_cancel};
 use super::MAX_DATAGRAM_BYTES;
 use crate::mavlink::framer::Framer;
 
@@ -170,7 +171,11 @@ async fn run_inner(spec: UdpServerSpec, wiring: ServerWiring) {
                         handle_packet(&buf[..bytes_read], src, &mut peers, &mut writer_tasks, &ctx).await;
                     }
                     Err(err) => {
-                        warn!(error = %err, "recv_from error");
+                        // Sustained recv errors (e.g. ENOBUFS) keep failing
+                        // while the socket stays read-ready; a short delay
+                        // avoids a spin.
+                        warn!(error = %err, "recv_from error; retrying after short delay");
+                        wait_or_cancel(&wiring.cancel, SOCKET_ERROR_RETRY_DELAY).await;
                     }
                 }
             }
