@@ -10,6 +10,8 @@ under `### Changed` so a reader can spot the break without diffing the code.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-30
+
 ### Added
 
 - Egress filter axis keyed on the source endpoint's name:
