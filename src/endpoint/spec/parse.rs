@@ -199,6 +199,15 @@ pub(crate) fn parse_host_port(body: &str, scheme: Scheme) -> Result<(String, u16
                 reason: format!("no ':' between host and port ({grammar})"),
             });
         };
+        if host.contains(':') {
+            return Err(SpecError::MalformedBody {
+                scheme,
+                body: body.to_string(),
+                reason: format!(
+                    "unbracketed ':' in host '{host}'; IPv6 literals must be bracketed, e.g. '[::1]:<port>' ({grammar})"
+                ),
+            });
+        }
         (host.to_string(), port_str.to_string())
     };
     if host.is_empty() {
@@ -418,6 +427,8 @@ mod tests {
     #[case::ipv6_unclosed("udps:[::1", None)]
     #[case::ipv6_no_port_after_bracket("udps:[::1]", None)]
     #[case::ipv6_garbage_after_bracket("udps:[::1]x14550", None)]
+    #[case::udpc_unbracketed_ipv6("udpc:::14550", Some("must be bracketed"))]
+    #[case::tcpc_unbracketed_ipv6("tcpc:::5760", Some("must be bracketed"))]
     #[case::tcps_hostname_must_be_ip("tcps:localhost:5760", Some("must be an IP literal"))]
     #[case::udps_hostname_must_be_ip("udps:gcs.local:14550", Some("must be an IP literal"))]
     fn host_port_body_rejects_malformed(
