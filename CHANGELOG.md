@@ -10,6 +10,38 @@ under `### Changed` so a reader can spot the break without diffing the code.
 
 ## [Unreleased]
 
+### Added
+
+- Egress filter axis keyed on the source endpoint's name:
+  `allow_src_endpoint_out` / `block_src_endpoint_out`. Controls which
+  endpoints' traffic a destination receives without listing every other
+  axis. Clients of a `udps:`/`tcps:` server share that server's name and
+  are matched as one source.
+- Config validation: filters referencing a non-existent endpoint name
+  are now fatal at startup.
+- Windows shutdown signal handling for `CTRL_CLOSE`, `CTRL_SHUTDOWN`,
+  and `CTRL_BREAK` (previously only `CTRL_C`).
+
+### Changed
+
+- **Breaking (config):** TOML endpoints are now `[endpoint.NAME]` tables
+  instead of an `[[endpoints]]` array with a `name` field. The table key
+  is the endpoint name, so names are unique by construction and a
+  duplicate is a TOML parse error. Existing configs must be migrated.
+- Endpoint names are no longer capped at 64 characters.
+
+### Fixed
+
+- Reject unbracketed IPv6 hosts in `host:port` specs instead of
+  misparsing them.
+- Back off on sustained socket errors uniformly: the shared retry delay
+  now also applies to the UDP receive loop and the TCP accept loop,
+  preventing hot loops.
+- Ignore stale `WSAECONNRESET` on Windows UDP sockets.
+- Prevent startup panic when `stats_interval_secs = 0`.
+- Reap child tasks of TCP/UDP servers on shutdown instead of leaking
+  their join handles.
+
 ## [0.1.0] - 2026-05-26
 
 ### Added
