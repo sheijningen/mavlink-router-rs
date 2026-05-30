@@ -14,6 +14,10 @@ use crate::parsers::toml::TomlConfig;
 /// Period of stats JSON-Lines output.
 pub const DEFAULT_STATS_INTERVAL_SECS: u64 = 5;
 
+/// `0` would build the stats timer with a zero period, which `interval_at`
+/// rejects at runtime — so the interval has a one-second floor.
+pub const MIN_STATS_INTERVAL_SECS: u64 = 1;
+
 /// `0` disables the dedup window.
 pub const DEFAULT_DEDUP_MS: u64 = 0;
 
@@ -146,6 +150,12 @@ impl Config {
             return Err(Error::DedupMsTooLarge {
                 requested: self.dedup_ms,
                 max: MAX_DEDUP_MS,
+            });
+        }
+        if self.stats_interval_secs < MIN_STATS_INTERVAL_SECS {
+            return Err(Error::StatsIntervalTooSmall {
+                requested: self.stats_interval_secs,
+                min: MIN_STATS_INTERVAL_SECS,
             });
         }
         check_unique_names(&self.endpoints)?;
@@ -311,6 +321,32 @@ mod tests {
             }
             other => panic!("expected DedupMsTooLarge, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn validate_rejects_zero_stats_interval() {
+        let config = Config {
+            stats_interval_secs: 0,
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
+            ..Config::default()
+        };
+        match config.validate() {
+            Err(Error::StatsIntervalTooSmall { requested, min }) => {
+                assert_eq!(requested, 0);
+                assert_eq!(min, MIN_STATS_INTERVAL_SECS);
+            }
+            other => panic!("expected StatsIntervalTooSmall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_stats_interval_at_floor() {
+        let config = Config {
+            stats_interval_secs: MIN_STATS_INTERVAL_SECS,
+            endpoints: vec![endpoint("udps:0.0.0.0:1#a")],
+            ..Config::default()
+        };
+        config.validate().expect("at-floor value must pass");
     }
 
     #[test]
