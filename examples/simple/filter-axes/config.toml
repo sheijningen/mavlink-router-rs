@@ -13,26 +13,23 @@
 
 # ALLOWLIST on ingress. Only HEARTBEAT may enter the router from
 # this endpoint. Every other msgid arriving on this endpoint is dropped.
-[[endpoints]]
+[endpoint.allow-in]
 type = "udps"
-name = "allow-in"
 bind = "0.0.0.0:14550"
 allow_msgid_in = "0"  # HEARTBEAT
 
 # BLOCKLIST on ingress. TIMESYNC may not enter the router from
 # this endpoint. Every other msgid arriving on this endpoint is forwarded.
-[[endpoints]]
+[endpoint.block-in]
 type = "udps"
-name = "block-in"
 bind = "0.0.0.0:14551"
 block_msgid_in = "111"  # TIMESYNC
 
 # ALLOWLIST on egress. Only HEARTBEAT, SYS_STATUS, ATTITUDE, and
 # GLOBAL_POSITION_INT may leave the router toward this endpoint.
 # Every other msgid leaving toward this endpoint is dropped.
-[[endpoints]]
+[endpoint.allow-out]
 type = "udpc"
-name = "allow-out"
 host = "192.168.1.10"
 port = 14550
 allow_msgid_out = "0,1,30,33"  # HEARTBEAT, SYS_STATUS, ATTITUDE, GLOBAL_POSITION_INT
@@ -40,9 +37,8 @@ allow_msgid_out = "0,1,30,33"  # HEARTBEAT, SYS_STATUS, ATTITUDE, GLOBAL_POSITIO
 # BLOCKLIST on egress. RAW_IMU and RAW_PRESSURE may not leave the
 # router toward this endpoint. Every other msgid leaving toward
 # this endpoint is forwarded.
-[[endpoints]]
+[endpoint.block-out]
 type = "udpc"
-name = "block-out"
 host = "192.168.1.11"
 port = 14550
 block_msgid_out = "27,28"  # RAW_IMU, RAW_PRESSURE

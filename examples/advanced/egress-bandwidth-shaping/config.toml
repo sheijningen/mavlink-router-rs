@@ -14,24 +14,21 @@
 #   └────────────────────────────┘
 
 # Flight controller.
-[[endpoints]]
+[endpoint.fc]
 type = "serial"
-name = "fc"
 path = "/dev/ttyACM0"
 baud = 115200
 
 # GCS. Gets all but raw sensor data.
-[[endpoints]]
+[endpoint.gcs]
 type = "udpc"
-name = "gcs"
 host = "10.223.0.10"
 port = 14550
 block_msgid_out = "27,28,105,116,129"  # RAW_IMU, RAW_PRESSURE, HIGHRES_IMU, SCALED_IMU2, SCALED_IMU3
 
 # Status channel. Non-GCS consumers subscribe for high-level state.
-[[endpoints]]
+[endpoint.status]
 type = "udps"
-name = "status"
 bind = "0.0.0.0:14552"
 allow_msgid_out = "0,1,30,33,74,147,245,253"  # HEARTBEAT, SYS_STATUS, ATTITUDE, GLOBAL_POSITION_INT,
                                               # VFR_HUD, BATTERY_STATUS, EXTENDED_SYS_STATE, STATUSTEXT

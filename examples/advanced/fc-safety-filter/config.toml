@@ -9,17 +9,15 @@
 
 # Flight controller. Block stick-injection msgids so nothing
 # arriving from the network can overwrite the RC controller.
-[[endpoints]]
+[endpoint.fc]
 type = "serial"
-name = "fc"
 path = "/dev/ttyACM0"
 baud = 115200
 block_msgid_out = "69,70"  # MANUAL_CONTROL, RC_CHANNELS_OVERRIDE
 
 # GCS.
-[[endpoints]]
+[endpoint.gcs]
 type = "udpc"
-name = "gcs"
 host = "10.223.0.10"
 port = 14550
 

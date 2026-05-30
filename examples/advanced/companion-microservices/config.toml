@@ -14,38 +14,33 @@
 #   └───────────────────────────────────────────┘
 
 # Flight controller.
-[[endpoints]]
+[endpoint.fc]
 type = "serial"
-name = "fc"
 path = "/dev/ttyACM0"
 baud = 115200
 
 # GCS. The obstacle-avoidance service is on-board only.
-[[endpoints]]
+[endpoint.gcs]
 type = "udpc"
-name = "gcs"
 host = "10.223.0.10"
 port = 14550
 block_src_endpoint_out = "obstacle-avoidance"
 
 # Radio link quality telemetry.
-[[endpoints]]
+[endpoint.radio-monitor]
 type = "udps"
-name = "radio-monitor"
 bind = "127.0.0.1:14551"
 allow_msgid_in = "109"  # RADIO_STATUS
 
 # Obstacle-avoidance sensor telemetry.
-[[endpoints]]
+[endpoint.obstacle-avoidance]
 type = "udps"
-name = "obstacle-avoidance"
 bind = "127.0.0.1:14552"
 allow_msgid_in = "330"  # OBSTACLE_DISTANCE
 
 # Camera status telemetry.
-[[endpoints]]
+[endpoint.camera]
 type = "udps"
-name = "camera"
 bind = "127.0.0.1:14553"
 allow_msgid_in = "259-263"  # CAMERA_INFORMATION, CAMERA_SETTINGS,
                             # STORAGE_INFORMATION, CAMERA_CAPTURE_STATUS,

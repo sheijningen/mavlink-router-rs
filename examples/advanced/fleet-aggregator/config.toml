@@ -17,33 +17,29 @@
 #                                         └─────────────────────────────┘
 
 # Uplink to drone 1.
-[[endpoints]]
+[endpoint.drone1]
 type = "udpc"
-name = "drone1"
 host = "192.168.1.11"
 port = 14550
 allow_src_endpoint_out = "gcs"
 
 # Uplink to drone 2.
-[[endpoints]]
+[endpoint.drone2]
 type = "udpc"
-name = "drone2"
 host = "192.168.1.12"
 port = 14550
 allow_src_endpoint_out = "gcs"
 
 # Uplink to drone 3.
-[[endpoints]]
+[endpoint.drone3]
 type = "udpc"
-name = "drone3"
 host = "192.168.1.13"
 port = 14550
 allow_src_endpoint_out = "gcs"
 
 # GCS over TCP.
-[[endpoints]]
+[endpoint.gcs]
 type = "tcps"
-name = "gcs"
 bind = "0.0.0.0:5760"
 
 # Equivalent CLI invocation:

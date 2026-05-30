@@ -24,24 +24,21 @@
 dedup_ms = 2000
 
 # Flight controller.
-[[endpoints]]
+[endpoint.fc]
 type = "serial"
-name = "fc"
 path = "/dev/ttyACM0"
 baud = 115200
 
 # LTE uplink.
-[[endpoints]]
+[endpoint.lte]
 type = "udpc"
-name = "lte"
 host = "203.0.113.10"
 port = 14550
 group = "links"
 
 # RFD900 telemetry radio.
-[[endpoints]]
+[endpoint.rfd900]
 type = "serial"
-name = "rfd900"
 path = "/dev/serial0"
 baud = 57600
 group = "links"

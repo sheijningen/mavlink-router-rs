@@ -6,15 +6,13 @@
 #   │                └─────┘│
 #   └───────────────────────┘
 
-[[endpoints]]
+[endpoint.fc]
 type = "serial"
-name = "fc"
 path = "/dev/ttyAMA0"
 baud = 115200
 
-[[endpoints]]
+[endpoint.gcs]
 type = "udpc"
-name = "gcs"
 host = "10.223.0.10"
 port = 14550
 

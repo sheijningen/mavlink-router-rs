@@ -11,16 +11,14 @@
 #   └──────────────────────────────────────────┘
 
 # Flight controller over UART.
-[[endpoints]]
+[endpoint.fc]
 type = "serial"
-name = "fc"
 path = "/dev/ttyACM0"
 baud = 115200
 
 # UDP server for ad-hoc clients (the GCS bus).
-[[endpoints]]
+[endpoint.bus]
 type = "udps"
-name = "bus"
 bind = "0.0.0.0:14550"
 
 # Diagnostic sniffer endpoint. `sniffer = true` bypasses loop-prevention,
@@ -28,9 +26,8 @@ bind = "0.0.0.0:14550"
 # the router accepted — traffic dropped at ingress (bad CRC, In-filter
 # rejection, deduplication with `dedup_ms`) never reaches a sniffer.
 # In-filters restrict what the recorder may send *into* RMR — only a HEARTBEAT.
-[[endpoints]]
+[endpoint.sniffer]
 type = "udps"
-name = "sniffer"
 bind = "127.0.0.1:14551"
 sniffer = true
 allow_msgid_in = "0"  # HEARTBEAT
