@@ -50,6 +50,9 @@ pub enum Error {
     #[error("dedup_ms = {requested}ms exceeds maximum of {max}ms")]
     DedupMsTooLarge { requested: u64, max: u64 },
 
+    #[error("stats_interval_secs = {requested}s is below minimum of {min}s")]
+    StatsIntervalTooSmall { requested: u64, min: u64 },
+
     #[error(
         "endpoint '{endpoint_name}' filter {axis}: '{referenced_name}' is not a declared endpoint name"
     )]
