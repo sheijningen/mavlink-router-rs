@@ -50,15 +50,13 @@ rmr serial:/dev/ttyUSB0:115200#fc tcps:0.0.0.0:5760#gcs
 Same setup from a TOML file:
 
 ```toml
-[[endpoints]]
+[endpoint.fc]
 type = "serial"
-name = "fc"
 path = "/dev/ttyUSB0"
 baud = 115200
 
-[[endpoints]]
+[endpoint.gcs]
 type = "tcps"
-name = "gcs"
 bind = "0.0.0.0:5760"
 ```
 
@@ -182,8 +180,9 @@ A TOML config file is the recommended way to set up RMR for anything
 beyond a quick one-shot test: the CLI covers the same surface but does
 not scale to multi-endpoint setups with filters and globals.
 
-Globals match the CLI flags one-for-one (snake_case keys). Endpoints are
-an array of tables:
+Globals match the CLI flags one-for-one (snake_case keys). Each endpoint
+is a `[endpoint.NAME]` table — the table key is the endpoint name, so
+names are unique by construction:
 
 ```toml
 # globals (all optional)
@@ -197,21 +196,19 @@ dedup_ms = 2000                # default 0 (off); non-zero = TTL in ms.
                                # See examples/advanced/redundant-links/
 skip_config_log = false
 
-# one [[endpoints]] table per endpoint
-[[endpoints]]
+# one [endpoint.NAME] table per endpoint; the key is the name
+[endpoint.fc]
 type = "serial"                # serial | udps | udpc | tcps | tcpc
-name = "fc"                    # optional; auto-derived from scheme-addr-port
 path = "/dev/ttyUSB0"          # serial only
 baud = 115200                  # serial only
 flow_control = "rtscts"        # serial only; "none" (default) or "rtscts"
 
-[[endpoints]]
+[endpoint.bus]
 type = "udps"
-name = "bus"
 bind = "0.0.0.0:14550"         # udps / tcps: bind address
 idle_secs = 60                 # udps only
 
-[[endpoints]]
+[endpoint.uplink]
 type = "tcpc"
 host = "192.168.144.15"        # udpc / tcpc: dial target
 port = 5760
@@ -228,8 +225,9 @@ allow_src_endpoint_out = "fc"
 
 - **Validation is strict.** Any unknown key — top-level or
   per-endpoint — is fatal at startup.
-- **Endpoint names must be unique within each source.** A duplicate
-  `#name` inside the CLI, or inside the TOML, is fatal.
+- **Endpoint names must be unique within each source.** In TOML a
+  duplicate `[endpoint.NAME]` is a TOML duplicate-key parse error; a
+  duplicate `#name` on the CLI is fatal.
 - **CLI overrides TOML, per key.** For globals, any CLI flag that is
   set overrides the matching TOML key.
 - **CLI overrides TOML, per endpoint.** When the same endpoint `#name` appears

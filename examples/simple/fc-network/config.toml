@@ -12,29 +12,25 @@
 
 # Flight controller over UART. Set `flow_control = "rtscts"` if your wiring
 # exposes RTS/CTS.
-[[endpoints]]
+[endpoint.fc]
 type = "serial"
-name = "fc"
 path = "/dev/ttyACM0"
 baud = 115200
 
 # UDP client with outbound traffic for a primary GCS.
-[[endpoints]]
+[endpoint.gcs]
 type = "udpc"
-name = "gcs"
 host = "192.168.144.15"
 port = 14550
 
 # UDP server for ad-hoc clients.
-[[endpoints]]
+[endpoint.bus]
 type = "udps"
-name = "bus"
 bind = "0.0.0.0:14550"
 
 # TCP server for many GCS clients.
-[[endpoints]]
+[endpoint.gcs-clients]
 type = "tcps"
-name = "gcs-clients"
 bind = "0.0.0.0:5760"
 
 # Equivalent CLI invocation:

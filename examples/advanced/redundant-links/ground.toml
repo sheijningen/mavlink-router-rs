@@ -24,24 +24,21 @@
 dedup_ms = 2000
 
 # LTE downlink.
-[[endpoints]]
+[endpoint.lte]
 type = "udps"
-name = "lte"
 bind = "0.0.0.0:14550"
 group = "links"
 
 # RFD900 telemetry radio on a USB-serial dongle.
-[[endpoints]]
+[endpoint.rfd900]
 type = "serial"
-name = "rfd900"
 path = "/dev/ttyUSB0"
 baud = 57600
 group = "links"
 
 # GCS.
-[[endpoints]]
+[endpoint.gcs]
 type = "tcps"
-name = "gcs"
 bind = "0.0.0.0:5760"
 
 # Equivalent CLI invocation:

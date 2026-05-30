@@ -17,11 +17,10 @@ pub enum Error {
         source: SpecError,
     },
 
-    /// Spec error from a TOML `[[endpoints]]` entry.
-    #[error("invalid endpoint{}: {source}", fmt_toml_locator(.index, .name.as_deref()))]
+    /// Spec error from a TOML `[endpoint.NAME]` entry.
+    #[error("invalid endpoint [endpoint.{name}]: {source}")]
     SpecInToml {
-        index: usize,
-        name: Option<String>,
+        name: String,
         #[source]
         source: SpecError,
     },
@@ -40,12 +39,8 @@ pub enum Error {
     ConfigParse(#[source] toml::de::Error),
 
     /// Per-endpoint schema violation surfaced by the TOML loader.
-    #[error("invalid endpoint{}: {reason}", fmt_toml_locator(.index, .name.as_deref()))]
-    ConfigSchema {
-        index: usize,
-        name: Option<String>,
-        reason: String,
-    },
+    #[error("invalid endpoint [endpoint.{name}]: {reason}")]
+    ConfigSchema { name: String, reason: String },
 
     #[error("dedup_ms = {requested}ms exceeds maximum of {max}ms")]
     DedupMsTooLarge { requested: u64, max: u64 },
@@ -61,12 +56,4 @@ pub enum Error {
         axis: &'static str,
         referenced_name: String,
     },
-}
-
-fn fmt_toml_locator(index: &usize, name: Option<&str>) -> String {
-    let position = index + 1;
-    match name {
-        Some(name) => format!(" [[endpoints]] #{position} '{name}'"),
-        None => format!(" [[endpoints]] #{position}"),
-    }
 }

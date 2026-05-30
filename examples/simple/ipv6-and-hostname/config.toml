@@ -10,34 +10,30 @@
 #   └───────────────────────────┘
 
 # Flight controller over UART.
-[[endpoints]]
+[endpoint.fc]
 type = "serial"
-name = "fc"
 path = "/dev/ttyACM0"
 baud = 115200
 
 # Dual-stack UDP listener — accepts both v4 and v6 peers on one socket.
 # RMR forces `IPV6_V6ONLY=0` on both Linux and Windows when binding `[::]`,
 # so the dual-stack behaviour is identical on both platforms.
-[[endpoints]]
+[endpoint.bus]
 type = "udps"
-name = "bus"
 bind = "[::]:14550"
 
 # TCP client to an IPv6 address. In TOML the host is unbracketed
 # (`host = "2001:db8::1"`); on the CLI brackets are required.
-[[endpoints]]
+[endpoint.peer-v6]
 type = "tcpc"
-name = "peer-v6"
 host = "2001:db8::1"
 port = 5760
 
 # TCP client to a hostname. RMR re-resolves DNS on every reconnect, so
 # the endpoint survives dynamic DNS / k8s service migration / VPN
 # routing changes without restart.
-[[endpoints]]
+[endpoint.peer-hostname]
 type = "tcpc"
-name = "peer-hostname"
 host = "vehicle.example.com"
 port = 5760
 

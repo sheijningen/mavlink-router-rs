@@ -15,31 +15,27 @@
 #                                └───────────────────────────────────────────────────────────────┘
 
 # Uplink to the drone over UDP. Block the local-only services.
-[[endpoints]]
+[endpoint.radio]
 type = "udpc"
-name = "radio"
 host = "192.168.10.20"
 port = 14550
 block_src_endpoint_out = "adsb,tracker"
 
 # GCS on the local LAN.
-[[endpoints]]
+[endpoint.gcs]
 type = "tcps"
-name = "gcs"
 bind = "0.0.0.0:5760"
 
 # Local ADS-B feed.
-[[endpoints]]
+[endpoint.adsb]
 type = "udps"
-name = "adsb"
 bind = "127.0.0.1:14555"
 allow_msgid_in = "246"  # ADSB_VEHICLE
 allow_src_comp_in = "156"  # MAV_COMP_ID_ADSB
 
 # Tracking antenna controller.
-[[endpoints]]
+[endpoint.tracker]
 type = "udps"
-name = "tracker"
 bind = "127.0.0.1:14556"
 allow_msgid_in = "30"  # ATTITUDE
 allow_msgid_out = "33"  # GLOBAL_POSITION_INT
