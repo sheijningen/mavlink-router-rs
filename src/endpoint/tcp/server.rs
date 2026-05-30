@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -18,7 +19,9 @@ use super::super::spec::TcpServerEndpoint;
 use super::super::stats::{EndpointState, EndpointStats};
 use super::super::tx_queue::TxQueue;
 use super::super::wiring::{ClientWiring, ServerWiring};
-use super::super::{EndpointId, peer_endpoint_name};
+use super::super::{EndpointId, peer_endpoint_name, wait_or_cancel};
+
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Inputs that distinguish one `tcps:` listener from another: where to bind
 /// and what to call it. Filter / sniffer / group bundle inherited by every
@@ -95,9 +98,12 @@ async fn run_accept_loop(listener: TcpListener, spec: &TcpServerSpec, wiring: &S
                         accept_one_client(stream, peer_addr, spec, wiring, &mut children).await;
                     }
                     Err(err) => {
-                        // Accept errors are typically per-connection failures
-                        // (EMFILE etc.), not listener death; log and continue.
-                        warn!(error = %err, "accept failed; continuing");
+                        // Sustained accept errors (fd exhaustion) keep failing
+                        // until fds free up; a short fixed delay avoids a spin.
+                        warn!(error = %err, "accept failed; retrying after short delay");
+                        if !wait_or_cancel(&wiring.cancel, ACCEPT_RETRY_DELAY).await {
+                            break;
+                        }
                     }
                 }
             }
