@@ -47,9 +47,10 @@ impl SessionCtx<'_> {
         framer: &mut Framer,
         seq_tracker: &mut SeqTracker,
     ) -> ControlFlow<()> {
+        let now = Instant::now();
         while let Some((header, frame)) = framer.try_next_frame() {
             self.stats.add_rx_frame(frame.len());
-            let lost = seq_tracker.observe(header.source, header.seq, Instant::now());
+            let lost = seq_tracker.observe(header.source, header.seq, now);
             if lost > 0 {
                 self.stats
                     .rx_lost_est
