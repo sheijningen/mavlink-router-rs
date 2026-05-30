@@ -1,6 +1,7 @@
 //! Per-endpoint filter rules and the range types they carry.
 
 use std::fmt;
+use std::sync::Arc;
 
 use super::spec::SpecError;
 use crate::mavlink::frame::NodeId;
@@ -47,11 +48,12 @@ impl U8Range {
     }
 }
 
-/// The 12 per-endpoint filter lists: `allow_*` / `block_*` on the msgid,
+/// The per-endpoint filter lists: `allow_*` / `block_*` on the msgid,
 /// `src_sys`, and `src_comp` axes for both ingress (`*_in`) and egress
-/// (`*_out`). Empty list = no restriction; blocklist wins over allowlist on
-/// overlap. The per-frame decision methods [`Filters::passes_in_filter`] and
-/// [`Filters::passes_out_filter`] consume this data; the parser side lives
+/// (`*_out`), plus the egress-only `src_endpoint_out` axis keyed on the
+/// source endpoint's name. Empty list = no restriction; blocklist wins
+/// over allowlist on overlap. Per-frame decisions in
+/// [`Filters::passes_in_filter`] / [`Filters::passes_out_filter`]; parser
 /// in [`Filters::apply`].
 ///
 /// Lives on [`super::identity_flags::IdentityFlags::filters`] alongside the
@@ -71,6 +73,8 @@ pub struct Filters {
     pub block_src_comp_in: Vec<U8Range>,
     pub allow_src_comp_out: Vec<U8Range>,
     pub block_src_comp_out: Vec<U8Range>,
+    pub allow_src_endpoint_out: Vec<Arc<str>>,
+    pub block_src_endpoint_out: Vec<Arc<str>>,
 }
 
 impl fmt::Debug for Filters {
@@ -98,6 +102,8 @@ impl fmt::Debug for Filters {
             block_src_comp_in,
             allow_src_comp_out,
             block_src_comp_out,
+            allow_src_endpoint_out,
+            block_src_endpoint_out,
         }
         entry.finish()
     }
@@ -112,12 +118,14 @@ impl Filters {
         "allow_msgid_out",
         "allow_src_comp_in",
         "allow_src_comp_out",
+        "allow_src_endpoint_out",
         "allow_src_sys_in",
         "allow_src_sys_out",
         "block_msgid_in",
         "block_msgid_out",
         "block_src_comp_in",
         "block_src_comp_out",
+        "block_src_endpoint_out",
         "block_src_sys_in",
         "block_src_sys_out",
     ];
@@ -154,6 +162,8 @@ impl Filters {
             block_src_comp_in: parse_u8_ranges,
             allow_src_comp_out: parse_u8_ranges,
             block_src_comp_out: parse_u8_ranges,
+            allow_src_endpoint_out: parse_endpoint_name_list,
+            block_src_endpoint_out: parse_endpoint_name_list,
         }
     }
 
@@ -171,14 +181,29 @@ impl Filters {
             && pass_u8_axis(src.comp, &self.allow_src_comp_in, &self.block_src_comp_in)
     }
 
-    /// Decide whether a frame with `(msgid, src)` passes the egress filter
-    /// for this endpoint. Same semantics as [`Filters::passes_in_filter`]
-    /// applied to the `*_out` lists.
+    /// Decide whether a frame with `(msgid, src)` passes the egress filter.
     #[must_use]
-    pub fn passes_out_filter(&self, msgid: u32, src: NodeId) -> bool {
+    pub fn passes_out_filter(&self, msgid: u32, src: NodeId, src_endpoint_name: &str) -> bool {
         pass_msgid_axis(msgid, &self.allow_msgid_out, &self.block_msgid_out)
             && pass_u8_axis(src.sys, &self.allow_src_sys_out, &self.block_src_sys_out)
             && pass_u8_axis(src.comp, &self.allow_src_comp_out, &self.block_src_comp_out)
+            && pass_src_endpoint_axis(
+                src_endpoint_name,
+                &self.allow_src_endpoint_out,
+                &self.block_src_endpoint_out,
+            )
+    }
+
+    pub fn src_endpoint_out_entries(&self) -> impl Iterator<Item = (&'static str, &str)> + '_ {
+        let allow = self
+            .allow_src_endpoint_out
+            .iter()
+            .map(|entry| ("allow_src_endpoint_out", entry.as_ref()));
+        let block = self
+            .block_src_endpoint_out
+            .iter()
+            .map(|entry| ("block_src_endpoint_out", entry.as_ref()));
+        allow.chain(block)
     }
 }
 
@@ -203,6 +228,16 @@ fn pass_u8_axis(value: u8, allow: &[U8Range], block: &[U8Range]) -> bool {
         return false;
     }
     !block.iter().any(|range| range.contains(value))
+}
+
+/// Endpoint-name counterpart of [`pass_msgid_axis`]; entries compared by
+/// string equality.
+#[inline]
+fn pass_src_endpoint_axis(name: &str, allow: &[Arc<str>], block: &[Arc<str>]) -> bool {
+    if !allow.is_empty() && !allow.iter().any(|entry| entry.as_ref() == name) {
+        return false;
+    }
+    !block.iter().any(|entry| entry.as_ref() == name)
 }
 
 fn parse_msgid_ranges(value: &str, key: &'static str) -> Result<Vec<MsgIdRange>, SpecError> {
@@ -242,6 +277,22 @@ fn parse_u8_ranges(value: &str, key: &'static str) -> Result<Vec<U8Range>, SpecE
             lo: lo as u8,
             hi: hi as u8,
         });
+    }
+    Ok(out)
+}
+
+fn parse_endpoint_name_list(value: &str, key: &'static str) -> Result<Vec<Arc<str>>, SpecError> {
+    let mut out = Vec::new();
+    for item in value.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            return Err(SpecError::InvalidQueryValue {
+                key,
+                reason: format!("empty entry in '{value}'"),
+            });
+        }
+        super::spec::validate_name_value(item, key)?;
+        out.push(Arc::from(item));
     }
     Ok(out)
 }
@@ -298,6 +349,8 @@ mod tests {
         assert!(filters.block_src_comp_in.is_empty());
         assert!(filters.allow_src_comp_out.is_empty());
         assert!(filters.block_src_comp_out.is_empty());
+        assert!(filters.allow_src_endpoint_out.is_empty());
+        assert!(filters.block_src_endpoint_out.is_empty());
     }
 
     #[test]
@@ -355,6 +408,78 @@ mod tests {
         }
     }
 
+    // ----- src_endpoint_out parser -----
+
+    #[test]
+    fn apply_src_endpoint_out_lists_parse_names() {
+        let mut filters = Filters::default();
+        assert!(
+            filters
+                .apply("block_src_endpoint_out", "foo,bar,baz_1")
+                .unwrap()
+        );
+        let names: Vec<&str> = filters
+            .block_src_endpoint_out
+            .iter()
+            .map(|entry| entry.as_ref())
+            .collect();
+        assert_eq!(names, vec!["foo", "bar", "baz_1"]);
+
+        let mut filters = Filters::default();
+        assert!(
+            filters
+                .apply("allow_src_endpoint_out", "alpha,beta-2")
+                .unwrap()
+        );
+        let names: Vec<&str> = filters
+            .allow_src_endpoint_out
+            .iter()
+            .map(|entry| entry.as_ref())
+            .collect();
+        assert_eq!(names, vec!["alpha", "beta-2"]);
+    }
+
+    #[test]
+    fn apply_src_endpoint_out_tolerates_whitespace() {
+        let mut filters = Filters::default();
+        assert!(
+            filters
+                .apply("block_src_endpoint_out", " foo , bar ")
+                .unwrap()
+        );
+        let names: Vec<&str> = filters
+            .block_src_endpoint_out
+            .iter()
+            .map(|entry| entry.as_ref())
+            .collect();
+        assert_eq!(names, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn apply_src_endpoint_out_rejects_empty_entry() {
+        let mut filters = Filters::default();
+        assert!(filters.apply("block_src_endpoint_out", "foo,,bar").is_err());
+    }
+
+    #[test]
+    fn apply_src_endpoint_out_rejects_invalid_characters() {
+        let mut filters = Filters::default();
+        assert!(filters.apply("block_src_endpoint_out", "foo.bar").is_err());
+        assert!(
+            filters
+                .apply("block_src_endpoint_out", "parent/127.0.0.1-5760")
+                .is_err()
+        );
+        assert!(filters.apply("block_src_endpoint_out", "*").is_err());
+    }
+
+    #[test]
+    fn apply_src_endpoint_out_accepts_long_name() {
+        let mut filters = Filters::default();
+        let long_name = "a".repeat(200);
+        assert!(filters.apply("block_src_endpoint_out", &long_name).is_ok());
+    }
+
     // ----- per-frame eval (passes_in_filter / passes_out_filter) -----
 
     #[test]
@@ -362,7 +487,7 @@ mod tests {
         let filters = Filters::default();
         assert!(filters.passes_in_filter(0, NodeId::new(0, 0)));
         assert!(filters.passes_in_filter(u32::MAX, NodeId::new(u8::MAX, u8::MAX)));
-        assert!(filters.passes_out_filter(33, NodeId::new(1, 1)));
+        assert!(filters.passes_out_filter(33, NodeId::new(1, 1), "src"));
     }
 
     #[test]
@@ -429,10 +554,10 @@ mod tests {
             block_src_sys_out: vec![U8Range::single(5)],
             ..Filters::default()
         };
-        assert!(filters.passes_out_filter(0, NodeId::new(4, 0)));
-        assert!(!filters.passes_out_filter(0, NodeId::new(5, 0)));
-        assert!(filters.passes_out_filter(0, NodeId::new(6, 0)));
-        assert!(!filters.passes_out_filter(0, NodeId::new(11, 0)));
+        assert!(filters.passes_out_filter(0, NodeId::new(4, 0), "src"));
+        assert!(!filters.passes_out_filter(0, NodeId::new(5, 0), "src"));
+        assert!(filters.passes_out_filter(0, NodeId::new(6, 0), "src"));
+        assert!(!filters.passes_out_filter(0, NodeId::new(11, 0), "src"));
     }
 
     #[test]
@@ -455,10 +580,72 @@ mod tests {
             block_src_comp_out: vec![U8Range::single(5)],
             ..Filters::default()
         };
-        assert!(filters.passes_out_filter(0, NodeId::new(0, 4)));
-        assert!(!filters.passes_out_filter(0, NodeId::new(0, 5)));
-        assert!(filters.passes_out_filter(0, NodeId::new(0, 6)));
-        assert!(!filters.passes_out_filter(0, NodeId::new(0, 11)));
+        assert!(filters.passes_out_filter(0, NodeId::new(0, 4), "src"));
+        assert!(!filters.passes_out_filter(0, NodeId::new(0, 5), "src"));
+        assert!(filters.passes_out_filter(0, NodeId::new(0, 6), "src"));
+        assert!(!filters.passes_out_filter(0, NodeId::new(0, 11), "src"));
+    }
+
+    #[test]
+    fn allow_src_endpoint_out_restricts_to_listed_names() {
+        let filters = Filters {
+            allow_src_endpoint_out: vec![Arc::from("alpha"), Arc::from("beta")],
+            ..Filters::default()
+        };
+        assert!(filters.passes_out_filter(0, NodeId::new(1, 1), "alpha"));
+        assert!(filters.passes_out_filter(0, NodeId::new(1, 1), "beta"));
+        assert!(!filters.passes_out_filter(0, NodeId::new(1, 1), "gamma"));
+        assert!(!filters.passes_out_filter(0, NodeId::new(1, 1), ""));
+        assert!(!filters.passes_out_filter(0, NodeId::new(1, 1), "Alpha"));
+    }
+
+    #[test]
+    fn block_src_endpoint_out_rejects_listed_names() {
+        let filters = Filters {
+            block_src_endpoint_out: vec![Arc::from("noisy")],
+            ..Filters::default()
+        };
+        assert!(filters.passes_out_filter(0, NodeId::new(1, 1), "quiet"));
+        assert!(!filters.passes_out_filter(0, NodeId::new(1, 1), "noisy"));
+        assert!(filters.passes_out_filter(0, NodeId::new(1, 1), ""));
+    }
+
+    #[test]
+    fn block_wins_over_allow_on_overlap_src_endpoint_out() {
+        let filters = Filters {
+            allow_src_endpoint_out: vec![Arc::from("alpha"), Arc::from("beta")],
+            block_src_endpoint_out: vec![Arc::from("beta")],
+            ..Filters::default()
+        };
+        assert!(filters.passes_out_filter(0, NodeId::new(1, 1), "alpha"));
+        assert!(!filters.passes_out_filter(0, NodeId::new(1, 1), "beta"));
+        assert!(!filters.passes_out_filter(0, NodeId::new(1, 1), "gamma"));
+    }
+
+    #[test]
+    fn src_endpoint_out_entries_yields_allow_then_block_with_axis_labels() {
+        // Order locked: validate_endpoint_references and its error messages
+        // depend on allow-first-then-block iteration and verbatim labels.
+        let filters = Filters {
+            allow_src_endpoint_out: vec![Arc::from("alpha"), Arc::from("beta")],
+            block_src_endpoint_out: vec![Arc::from("gamma")],
+            ..Filters::default()
+        };
+        let entries: Vec<(&str, &str)> = filters.src_endpoint_out_entries().collect();
+        assert_eq!(
+            entries,
+            vec![
+                ("allow_src_endpoint_out", "alpha"),
+                ("allow_src_endpoint_out", "beta"),
+                ("block_src_endpoint_out", "gamma"),
+            ]
+        );
+    }
+
+    #[test]
+    fn src_endpoint_out_entries_empty_when_no_lists_set() {
+        let filters = Filters::default();
+        assert_eq!(filters.src_endpoint_out_entries().count(), 0);
     }
 
     #[test]
@@ -513,14 +700,14 @@ mod tests {
         };
         // _out is untouched by an _in blocklist, and vice versa.
         assert!(!filters.passes_in_filter(33, NodeId::new(1, 1)));
-        assert!(filters.passes_out_filter(33, NodeId::new(1, 1)));
+        assert!(filters.passes_out_filter(33, NodeId::new(1, 1), "src"));
 
         let filters = Filters {
             allow_msgid_out: vec![MsgIdRange::single(0)],
             ..Filters::default()
         };
         assert!(filters.passes_in_filter(99, NodeId::new(1, 1)));
-        assert!(!filters.passes_out_filter(99, NodeId::new(1, 1)));
+        assert!(!filters.passes_out_filter(99, NodeId::new(1, 1), "src"));
     }
 
     #[test]
@@ -532,12 +719,12 @@ mod tests {
             block_src_comp_out: vec![U8Range::single(99)],
             ..Filters::default()
         };
-        assert!(filters.passes_out_filter(30, NodeId::new(1, 1)));
-        assert!(filters.passes_out_filter(40, NodeId::new(1, 1)));
-        assert!(!filters.passes_out_filter(35, NodeId::new(1, 1))); // block wins
-        assert!(!filters.passes_out_filter(29, NodeId::new(1, 1))); // outside allow
-        assert!(!filters.passes_out_filter(30, NodeId::new(2, 1))); // src_sys not allowed
-        assert!(!filters.passes_out_filter(30, NodeId::new(1, 99))); // src_comp blocked
+        assert!(filters.passes_out_filter(30, NodeId::new(1, 1), "src"));
+        assert!(filters.passes_out_filter(40, NodeId::new(1, 1), "src"));
+        assert!(!filters.passes_out_filter(35, NodeId::new(1, 1), "src")); // block wins
+        assert!(!filters.passes_out_filter(29, NodeId::new(1, 1), "src")); // outside allow
+        assert!(!filters.passes_out_filter(30, NodeId::new(2, 1), "src")); // src_sys not allowed
+        assert!(!filters.passes_out_filter(30, NodeId::new(1, 99), "src")); // src_comp blocked
     }
 
     #[test]
@@ -708,7 +895,7 @@ mod tests {
                 block_msgid_out: block_all,
                 ..Filters::default()
             };
-            prop_assert!(!filters.passes_out_filter(msgid, NodeId::new(0, 0)));
+            prop_assert!(!filters.passes_out_filter(msgid, NodeId::new(0, 0), "src"));
         }
 
         // Empty allow lists impose no restriction: result equals "not in any
@@ -866,8 +1053,8 @@ mod tests {
                 ..Filters::default()
             };
             prop_assert_eq!(
-                baseline.passes_out_filter(msgid, NodeId::new(src_sys, src_comp)),
-                with_in.passes_out_filter(msgid, NodeId::new(src_sys, src_comp)),
+                baseline.passes_out_filter(msgid, NodeId::new(src_sys, src_comp), "src"),
+                with_in.passes_out_filter(msgid, NodeId::new(src_sys, src_comp), "src"),
             );
         }
 

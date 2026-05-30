@@ -45,19 +45,18 @@ Query keys — scheme-specific:
                           (default 30)
 
 Filter query keys — any scheme:
-  Same `?key=val` syntax as the keys above. Values are comma-separated
-  decimal integers and inclusive `lo-hi` ranges:
-    allow_msgid_in     / block_msgid_in       ingress, by msgid
-    allow_msgid_out    / block_msgid_out      egress,  by msgid
-    allow_src_sys_in   / block_src_sys_in     ingress, by source sysid
-    allow_src_sys_out  / block_src_sys_out    egress,  by source sysid
-    allow_src_comp_in  / block_src_comp_in    ingress, by source compid
-    allow_src_comp_out / block_src_comp_out   egress,  by source compid
+  Same `?key=val` syntax as the keys above. `allow_*` is a whitelist
+  (empty = allow all; non-empty = only these pass); `block_*` is a
+  blacklist. `*_in` is applied on incoming traffic at the source endpoint,
+  `*_out` on outgoing traffic per destination endpoint.
 
-  `allow_*` is a whitelist (empty = allow all; non-empty = only these
-  pass). `block_*` is a blacklist. Blacklist wins on overlap. `*_in`
-  is applied on incoming traffic at the source endpoint; `*_out`
-  is applied on outgoing traffic per destination endpoint.
+    allow_msgid_in         / block_msgid_in           ingress, by msgid
+    allow_msgid_out        / block_msgid_out          egress,  by msgid
+    allow_src_sys_in       / block_src_sys_in         ingress, by source sysid
+    allow_src_sys_out      / block_src_sys_out        egress,  by source sysid
+    allow_src_comp_in      / block_src_comp_in        ingress, by source compid
+    allow_src_comp_out     / block_src_comp_out       egress,  by source compid
+    allow_src_endpoint_out / block_src_endpoint_out   egress,  by source endpoint name
 
 Worked examples and full TOML config reference:
   https://github.com/sheijningen/mavlink-router-rs

@@ -37,7 +37,7 @@ async fn udps_in_filter_blocks_msgid_at_listener() {
         ..UdpServerEndpoint::default()
     };
     let parent_id = allocator.alloc();
-    let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps-in-filter".to_string());
+    let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps-in-filter".into());
     spec.identity = parent_identity;
     let mut harness = spawn_udps_with_spec(&allocator, cancel.clone(), spec);
     wait_for_state(&harness.stats, EndpointState::Connected, "udps bind").await;

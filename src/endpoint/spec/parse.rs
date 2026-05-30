@@ -217,11 +217,10 @@ pub(crate) fn parse_host_port(body: &str, scheme: Scheme) -> Result<(String, u16
 }
 
 /// Shared regex check for explicit `#name` values and `?group=` values:
-/// `[A-Za-z0-9_-]{1,64}`. Kept as a bool helper so callers can wrap it
+/// `[A-Za-z0-9_-]+`. Kept as a bool helper so callers can wrap it
 /// in whichever [`SpecError`] variant fits their context.
 pub fn name_matches_regex(name: &str) -> bool {
     !name.is_empty()
-        && name.len() <= 64
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
@@ -232,6 +231,17 @@ pub fn validate_name(name: &str) -> Result<(), SpecError> {
         return Err(SpecError::InvalidName(name.to_string()));
     }
     Ok(())
+}
+
+pub fn validate_name_value(value: &str, key: &'static str) -> Result<(), SpecError> {
+    if name_matches_regex(value) {
+        Ok(())
+    } else {
+        Err(SpecError::InvalidQueryValue {
+            key,
+            reason: format!("'{value}': must match [A-Za-z0-9_-]+"),
+        })
+    }
 }
 
 pub fn sanitize_for_name(text: &str) -> String {
@@ -430,19 +440,10 @@ mod tests {
     // -- validate_name / sanitize_for_name --
 
     #[test]
-    fn name_max_64_ok() {
-        let name = "a".repeat(64);
+    fn long_name_ok() {
+        let name = "a".repeat(200);
         let spec = parse_ok(&format!("udps:0.0.0.0:1#{name}"));
         assert_eq!(spec.name, name);
-    }
-
-    #[test]
-    fn name_too_long_fails() {
-        let name = "a".repeat(65);
-        assert!(matches!(
-            parse_err(&format!("udps:0.0.0.0:1#{name}")),
-            SpecError::InvalidName(_)
-        ));
     }
 
     #[test]

@@ -58,8 +58,17 @@ struct RoutableState {
     /// (out-filter evaluation), `sniffer` (decision override), and
     /// `group` (effective-learn lookup) on every dispatched frame.
     identity: IdentityFlags,
+    /// Source endpoint name used for egress filtering
+    endpoint_name: Arc<str>,
     /// Per-endpoint learn table. Unused when `identity.group.is_some()`.
     learn: LearnTable,
+}
+
+/// Outcome of source-side admission. `Admitted` carries the source
+/// endpoint's name, `Suppressed` means dropped at ingress.
+enum SourceAdmission {
+    Admitted { src_endpoint_name: Arc<str> },
+    Suppressed,
 }
 
 /// Bundle the spawner hands to the router task. The two `mpsc::Receiver`s
@@ -113,6 +122,7 @@ impl Router {
         RoutableState {
             tx_queue: payload.tx_queue,
             identity: payload.identity,
+            endpoint_name: payload.endpoint_name,
             learn: LearnTable::new(LEARN_CAPACITY),
         }
     }
@@ -203,23 +213,23 @@ impl Router {
             frame,
             header,
         } = router_frame;
-        if !self.update_source_routing(src_id, &frame, &header, Instant::now()) {
+        let SourceAdmission::Admitted { src_endpoint_name } =
+            self.ingest_source_frame(src_id, &frame, &header, Instant::now())
+        else {
             return;
-        }
-        self.dispatch_to_destinations(src_id, &frame, &header);
+        };
+        self.dispatch_to_destinations(src_id, &frame, &header, &src_endpoint_name);
     }
 
     /// Validate the source endpoint, run dedup, then touch the source's
-    /// effective learn-set and publish its current length to stats. Returns
-    /// `false` when the frame is suppressed (unknown source, non-routable
-    /// source, dedup hit, or missing group entry).
-    fn update_source_routing(
+    /// effective learn-set and publish its current length to stats.
+    fn ingest_source_frame(
         &mut self,
         src_id: EndpointId,
         frame: &Bytes,
         header: &ParsedHeader,
         now: Instant,
-    ) -> bool {
+    ) -> SourceAdmission {
         // Split-borrow: one `routing.get_mut` gates dedup AND touches the
         // per-endpoint learn-set, no second lookup or `expect` needed.
         let Router {
@@ -231,12 +241,12 @@ impl Router {
 
         let Some(src_entry) = routing.get_mut(&src_id) else {
             debug!(%src_id, "frame from unknown endpoint; dropped");
-            return false;
+            return SourceAdmission::Suppressed;
         };
         let src_stats = src_entry.stats.clone();
         let Some(src_routable) = src_entry.routable.as_mut() else {
             debug!(%src_id, "frame from non-routable endpoint; dropped");
-            return false;
+            return SourceAdmission::Suppressed;
         };
 
         // Dedup runs BEFORE learn so sniffer destinations see the
@@ -244,7 +254,7 @@ impl Router {
         if dedup.check_and_insert(frame, now) {
             src_stats.dedup_drops.fetch_add(1, Ordering::Relaxed);
             trace!(%src_id, "dedup suppressed duplicate frame");
-            return false;
+            return SourceAdmission::Suppressed;
         }
 
         // Always publish learn-set size; group siblings may have inserted
@@ -253,7 +263,7 @@ impl Router {
             Some(name) => {
                 let Some(group) = groups.get_mut(name) else {
                     debug!(%src_id, ?name, "source group missing; dropped");
-                    return false;
+                    return SourceAdmission::Suppressed;
                 };
                 group.learn.touch(header.source, now);
                 group.learn.len()
@@ -266,7 +276,9 @@ impl Router {
         src_stats
             .learn_entries
             .store(learn_len as u64, Ordering::Relaxed);
-        true
+        SourceAdmission::Admitted {
+            src_endpoint_name: src_routable.endpoint_name.clone(),
+        }
     }
 
     /// Per-destination decision: for every registered endpoint other than
@@ -274,7 +286,15 @@ impl Router {
     /// via the destination's group), run [`decide_for_dest`], and either
     /// push into the destination's TxQueue or credit `out_filter_drops`.
     /// Parent listeners (`routable == None`) are skipped at one branch.
-    fn dispatch_to_destinations(&self, src_id: EndpointId, frame: &Bytes, header: &ParsedHeader) {
+    /// `src_endpoint_name` is the source endpoint's name, consulted by each
+    /// destination's `src_endpoint_out` axis.
+    fn dispatch_to_destinations(
+        &self,
+        src_id: EndpointId,
+        frame: &Bytes,
+        header: &ParsedHeader,
+        src_endpoint_name: &str,
+    ) {
         for (dest_id, dest_ep) in self.routing.iter() {
             if *dest_id == src_id {
                 continue;
@@ -295,7 +315,12 @@ impl Router {
                 }
                 None => &dest_routable.learn,
             };
-            match decide_for_dest(header, dest_learn, &dest_routable.identity) {
+            match decide_for_dest(
+                header,
+                dest_learn,
+                &dest_routable.identity,
+                src_endpoint_name,
+            ) {
                 Decision::Admit => {
                     dest_routable.tx_queue.push(frame.clone());
                 }
@@ -438,6 +463,7 @@ mod tests {
             routable: Some(Routable {
                 tx_queue: fx.tx_queue.clone(),
                 identity,
+                endpoint_name: Arc::from(name),
             }),
         }
     }
@@ -460,6 +486,7 @@ mod tests {
             routable: Routable {
                 tx_queue: fx.tx_queue.clone(),
                 identity: IdentityFlags::default(),
+                endpoint_name: Arc::from(name),
             },
         }
     }

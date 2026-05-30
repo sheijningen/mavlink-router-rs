@@ -148,7 +148,8 @@ impl Config {
                 max: MAX_DEDUP_MS,
             });
         }
-        check_unique_names(&self.endpoints)
+        check_unique_names(&self.endpoints)?;
+        validate_endpoint_references(&self.endpoints)
     }
 
     /// Emit one INFO event capturing every resolved global plus the
@@ -206,6 +207,27 @@ fn merge_endpoints(
     }
     endpoints.extend(cli_endpoints);
     (endpoints, overridden_names)
+}
+
+/// Reject filter entries that name an unknown endpoint.
+fn validate_endpoint_references(endpoints: &[EndpointSpec]) -> Result<(), Error> {
+    let known: HashSet<&str> = endpoints
+        .iter()
+        .map(|endpoint| endpoint.name.as_str())
+        .collect();
+    for endpoint in endpoints {
+        let filters = &endpoint.kind.identity().filters;
+        for (axis, referenced) in filters.src_endpoint_out_entries() {
+            if !known.contains(referenced) {
+                return Err(Error::FilterReferencesUnknownEndpoint {
+                    endpoint_name: endpoint.name.clone(),
+                    axis,
+                    referenced_name: referenced.to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Fail with [`Error::DuplicateName`] on the first repeated `#name` in
@@ -646,6 +668,67 @@ mod tests {
         };
         let cfg = Config::merge(toml, cli).expect("merge must succeed").config;
         assert!(cfg.merged);
+    }
+
+    // -- endpoint-reference validation (src_endpoint_out axis) --
+
+    #[test]
+    fn validate_accepts_filter_naming_existing_endpoint() {
+        let config = Config {
+            endpoints: vec![
+                endpoint("udps:0.0.0.0:1#local_service"),
+                endpoint("tcpc:radio.local:5760#radio?block_src_endpoint_out=local_service"),
+            ],
+            ..Config::default()
+        };
+        config.validate().expect("known reference must validate");
+    }
+
+    #[test]
+    fn validate_rejects_unknown_endpoint_reference() {
+        let config = Config {
+            endpoints: vec![endpoint(
+                "tcpc:radio.local:5760#radio?block_src_endpoint_out=does_not_exist",
+            )],
+            ..Config::default()
+        };
+        match config.validate() {
+            Err(Error::FilterReferencesUnknownEndpoint {
+                endpoint_name,
+                axis,
+                referenced_name,
+            }) => {
+                assert_eq!(endpoint_name, "radio");
+                assert_eq!(axis, "block_src_endpoint_out");
+                assert_eq!(referenced_name, "does_not_exist");
+            }
+            other => panic!("expected FilterReferencesUnknownEndpoint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_block_self_reference() {
+        // A `udps:`/`tcps:` listener self-references its own `#name` to stop
+        // its peers from forwarding to one another (they share that name).
+        let config = Config {
+            endpoints: vec![endpoint(
+                "tcps:0.0.0.0:5760#radio?block_src_endpoint_out=radio",
+            )],
+            ..Config::default()
+        };
+        config.validate().expect("self-reference must validate");
+    }
+
+    #[test]
+    fn validate_accepts_allow_self_reference() {
+        let config = Config {
+            endpoints: vec![
+                endpoint("udps:0.0.0.0:1#peer"),
+                endpoint("tcpc:gcs.local:5760#radio?allow_src_endpoint_out=peer,radio"),
+            ],
+            ..Config::default()
+        };
+        config.validate().expect("self-reference must validate");
     }
 
     #[test]

@@ -54,6 +54,8 @@ pub enum EndpointEvent {
 pub struct Routable {
     pub tx_queue: TxQueue,
     pub identity: IdentityFlags,
+    /// Source endpoint name used for egress filtering
+    pub endpoint_name: Arc<str>,
 }
 
 /// Why a child routing endpoint was torn down. Surfaced in logs so an

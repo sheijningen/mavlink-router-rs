@@ -13,7 +13,7 @@ pub use endpoint_kinds::{
     UdpClientEndpoint, UdpServerEndpoint,
 };
 pub use error::SpecError;
-pub(crate) use parse::name_matches_regex;
+pub(crate) use parse::validate_name_value;
 use parse::{parse_kind, split_body_name_query, validate_name};
 use query::parse_query_pairs;
 

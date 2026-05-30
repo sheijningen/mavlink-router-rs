@@ -76,7 +76,7 @@ pub async fn spawn_udps_with_endpoint(
 ) -> UdpsHarness {
     endpoint.bind_addr = pick_free_udp_addr();
     let parent_id = allocator.alloc();
-    let spec = UdpServerSpec::from_endpoint(endpoint, parent_id, name.to_string());
+    let spec = UdpServerSpec::from_endpoint(endpoint, parent_id, name.into());
     let harness = spawn_udps_with_spec(allocator, cancel, spec);
     wait_for_state(&harness.stats, EndpointState::Connected, "udps bind").await;
     harness

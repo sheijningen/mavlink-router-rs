@@ -10,7 +10,7 @@ pub enum SpecError {
     MissingScheme(String),
     #[error("unknown scheme '{0}' (valid: serial, udps, udpc, tcps, tcpc)")]
     UnknownScheme(String),
-    #[error("invalid endpoint name '{0}': must match [A-Za-z0-9_-]{{1,64}}")]
+    #[error("invalid endpoint name '{0}': must match [A-Za-z0-9_-]+")]
     InvalidName(String),
     #[error(
         "unknown query key '{key}' for scheme '{scheme}'{}",

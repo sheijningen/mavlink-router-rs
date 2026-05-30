@@ -49,6 +49,15 @@ pub enum Error {
 
     #[error("dedup_ms = {requested}ms exceeds maximum of {max}ms")]
     DedupMsTooLarge { requested: u64, max: u64 },
+
+    #[error(
+        "endpoint '{endpoint_name}' filter {axis}: '{referenced_name}' is not a declared endpoint name"
+    )]
+    FilterReferencesUnknownEndpoint {
+        endpoint_name: String,
+        axis: &'static str,
+        referenced_name: String,
+    },
 }
 
 fn fmt_toml_locator(index: &usize, name: Option<&str>) -> String {

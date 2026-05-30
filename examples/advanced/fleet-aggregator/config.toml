@@ -1,4 +1,4 @@
-# Three drones (sysids 1, 2, 3), one GCS at sysid 255.
+# Three drones, one GCS.
 # Stops broadcast telemetry from sibling drones leaking onto another
 # drone's uplink.
 #
@@ -22,7 +22,7 @@ type = "udpc"
 name = "drone1"
 host = "192.168.1.11"
 port = 14550
-allow_src_sys_out = "255"
+allow_src_endpoint_out = "gcs"
 
 # Uplink to drone 2.
 [[endpoints]]
@@ -30,7 +30,7 @@ type = "udpc"
 name = "drone2"
 host = "192.168.1.12"
 port = 14550
-allow_src_sys_out = "255"
+allow_src_endpoint_out = "gcs"
 
 # Uplink to drone 3.
 [[endpoints]]
@@ -38,7 +38,7 @@ type = "udpc"
 name = "drone3"
 host = "192.168.1.13"
 port = 14550
-allow_src_sys_out = "255"
+allow_src_endpoint_out = "gcs"
 
 # GCS over TCP.
 [[endpoints]]
@@ -48,7 +48,7 @@ bind = "0.0.0.0:5760"
 
 # Equivalent CLI invocation:
 #
-# rmr udpc:192.168.1.11:14550#drone1?allow_src_sys_out=255 \
-#     udpc:192.168.1.12:14550#drone2?allow_src_sys_out=255 \
-#     udpc:192.168.1.13:14550#drone3?allow_src_sys_out=255 \
+# rmr udpc:192.168.1.11:14550#drone1?allow_src_endpoint_out=gcs \
+#     udpc:192.168.1.12:14550#drone2?allow_src_endpoint_out=gcs \
+#     udpc:192.168.1.13:14550#drone3?allow_src_endpoint_out=gcs \
 #     tcps:0.0.0.0:5760#gcs

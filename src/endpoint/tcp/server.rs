@@ -26,7 +26,7 @@ use super::super::{EndpointId, peer_endpoint_name};
 pub struct TcpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,
-    pub parent_name: String,
+    pub parent_name: Arc<str>,
     pub reconnect_initial_ms: u64,
     pub reconnect_max_ms: u64,
     pub identity: IdentityFlags,
@@ -39,7 +39,7 @@ impl TcpServerSpec {
     pub fn from_endpoint(
         ep: TcpServerEndpoint,
         parent_id: EndpointId,
-        parent_name: String,
+        parent_name: Arc<str>,
     ) -> Self {
         Self {
             listen_addr: ep.bind_addr,
@@ -138,6 +138,7 @@ async fn accept_one_client(
             routable: Routable {
                 tx_queue: tx_queue.clone(),
                 identity: spec.identity.clone(),
+                endpoint_name: spec.parent_name.clone(),
             },
         })
         .await

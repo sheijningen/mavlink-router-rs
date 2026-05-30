@@ -36,7 +36,7 @@ async fn tcps_in_filter_blocks_msgid_at_session() {
         ..TcpServerEndpoint::default()
     };
     let parent_id = allocator.alloc();
-    let mut spec = TcpServerSpec::from_endpoint(endpoint, parent_id, "tcps-in-filter".to_string());
+    let mut spec = TcpServerSpec::from_endpoint(endpoint, parent_id, "tcps-in-filter".into());
     spec.identity = parent_identity;
     let mut harness = spawn_tcps_with_spec(&allocator, cancel.clone(), spec);
     wait_for_state(&harness.stats, EndpointState::Connected, "tcps bind").await;

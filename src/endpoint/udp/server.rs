@@ -69,7 +69,7 @@ struct PeerEntry {
 pub struct UdpServerSpec {
     pub listen_addr: SocketAddr,
     pub parent_id: EndpointId,
-    pub parent_name: String,
+    pub parent_name: Arc<str>,
     pub idle_secs: u64,
     pub peer_capacity: usize,
     pub reconnect_initial_ms: u64,
@@ -85,7 +85,7 @@ impl UdpServerSpec {
     pub fn from_endpoint(
         ep: UdpServerEndpoint,
         parent_id: EndpointId,
-        parent_name: String,
+        parent_name: Arc<str>,
     ) -> Self {
         Self {
             listen_addr: ep.bind_addr,
@@ -249,6 +249,7 @@ async fn admit_new_peer(
             routable: Routable {
                 tx_queue: tx_queue.clone(),
                 identity: ctx.spec.identity.clone(),
+                endpoint_name: ctx.spec.parent_name.clone(),
             },
         })
         .await
@@ -511,7 +512,7 @@ mod tests {
         let spec = UdpServerSpec {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             parent_id,
-            parent_name: "test".to_string(),
+            parent_name: Arc::from("test"),
             idle_secs: DEFAULT_IDLE_SECS,
             peer_capacity,
             reconnect_initial_ms: DEFAULT_RECONNECT_INITIAL_MS,

@@ -69,7 +69,7 @@ pub async fn spawn_tcps(
         ..TcpServerEndpoint::default()
     };
     let parent_id = allocator.alloc();
-    let spec = TcpServerSpec::from_endpoint(endpoint, parent_id, name.to_string());
+    let spec = TcpServerSpec::from_endpoint(endpoint, parent_id, name.into());
     let harness = spawn_tcps_with_spec(allocator, cancel, spec);
     wait_for_state(&harness.stats, EndpointState::Connected, "tcps bind").await;
     harness

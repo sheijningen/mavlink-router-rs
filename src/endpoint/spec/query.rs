@@ -601,7 +601,8 @@ mod tests {
     fn all_filter_keys_accepted_on_tcpc() {
         let query = "allow_msgid_in=1&block_msgid_in=2&allow_msgid_out=3&block_msgid_out=4\
                  &allow_src_sys_in=5&block_src_sys_in=6&allow_src_sys_out=7&block_src_sys_out=8\
-                 &allow_src_comp_in=9&block_src_comp_in=10&allow_src_comp_out=11&block_src_comp_out=12";
+                 &allow_src_comp_in=9&block_src_comp_in=10&allow_src_comp_out=11&block_src_comp_out=12\
+                 &allow_src_endpoint_out=alpha&block_src_endpoint_out=beta";
         let endpoint = as_tcpc(&parse_ok(&format!("tcpc:x:1?{query}"))).clone();
         assert_eq!(
             endpoint.identity.filters.allow_msgid_in,
@@ -651,6 +652,22 @@ mod tests {
             endpoint.identity.filters.block_src_comp_out,
             vec![U8Range::single(12)]
         );
+        let allow_names: Vec<&str> = endpoint
+            .identity
+            .filters
+            .allow_src_endpoint_out
+            .iter()
+            .map(|entry| entry.as_ref())
+            .collect();
+        assert_eq!(allow_names, vec!["alpha"]);
+        let block_names: Vec<&str> = endpoint
+            .identity
+            .filters
+            .block_src_endpoint_out
+            .iter()
+            .map(|entry| entry.as_ref())
+            .collect();
+        assert_eq!(block_names, vec!["beta"]);
     }
 
     #[test]

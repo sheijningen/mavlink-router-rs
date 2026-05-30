@@ -39,7 +39,7 @@ async fn tcps_attaches_when_pre_held_port_is_freed() {
         ..TcpServerEndpoint::default()
     };
     let parent_id = allocator.alloc();
-    let mut spec = TcpServerSpec::from_endpoint(endpoint, parent_id, "tcps".to_string());
+    let mut spec = TcpServerSpec::from_endpoint(endpoint, parent_id, "tcps".into());
     spec.reconnect_initial_ms = 50;
     spec.reconnect_max_ms = 250;
     let mut harness = spawn_tcps_with_spec(&allocator, cancel.clone(), spec);

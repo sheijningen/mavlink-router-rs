@@ -66,12 +66,7 @@ impl IdentityFlags {
                 Ok(true)
             }
             "group" => {
-                if !super::spec::name_matches_regex(value) {
-                    return Err(SpecError::InvalidQueryValue {
-                        key: "group",
-                        reason: format!("'{value}': must match [A-Za-z0-9_-]{{1,64}}"),
-                    });
-                }
+                super::spec::validate_name_value(value, "group")?;
                 self.group = Some(Arc::from(value));
                 Ok(true)
             }

@@ -39,7 +39,7 @@ async fn udps_peer_inherits_parent_identity() {
         ..UdpServerEndpoint::default()
     };
     let parent_id = allocator.alloc();
-    let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps-id".to_string());
+    let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps-id".into());
     spec.identity = parent_identity.clone();
     let mut harness = spawn_udps_with_spec(&allocator, cancel.clone(), spec);
     wait_for_state(&harness.stats, EndpointState::Connected, "udps bind").await;
@@ -79,7 +79,7 @@ async fn udps_peer_inherits_sniffer_flag_in_isolation() {
         ..UdpServerEndpoint::default()
     };
     let parent_id = allocator.alloc();
-    let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps-sniffer".to_string());
+    let mut spec = UdpServerSpec::from_endpoint(endpoint, parent_id, "udps-sniffer".into());
     spec.identity = parent_identity.clone();
     let mut harness = spawn_udps_with_spec(&allocator, cancel.clone(), spec);
     wait_for_state(&harness.stats, EndpointState::Connected, "udps bind").await;
