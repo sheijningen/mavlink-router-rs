@@ -1,9 +1,5 @@
 use std::time::Duration;
 
-#[cfg(unix)]
-use tokio::signal::unix::SignalKind;
-#[cfg(unix)]
-use tokio::signal::unix::signal;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -23,28 +19,79 @@ pub async fn watch_for_shutdown_signal(token: CancellationToken) {
         }
     };
 
-    #[cfg(unix)]
-    let sigterm = async {
-        match signal(SignalKind::terminate()) {
-            Ok(mut sigterm_stream) => {
-                sigterm_stream.recv().await;
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = wait_for_terminate() => {}
+        _ = token.cancelled() => return,
+    }
+    token.cancel();
+}
+
+/// Resolves on SIGTERM.
+#[cfg(unix)]
+async fn wait_for_terminate() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    match signal(SignalKind::terminate()) {
+        Ok(mut sigterm_stream) => {
+            sigterm_stream.recv().await;
+        }
+        Err(err) => {
+            warn!(error = %err, "SIGTERM handler install failed");
+            std::future::pending::<()>().await
+        }
+    }
+}
+
+/// Resolves on any Windows termination event.
+#[cfg(windows)]
+async fn wait_for_terminate() {
+    use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_shutdown};
+
+    let close_event = async {
+        match ctrl_close() {
+            Ok(mut stream) => {
+                stream.recv().await;
             }
             Err(err) => {
-                warn!(error = %err, "SIGTERM handler install failed");
+                warn!(error = %err, "CTRL_CLOSE handler install failed");
+                std::future::pending::<()>().await
+            }
+        }
+    };
+    let shutdown_event = async {
+        match ctrl_shutdown() {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(err) => {
+                warn!(error = %err, "CTRL_SHUTDOWN handler install failed");
+                std::future::pending::<()>().await
+            }
+        }
+    };
+    let break_event = async {
+        match ctrl_break() {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(err) => {
+                warn!(error = %err, "CTRL_BREAK handler install failed");
                 std::future::pending::<()>().await
             }
         }
     };
 
-    #[cfg(not(unix))]
-    let sigterm = std::future::pending::<()>();
-
     tokio::select! {
-        _ = ctrl_c => {}
-        _ = sigterm => {}
-        _ = token.cancelled() => return,
+        _ = close_event => {}
+        _ = shutdown_event => {}
+        _ = break_event => {}
     }
-    token.cancel();
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn wait_for_terminate() {
+    std::future::pending::<()>().await
 }
 
 /// Two-tier drain. Phase 1 waits up to [`PER_TASK_DRAIN`] (capped by
@@ -184,6 +231,30 @@ mod tests {
             "well-behaved tasks should drain before the per-task deadline"
         );
         assert_eq!(counter.load(Ordering::Relaxed), 3);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_termination_handlers_install() {
+        use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_shutdown};
+
+        assert!(ctrl_close().is_ok(), "CTRL_CLOSE handler failed to install");
+        assert!(
+            ctrl_shutdown().is_ok(),
+            "CTRL_SHUTDOWN handler failed to install"
+        );
+        assert!(ctrl_break().is_ok(), "CTRL_BREAK handler failed to install");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn terminate_future_pends_without_signal() {
+        // With no termination event delivered, the future must not resolve,
+        // leaving Ctrl+C / the cancel token as the live exit paths.
+        let pended = tokio::time::timeout(Duration::from_millis(100), wait_for_terminate())
+            .await
+            .is_err();
+        assert!(pended, "wait_for_terminate resolved without a signal");
     }
 
     #[tokio::test]
