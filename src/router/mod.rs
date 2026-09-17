@@ -12,6 +12,7 @@ pub mod learn;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use bytes::Bytes;
 use decide::{Decision, decide as decide_for_dest};
@@ -20,7 +21,7 @@ use group::GroupRegistry;
 use learn::LearnTable;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::time::Instant;
+use tokio::time::{Instant, timeout_at};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info_span, trace, warn};
 
@@ -87,7 +88,7 @@ pub struct RouterWiring {
 
 /// Mutable state owned by the router task: the unified endpoint registry,
 /// the shared-learn-set side-table for `?group=`-tagged endpoints, the
-/// global dedup window, and the fire-and-forget channel to the stats task.
+/// global dedup window, and the forwarder to the stats task.
 /// Wrapped in a struct so `handle_event` / `handle_frame` / `shutdown_sweep`
 /// become `&mut self` methods and field-disjoint borrows fall out
 /// naturally (handle_frame uses this to do a single `routing.get_mut`
@@ -96,8 +97,7 @@ struct Router {
     routing: HashMap<EndpointId, RegisteredEndpoint>,
     groups: GroupRegistry,
     dedup: DedupWindow,
-    stats_event_tx: mpsc::Sender<StatsEvent>,
-    stats_events_dropped: u64,
+    stats: StatsForwarder,
 }
 
 impl Router {
@@ -113,20 +113,7 @@ impl Router {
                 std::time::Duration::from_millis(dedup_ms),
                 dedup_window_capacity,
             ),
-            stats_event_tx,
-            stats_events_dropped: 0,
-        }
-    }
-
-    /// Never awaited: a full channel drops the event so stats output can't hold up routing.
-    fn forward_stats(&mut self, event: StatsEvent) {
-        if let Err(TrySendError::Full(event)) = self.stats_event_tx.try_send(event) {
-            self.stats_events_dropped += 1;
-            warn!(
-                id = %event.id(),
-                dropped_total = self.stats_events_dropped,
-                "stats channel full; dropping lifecycle event"
-            );
+            stats: StatsForwarder::new(stats_event_tx),
         }
     }
 
@@ -158,12 +145,14 @@ impl Router {
                 routable: routable_state,
             },
         );
-        self.forward_stats(StatsEvent::Register {
-            id,
-            name,
-            stats,
-            routable,
-        });
+        self.stats
+            .forward(StatsEvent::Register {
+                id,
+                name,
+                stats,
+                routable,
+            })
+            .await;
     }
 
     async fn handle_event(&mut self, event: EndpointEvent) {
@@ -211,7 +200,9 @@ impl Router {
                     entry.stats.store_state(final_state);
                     debug!(%child_id, %parent_id, ?reason, ?final_state, "peer removed");
                 }
-                self.forward_stats(StatsEvent::Finalize { id: child_id });
+                self.stats
+                    .forward(StatsEvent::Finalize { id: child_id })
+                    .await;
             }
         }
     }
@@ -245,8 +236,7 @@ impl Router {
             routing,
             groups,
             dedup,
-            stats_event_tx: _,
-            stats_events_dropped: _,
+            stats: _,
         } = self;
 
         let Some(src_entry) = routing.get_mut(&src_id) else {
@@ -355,7 +345,7 @@ impl Router {
 
     async fn shutdown_sweep(&mut self) {
         // Survivors here missed their PeerRemoved before cancel.
-        for (id, entry) in std::mem::take(&mut self.routing) {
+        for (id, entry) in self.routing.drain() {
             entry.stats.store_state(EndpointState::Down);
             trace!(
                 %id,
@@ -363,8 +353,51 @@ impl Router {
                 routable = entry.routable.is_some(),
                 "shutdown finalize"
             );
-            self.forward_stats(StatsEvent::Finalize { id });
+            self.stats.forward(StatsEvent::Finalize { id }).await;
         }
+    }
+}
+
+/// Post-cancel budget for stats sends to find channel room; stays under the
+/// stats task's own post-cancel drain so it cannot hold the router past that.
+const SHUTDOWN_STATS_SEND_BUDGET: Duration = Duration::from_secs(1);
+
+/// Router side of the stats channel: drops on a full channel while routing,
+/// waits for room until the shutdown deadline once it is armed.
+struct StatsForwarder {
+    tx: mpsc::Sender<StatsEvent>,
+    shutdown_deadline: Option<Instant>,
+    dropped: u64,
+}
+
+impl StatsForwarder {
+    fn new(tx: mpsc::Sender<StatsEvent>) -> Self {
+        Self {
+            tx,
+            shutdown_deadline: None,
+            dropped: 0,
+        }
+    }
+
+    fn arm_shutdown_deadline(&mut self) {
+        self.shutdown_deadline = Some(Instant::now() + SHUTDOWN_STATS_SEND_BUDGET);
+    }
+
+    async fn forward(&mut self, event: StatsEvent) {
+        let id = event.id();
+        let no_room = match self.shutdown_deadline {
+            None => matches!(self.tx.try_send(event), Err(TrySendError::Full(_))),
+            Some(deadline) => timeout_at(deadline, self.tx.send(event)).await.is_err(),
+        };
+        if !no_room {
+            return;
+        }
+        self.dropped += 1;
+        warn!(
+            %id,
+            dropped_total = self.dropped,
+            "stats channel full; dropping lifecycle event"
+        );
     }
 }
 
@@ -406,6 +439,7 @@ async fn run_inner(wiring: RouterWiring) {
     // Drain in-flight lifecycle events sent between cancel firing and
     // `event_rx` being dropped, so the stats mirror reflects the right
     // final state for sub-endpoints torn down in the drain window.
+    router.stats.arm_shutdown_deadline();
     while let Ok(event) = event_rx.try_recv() {
         router.handle_event(event).await;
     }
@@ -516,8 +550,9 @@ mod tests {
         (router, stats_event_rx)
     }
 
-    /// Pop every currently-queued `StatsEvent` off the receiver; the router
-    /// only try_sends, so every emission has landed once `handle_*` returns.
+    /// Pop every currently-queued `StatsEvent` off the receiver; with no
+    /// shutdown deadline armed the router only try_sends, so every emission
+    /// has landed once `handle_*` returns.
     fn drain_stats(rx: &mut mpsc::Receiver<StatsEvent>) -> Vec<StatsEvent> {
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
@@ -610,7 +645,7 @@ mod tests {
             .expect("registration awaited the full stats channel");
         }
         assert_eq!(router.routing.len(), 3);
-        assert_eq!(router.stats_events_dropped, 2);
+        assert_eq!(router.stats.dropped, 2);
 
         let body = Bytes::from_static(b"hello");
         router.handle_frame(RouterFrame {
@@ -639,11 +674,47 @@ mod tests {
         assert!(router.routing.is_empty());
         assert_eq!(src.stats.load_state(), EndpointState::Down);
         assert_eq!(extra.stats.load_state(), EndpointState::Down);
-        assert_eq!(router.stats_events_dropped, 5);
+        assert_eq!(router.stats.dropped, 5);
 
         let delivered = drain_stats(&mut stats_rx);
         assert_eq!(delivered.len(), 1);
         assert!(matches!(delivered[0], StatsEvent::Register { id, .. } if id == src.id));
+    }
+
+    #[tokio::test]
+    async fn shutdown_sweep_waits_for_stats_channel_room() {
+        // One slot with a consumer that only runs while the router awaits:
+        // every sweep Finalize must still land once the deadline is armed.
+        let (stats_event_tx, mut stats_rx) = mpsc::channel::<StatsEvent>(1);
+        let mut router = Router::new(stats_event_tx, 0, 16);
+        let alloc = EndpointIdAllocator::new();
+        let endpoints: Vec<EndpointFixture> = (0..5).map(|_| make_endpoint(&alloc, true)).collect();
+        for (index, fixture) in endpoints.iter().enumerate() {
+            router
+                .handle_event(endpoint_added(fixture, &format!("ep{index}")))
+                .await;
+        }
+        drain_stats(&mut stats_rx);
+
+        let consumer = tokio::spawn(async move {
+            let mut finalized = Vec::new();
+            while let Some(event) = stats_rx.recv().await {
+                if let StatsEvent::Finalize { id } = event {
+                    finalized.push(id);
+                }
+            }
+            finalized
+        });
+
+        router.stats.arm_shutdown_deadline();
+        router.shutdown_sweep().await;
+        drop(router);
+
+        let mut finalized = consumer.await.expect("consumer panicked");
+        let mut expected: Vec<EndpointId> = endpoints.iter().map(|fixture| fixture.id).collect();
+        finalized.sort();
+        expected.sort();
+        assert_eq!(finalized, expected);
     }
 
     #[tokio::test]
