@@ -10,6 +10,10 @@ under `### Changed` so a reader can spot the break without diffing the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- `--stats` no longer stalls routing when a consumer stops reading stdout.
+
 ## [0.2.0] - 2026-05-30
 
 ### Added
