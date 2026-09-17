@@ -40,7 +40,8 @@ impl StatsEvent {
 }
 
 /// Post-cancel budget for a [`StatsHandle`] send to find channel room; stays
-/// under [`super::task::POST_CANCEL_DRAIN`] so a starved stats task cannot hold the router.
+/// under the stats task's `POST_CANCEL_DRAIN` so every send the router still
+/// attempts lands while the task is receiving.
 const SHUTDOWN_STATS_SEND_BUDGET: Duration = Duration::from_secs(1);
 
 /// The router's handle to the stats task, created by [`channel`]. While
@@ -94,6 +95,7 @@ impl StatsHandle {
         self.dropped += 1;
         warn!(
             %id,
+            shutdown = self.shutdown_deadline.is_some(),
             dropped_total = self.dropped,
             "stats channel full; dropping lifecycle event"
         );

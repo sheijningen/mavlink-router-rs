@@ -115,7 +115,7 @@ where
 /// if these two equal each other, the harness aborts before the final
 /// `LineWriter::drain` writes get any wall-clock slack and authoritative
 /// synthetic lines vanish.
-pub(super) const POST_CANCEL_DRAIN: Duration = Duration::from_millis(1500);
+const POST_CANCEL_DRAIN: Duration = Duration::from_millis(1500);
 
 /// Either await the interval timer or park forever on a `pending` future.
 /// `interval.as_mut()` lets the same select! arm work whether stats are
