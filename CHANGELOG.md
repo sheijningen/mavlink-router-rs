@@ -10,11 +10,14 @@ under `### Changed` so a reader can spot the break without diffing the code.
 
 ## [Unreleased]
 
+### Added
+
+- Raw stats channels replaced by
+  `StatsHandle` to send and `StatsInbox` to receive, which encapsulate the sending behavior of the channels.
+
 ### Fixed
 
 - `--stats` no longer stalls routing when a consumer stops reading stdout.
-- With `--stats`, endpoints added or removed while a consumer stalls stdout
-  still appear correctly in later output.
 
 ## [0.2.0] - 2026-05-30
 
