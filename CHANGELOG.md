@@ -13,6 +13,8 @@ under `### Changed` so a reader can spot the break without diffing the code.
 ### Fixed
 
 - `--stats` no longer stalls routing when a consumer stops reading stdout.
+- With `--stats`, endpoints added or removed while a consumer stalls stdout
+  still appear correctly in later output.
 
 ## [0.2.0] - 2026-05-30
 
