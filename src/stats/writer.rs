@@ -13,7 +13,7 @@ struct InFlightLine {
     written: usize,
 }
 
-/// Stdout sink that advances one `write` call per step.
+/// Stdout sink; each step issues one `write` call so event intake never waits on a line.
 pub(super) struct LineWriter<W> {
     writer: W,
     in_flight: Option<InFlightLine>,
@@ -63,7 +63,7 @@ where
         let Some(line) = self.in_flight.as_mut() else {
             return;
         };
-        // A failed write may leave a fragment; stop rather than append to it.
+        // Only a dead stdout stops output; any other error costs the current line.
         match self.writer.write(&line.bytes[line.written..]).await {
             Ok(0) => {
                 warn!("stats stdout accepted no bytes; suppressing further stats output");
@@ -83,8 +83,7 @@ where
                 self.in_flight = None;
             }
             Err(err) => {
-                warn!(error = %err, "stats stdout write failed; suppressing further stats output");
-                self.output_failed = true;
+                warn!(error = %err, "stats stdout write failed; dropping line");
                 self.in_flight = None;
             }
         }
