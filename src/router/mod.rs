@@ -19,9 +19,10 @@ use dedup::DedupWindow;
 use group::GroupRegistry;
 use learn::LearnTable;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info_span, trace};
+use tracing::{Instrument, debug, info_span, trace, warn};
 
 use crate::endpoint::EndpointId;
 use crate::endpoint::events::{EndpointEvent, PeerRemovalReason, Routable, RouterFrame};
@@ -96,6 +97,7 @@ struct Router {
     groups: GroupRegistry,
     dedup: DedupWindow,
     stats_event_tx: mpsc::Sender<StatsEvent>,
+    stats_events_dropped: u64,
 }
 
 impl Router {
@@ -112,6 +114,19 @@ impl Router {
                 dedup_window_capacity,
             ),
             stats_event_tx,
+            stats_events_dropped: 0,
+        }
+    }
+
+    /// Never awaited: a full channel drops the event so stats output can't hold up routing.
+    fn forward_stats(&mut self, event: StatsEvent) {
+        if let Err(TrySendError::Full(event)) = self.stats_event_tx.try_send(event) {
+            self.stats_events_dropped += 1;
+            warn!(
+                id = %event.id(),
+                dropped_total = self.stats_events_dropped,
+                "stats channel full; dropping lifecycle event"
+            );
         }
     }
 
@@ -143,15 +158,12 @@ impl Router {
                 routable: routable_state,
             },
         );
-        let _ = self
-            .stats_event_tx
-            .send(StatsEvent::Register {
-                id,
-                name,
-                stats,
-                routable,
-            })
-            .await;
+        self.forward_stats(StatsEvent::Register {
+            id,
+            name,
+            stats,
+            routable,
+        });
     }
 
     async fn handle_event(&mut self, event: EndpointEvent) {
@@ -199,10 +211,7 @@ impl Router {
                     entry.stats.store_state(final_state);
                     debug!(%child_id, %parent_id, ?reason, ?final_state, "peer removed");
                 }
-                let _ = self
-                    .stats_event_tx
-                    .send(StatsEvent::Finalize { id: child_id })
-                    .await;
+                self.forward_stats(StatsEvent::Finalize { id: child_id });
             }
         }
     }
@@ -237,6 +246,7 @@ impl Router {
             groups,
             dedup,
             stats_event_tx: _,
+            stats_events_dropped: _,
         } = self;
 
         let Some(src_entry) = routing.get_mut(&src_id) else {
@@ -345,7 +355,7 @@ impl Router {
 
     async fn shutdown_sweep(&mut self) {
         // Survivors here missed their PeerRemoved before cancel.
-        for (id, entry) in self.routing.drain() {
+        for (id, entry) in std::mem::take(&mut self.routing) {
             entry.stats.store_state(EndpointState::Down);
             trace!(
                 %id,
@@ -353,7 +363,7 @@ impl Router {
                 routable = entry.routable.is_some(),
                 "shutdown finalize"
             );
-            let _ = self.stats_event_tx.send(StatsEvent::Finalize { id }).await;
+            self.forward_stats(StatsEvent::Finalize { id });
         }
     }
 }
@@ -405,8 +415,10 @@ async fn run_inner(wiring: RouterWiring) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
 
     use bytes::Bytes;
+    use tokio::time::timeout;
 
     use super::*;
     use crate::endpoint::EndpointIdAllocator;
@@ -504,10 +516,8 @@ mod tests {
         (router, stats_event_rx)
     }
 
-    /// Pop every currently-queued `StatsEvent` off the receiver. Safe to
-    /// call after any `handle_event` / `shutdown_sweep` because those
-    /// methods complete the `send().await` synchronously (capacity 64
-    /// always has room in a unit test).
+    /// Pop every currently-queued `StatsEvent` off the receiver; the router
+    /// only try_sends, so every emission has landed once `handle_*` returns.
     fn drain_stats(rx: &mut mpsc::Receiver<StatsEvent>) -> Vec<StatsEvent> {
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
@@ -579,6 +589,61 @@ mod tests {
             src.tx_queue.pop().is_none(),
             "src must not receive its own frame"
         );
+    }
+
+    #[tokio::test]
+    async fn full_stats_channel_never_blocks_registration_or_routing() {
+        // One slot and no consumer: every event after the first must be
+        // dropped, not awaited. A regression hangs, hence the timeouts.
+        let (stats_event_tx, mut stats_rx) = mpsc::channel::<StatsEvent>(1);
+        let mut router = Router::new(stats_event_tx, 0, 16);
+        let alloc = EndpointIdAllocator::new();
+        let src = make_endpoint(&alloc, true);
+        let dst = make_endpoint(&alloc, true);
+        let extra = make_endpoint(&alloc, true);
+        for (fixture, name) in [(&src, "src"), (&dst, "dst"), (&extra, "extra")] {
+            timeout(
+                Duration::from_secs(1),
+                router.handle_event(endpoint_added(fixture, name)),
+            )
+            .await
+            .expect("registration awaited the full stats channel");
+        }
+        assert_eq!(router.routing.len(), 3);
+        assert_eq!(router.stats_events_dropped, 2);
+
+        let body = Bytes::from_static(b"hello");
+        router.handle_frame(RouterFrame {
+            endpoint_id: src.id,
+            frame: body.clone(),
+            header: header(7, 1, None),
+        });
+        assert_eq!(dst.tx_queue.pop(), Some(body.clone()));
+        assert_eq!(extra.tx_queue.pop(), Some(body));
+
+        timeout(
+            Duration::from_secs(1),
+            router.handle_event(EndpointEvent::PeerRemoved {
+                parent_id: src.id,
+                child_id: dst.id,
+                reason: PeerRemovalReason::Disconnected,
+            }),
+        )
+        .await
+        .expect("removal awaited the full stats channel");
+        assert_eq!(router.routing.len(), 2);
+
+        timeout(Duration::from_secs(1), router.shutdown_sweep())
+            .await
+            .expect("shutdown sweep awaited the full stats channel");
+        assert!(router.routing.is_empty());
+        assert_eq!(src.stats.load_state(), EndpointState::Down);
+        assert_eq!(extra.stats.load_state(), EndpointState::Down);
+        assert_eq!(router.stats_events_dropped, 5);
+
+        let delivered = drain_stats(&mut stats_rx);
+        assert_eq!(delivered.len(), 1);
+        assert!(matches!(delivered[0], StatsEvent::Register { id, .. } if id == src.id));
     }
 
     #[tokio::test]

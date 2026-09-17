@@ -21,8 +21,7 @@ use crate::endpoint::stats::{EndpointState, EndpointStats};
 /// Stats-task bounded queue depth; drop-oldest on slow/dead stdout consumer.
 pub const DEFAULT_STATS_QUEUE_LINES: usize = 256;
 
-/// One lifecycle message from the router to the stats task. Forwarded
-/// fire-and-forget — the router never awaits a stats-task acknowledgement.
+/// One lifecycle message from the router to the stats task.
 #[derive(Debug)]
 pub enum StatsEvent {
     Register {
@@ -39,6 +38,14 @@ pub enum StatsEvent {
     Finalize {
         id: EndpointId,
     },
+}
+
+impl StatsEvent {
+    pub fn id(&self) -> EndpointId {
+        match self {
+            Self::Register { id, .. } | Self::Finalize { id } => *id,
+        }
+    }
 }
 
 /// One row of the stats task's registry mirror — the name + stats handle
@@ -152,7 +159,7 @@ fn build_line(name: &str, stats: &EndpointStats, ts: String, routable: bool) -> 
 }
 
 /// Run the stats task until the cancellation token fires. Maintains the
-/// registry mirror in lockstep with router-emitted `Register`/`Finalize`
+/// registry mirror from router-emitted `Register`/`Finalize`
 /// events, and — when `cfg.enabled` is true — emits one JSON line per
 /// registered endpoint per interval to `writer`. The writer is parameterised
 /// so production wires `tokio::io::stdout()` while tests pass an in-memory
