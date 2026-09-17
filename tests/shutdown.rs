@@ -26,7 +26,7 @@ use rmr::router::{
     RouterWiring, {self},
 };
 use rmr::stats::{
-    StatsEvent, StatsRunConfig, {self as stats_task},
+    StatsRunConfig, {self as stats_task},
 };
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc;
@@ -46,7 +46,7 @@ fn spawn_router() -> RouterHarness {
     let cancel = CancellationToken::new();
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(64);
     let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(16);
-    let (stats_event_tx, stats_event_rx) = mpsc::channel::<StatsEvent>(16);
+    let (stats_handle, stats_inbox) = stats_task::channel(16);
 
     let router_task = {
         let cancel = cancel.clone();
@@ -54,7 +54,7 @@ fn spawn_router() -> RouterHarness {
             router::run(RouterWiring {
                 frame_rx,
                 event_rx,
-                stats_event_tx,
+                stats: stats_handle,
                 cancel,
                 dedup_ms: 0,
                 dedup_window_capacity: 16,
@@ -70,7 +70,7 @@ fn spawn_router() -> RouterHarness {
             queue_capacity: 8,
         };
         let writer = tokio::io::sink();
-        tokio::spawn(async move { stats_task::run(stats_event_rx, cancel, config, writer).await })
+        tokio::spawn(async move { stats_task::run(stats_inbox, cancel, config, writer).await })
     };
 
     RouterHarness {

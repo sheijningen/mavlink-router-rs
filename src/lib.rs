@@ -24,7 +24,7 @@ use crate::endpoint::spawn::spawn_endpoints;
 use crate::endpoint::spec::{EndpointKind, EndpointSpec};
 use crate::endpoint::udp::server::DEFAULT_PEER_CAPACITY;
 use crate::router::RouterWiring;
-use crate::stats::{DEFAULT_STATS_QUEUE_LINES, StatsEvent, StatsRunConfig};
+use crate::stats::{DEFAULT_STATS_QUEUE_LINES, StatsInbox, StatsRunConfig};
 
 /// Shared reader→router mpsc capacity. Senders `await` on full so
 /// backpressure flows to readers instead of dropping frames.
@@ -69,7 +69,7 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
 
     let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(INGRESS_QUEUE_FRAMES);
     let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(event_q_cap);
-    let (stats_event_tx, stats_event_rx) = mpsc::channel::<StatsEvent>(stats_q_cap);
+    let (stats_handle, stats_inbox) = stats::channel(stats_q_cap);
 
     let mut tasks: JoinSet<()> = JoinSet::new();
 
@@ -78,7 +78,7 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
         RouterWiring {
             frame_rx,
             event_rx,
-            stats_event_tx,
+            stats: stats_handle,
             cancel: token.clone(),
             dedup_ms,
             dedup_window_capacity: DEFAULT_DEDUP_WINDOW_CAPACITY,
@@ -86,7 +86,7 @@ pub async fn run(cfg: Config, token: CancellationToken) -> Result<(), Error> {
     );
     spawn_stats(
         &mut tasks,
-        stats_event_rx,
+        stats_inbox,
         token.clone(),
         StatsRunConfig {
             enabled: stats,
@@ -176,14 +176,14 @@ fn spawn_router(tasks: &mut JoinSet<()>, wiring: RouterWiring) {
 
 fn spawn_stats(
     tasks: &mut JoinSet<()>,
-    stats_event_rx: mpsc::Receiver<StatsEvent>,
+    stats_inbox: StatsInbox,
     cancel: CancellationToken,
     cfg: StatsRunConfig,
 ) {
     let span = info_span!("stats");
     tasks.spawn(
         async move {
-            stats::run(stats_event_rx, cancel, cfg, tokio::io::stdout()).await;
+            stats::run(stats_inbox, cancel, cfg, tokio::io::stdout()).await;
         }
         .instrument(span),
     );

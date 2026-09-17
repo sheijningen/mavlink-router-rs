@@ -11,7 +11,8 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
-use tokio::time::MissedTickBehavior;
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::time::{Instant, MissedTickBehavior, timeout_at};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
@@ -21,9 +22,9 @@ use crate::endpoint::stats::{EndpointState, EndpointStats};
 /// Stats-task bounded queue depth; drop-oldest on slow/dead stdout consumer.
 pub const DEFAULT_STATS_QUEUE_LINES: usize = 256;
 
-/// One lifecycle message from the router to the stats task.
+/// One lifecycle message carried from a [`StatsHandle`] to the stats task.
 #[derive(Debug)]
-pub enum StatsEvent {
+pub(crate) enum StatsEvent {
     Register {
         id: EndpointId,
         name: String,
@@ -41,11 +42,101 @@ pub enum StatsEvent {
 }
 
 impl StatsEvent {
-    pub fn id(&self) -> EndpointId {
+    fn id(&self) -> EndpointId {
         match self {
             Self::Register { id, .. } | Self::Finalize { id } => *id,
         }
     }
+}
+
+/// Post-cancel budget for a [`StatsHandle`] send to find channel room; stays
+/// under [`POST_CANCEL_DRAIN`] so a starved stats task cannot hold the router.
+const SHUTDOWN_STATS_SEND_BUDGET: Duration = Duration::from_secs(1);
+
+/// The router's handle to the stats task, created by [`channel`]. While
+/// routing a full channel drops the event; once the shutdown deadline is
+/// armed, sends wait for room until it passes.
+pub struct StatsHandle {
+    tx: mpsc::Sender<StatsEvent>,
+    shutdown_deadline: Option<Instant>,
+    dropped: u64,
+}
+
+impl StatsHandle {
+    pub(crate) async fn register(
+        &mut self,
+        id: EndpointId,
+        name: String,
+        stats: Arc<EndpointStats>,
+        routable: bool,
+    ) {
+        self.forward(StatsEvent::Register {
+            id,
+            name,
+            stats,
+            routable,
+        })
+        .await;
+    }
+
+    pub(crate) async fn finalize(&mut self, id: EndpointId) {
+        self.forward(StatsEvent::Finalize { id }).await;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    pub(crate) fn arm_shutdown_deadline(&mut self) {
+        self.shutdown_deadline = Some(Instant::now() + SHUTDOWN_STATS_SEND_BUDGET);
+    }
+
+    async fn forward(&mut self, event: StatsEvent) {
+        let id = event.id();
+        let no_room = match self.shutdown_deadline {
+            None => matches!(self.tx.try_send(event), Err(TrySendError::Full(_))),
+            Some(deadline) => timeout_at(deadline, self.tx.send(event)).await.is_err(),
+        };
+        if !no_room {
+            return;
+        }
+        self.dropped += 1;
+        warn!(
+            %id,
+            dropped_total = self.dropped,
+            "stats channel full; dropping lifecycle event"
+        );
+    }
+}
+
+/// Receiving half of the stats channel; only [`run`] reads it.
+pub struct StatsInbox {
+    rx: mpsc::Receiver<StatsEvent>,
+}
+
+#[cfg(test)]
+impl StatsInbox {
+    pub(crate) fn try_recv(&mut self) -> Option<StatsEvent> {
+        self.rx.try_recv().ok()
+    }
+
+    pub(crate) async fn recv(&mut self) -> Option<StatsEvent> {
+        self.rx.recv().await
+    }
+}
+
+/// Create the bounded channel between the router and the stats task.
+pub fn channel(capacity: usize) -> (StatsHandle, StatsInbox) {
+    let (tx, rx) = mpsc::channel(capacity);
+    (
+        StatsHandle {
+            tx,
+            shutdown_deadline: None,
+            dropped: 0,
+        },
+        StatsInbox { rx },
+    )
 }
 
 /// One row of the stats task's registry mirror — the name + stats handle
@@ -164,14 +255,11 @@ fn build_line(name: &str, stats: &EndpointStats, ts: String, routable: bool) -> 
 /// registered endpoint per interval to `writer`. The writer is parameterised
 /// so production wires `tokio::io::stdout()` while tests pass an in-memory
 /// duplex stream.
-pub async fn run<W>(
-    mut event_rx: mpsc::Receiver<StatsEvent>,
-    cancel: CancellationToken,
-    cfg: StatsRunConfig,
-    writer: W,
-) where
+pub async fn run<W>(inbox: StatsInbox, cancel: CancellationToken, cfg: StatsRunConfig, writer: W)
+where
     W: AsyncWrite + Send + Unpin,
 {
+    let mut event_rx = inbox.rx;
     let mut registry: HashMap<EndpointId, RegisteredEndpoint> = HashMap::new();
     let mut queue: VecDeque<QueueEntry> = VecDeque::new();
     let mut total_dropped: u64 = 0;
@@ -708,7 +796,12 @@ mod tests {
         let (tx, rx) = mpsc::channel::<StatsEvent>(4);
         let cancel = CancellationToken::new();
         let (writer, _reader) = duplex(1024);
-        let handle = tokio::spawn(run(rx, cancel.clone(), disabled_config(), writer));
+        let handle = tokio::spawn(run(
+            StatsInbox { rx },
+            cancel.clone(),
+            disabled_config(),
+            writer,
+        ));
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(3), handle)
             .await
@@ -723,7 +816,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (writer, mut reader) = duplex(4096);
         let cfg = enabled_config(60_000, 32); // interval long enough not to fire
-        let handle = tokio::spawn(run(rx, cancel.clone(), cfg, writer));
+        let handle = tokio::spawn(run(StatsInbox { rx }, cancel.clone(), cfg, writer));
 
         let alloc = EndpointIdAllocator::new();
         let id = alloc.alloc();
@@ -761,7 +854,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<StatsEvent>(4);
         let cancel = CancellationToken::new();
         let (writer, _reader) = duplex(1024);
-        let handle = tokio::spawn(run(rx, cancel, disabled_config(), writer));
+        let handle = tokio::spawn(run(StatsInbox { rx }, cancel, disabled_config(), writer));
         drop(tx);
         tokio::time::timeout(Duration::from_secs(1), handle)
             .await
@@ -774,7 +867,12 @@ mod tests {
         let (tx, rx) = mpsc::channel::<StatsEvent>(8);
         let cancel = CancellationToken::new();
         let (writer, mut reader) = duplex(4096);
-        let handle = tokio::spawn(run(rx, cancel.clone(), disabled_config(), writer));
+        let handle = tokio::spawn(run(
+            StatsInbox { rx },
+            cancel.clone(),
+            disabled_config(),
+            writer,
+        ));
 
         let alloc = EndpointIdAllocator::new();
         let id = alloc.alloc();
@@ -811,7 +909,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (writer, mut reader) = duplex(8192);
         let cfg = enabled_config(100, 32);
-        let handle = tokio::spawn(run(rx, cancel.clone(), cfg, writer));
+        let handle = tokio::spawn(run(StatsInbox { rx }, cancel.clone(), cfg, writer));
 
         let alloc = EndpointIdAllocator::new();
         let id_a = alloc.alloc();
@@ -866,7 +964,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (writer, mut reader) = duplex(4096);
         let cfg = enabled_config(100, 32);
-        let handle = tokio::spawn(run(rx, cancel.clone(), cfg, writer));
+        let handle = tokio::spawn(run(StatsInbox { rx }, cancel.clone(), cfg, writer));
 
         let alloc = EndpointIdAllocator::new();
         let id = alloc.alloc();
@@ -914,7 +1012,7 @@ mod tests {
         // High interval so only the synthetic Finalize line lands on stdout
         // (the cancel drain flushes the queue regardless of interval).
         let cfg = enabled_config(60_000, 32);
-        let handle = tokio::spawn(run(rx, cancel.clone(), cfg, writer));
+        let handle = tokio::spawn(run(StatsInbox { rx }, cancel.clone(), cfg, writer));
 
         let alloc = EndpointIdAllocator::new();
         let id = alloc.alloc();
@@ -957,7 +1055,7 @@ mod tests {
         let (writer, reader) = duplex(64);
         drop(reader); // Closing the reader half forces BrokenPipe on the next write.
         let cfg = enabled_config(10, 32);
-        let handle = tokio::spawn(run(rx, cancel.clone(), cfg, writer));
+        let handle = tokio::spawn(run(StatsInbox { rx }, cancel.clone(), cfg, writer));
 
         let alloc = EndpointIdAllocator::new();
         let id = alloc.alloc();
@@ -984,7 +1082,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (writer, reader) = duplex(16);
         let cfg = enabled_config(100, 8);
-        let handle = tokio::spawn(run(rx, cancel.clone(), cfg, writer));
+        let handle = tokio::spawn(run(StatsInbox { rx }, cancel.clone(), cfg, writer));
 
         let alloc = EndpointIdAllocator::new();
         let id = alloc.alloc();
@@ -1034,7 +1132,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (writer, mut reader) = duplex(16);
         let cfg = enabled_config(60_000, 64);
-        let handle = tokio::spawn(run(rx, cancel.clone(), cfg, writer));
+        let handle = tokio::spawn(run(StatsInbox { rx }, cancel.clone(), cfg, writer));
         let collector = tokio::spawn(async move {
             let mut out = Vec::new();
             reader.read_to_end(&mut out).await.expect("read_to_end");

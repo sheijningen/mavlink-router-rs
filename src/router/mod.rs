@@ -12,7 +12,6 @@ pub mod learn;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use bytes::Bytes;
 use decide::{Decision, decide as decide_for_dest};
@@ -20,10 +19,9 @@ use dedup::DedupWindow;
 use group::GroupRegistry;
 use learn::LearnTable;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::TrySendError;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info_span, trace, warn};
+use tracing::{Instrument, debug, info_span, trace};
 
 use crate::endpoint::EndpointId;
 use crate::endpoint::events::{EndpointEvent, PeerRemovalReason, Routable, RouterFrame};
@@ -31,7 +29,7 @@ use crate::endpoint::identity_flags::{IdentityFlags, LEARN_CAPACITY};
 use crate::endpoint::stats::{EndpointState, EndpointStats};
 use crate::endpoint::tx_queue::TxQueue;
 use crate::mavlink::frame::ParsedHeader;
-use crate::stats::StatsEvent;
+use crate::stats::StatsHandle;
 
 /// One registered endpoint. Leaves (`tcpc:` / `udpc:` / `serial:`),
 /// accepted `tcps:` children, and learned `udps:` peers all set `routable
@@ -74,13 +72,13 @@ enum SourceAdmission {
 }
 
 /// Bundle the spawner hands to the router task. The two `mpsc::Receiver`s
-/// drive the data plane; `stats_event_tx` is fire-and-forget. `dedup_ms ==
-/// 0` (the default) disables the global dedup window entirely — no
-/// hashing, no allocation, no per-frame cost.
+/// drive the data plane; `stats` reports endpoint lifecycle to the stats
+/// task. `dedup_ms == 0` (the default) disables the global dedup window
+/// entirely: no hashing, no allocation, no per-frame cost.
 pub struct RouterWiring {
     pub frame_rx: mpsc::Receiver<RouterFrame>,
     pub event_rx: mpsc::Receiver<EndpointEvent>,
-    pub stats_event_tx: mpsc::Sender<StatsEvent>,
+    pub stats: StatsHandle,
     pub cancel: CancellationToken,
     pub dedup_ms: u64,
     pub dedup_window_capacity: usize,
@@ -88,7 +86,7 @@ pub struct RouterWiring {
 
 /// Mutable state owned by the router task: the unified endpoint registry,
 /// the shared-learn-set side-table for `?group=`-tagged endpoints, the
-/// global dedup window, and the forwarder to the stats task.
+/// global dedup window, and the handle to the stats task.
 /// Wrapped in a struct so `handle_event` / `handle_frame` / `shutdown_sweep`
 /// become `&mut self` methods and field-disjoint borrows fall out
 /// naturally (handle_frame uses this to do a single `routing.get_mut`
@@ -97,15 +95,11 @@ struct Router {
     routing: HashMap<EndpointId, RegisteredEndpoint>,
     groups: GroupRegistry,
     dedup: DedupWindow,
-    stats: StatsForwarder,
+    stats: StatsHandle,
 }
 
 impl Router {
-    fn new(
-        stats_event_tx: mpsc::Sender<StatsEvent>,
-        dedup_ms: u64,
-        dedup_window_capacity: usize,
-    ) -> Self {
+    fn new(stats: StatsHandle, dedup_ms: u64, dedup_window_capacity: usize) -> Self {
         Self {
             routing: HashMap::new(),
             groups: GroupRegistry::new(),
@@ -113,7 +107,7 @@ impl Router {
                 std::time::Duration::from_millis(dedup_ms),
                 dedup_window_capacity,
             ),
-            stats: StatsForwarder::new(stats_event_tx),
+            stats,
         }
     }
 
@@ -145,14 +139,7 @@ impl Router {
                 routable: routable_state,
             },
         );
-        self.stats
-            .forward(StatsEvent::Register {
-                id,
-                name,
-                stats,
-                routable,
-            })
-            .await;
+        self.stats.register(id, name, stats, routable).await;
     }
 
     async fn handle_event(&mut self, event: EndpointEvent) {
@@ -200,9 +187,7 @@ impl Router {
                     entry.stats.store_state(final_state);
                     debug!(%child_id, %parent_id, ?reason, ?final_state, "peer removed");
                 }
-                self.stats
-                    .forward(StatsEvent::Finalize { id: child_id })
-                    .await;
+                self.stats.finalize(child_id).await;
             }
         }
     }
@@ -353,51 +338,8 @@ impl Router {
                 routable = entry.routable.is_some(),
                 "shutdown finalize"
             );
-            self.stats.forward(StatsEvent::Finalize { id }).await;
+            self.stats.finalize(id).await;
         }
-    }
-}
-
-/// Post-cancel budget for stats sends to find channel room; stays under the
-/// stats task's own post-cancel drain so it cannot hold the router past that.
-const SHUTDOWN_STATS_SEND_BUDGET: Duration = Duration::from_secs(1);
-
-/// Router side of the stats channel: drops on a full channel while routing,
-/// waits for room until the shutdown deadline once it is armed.
-struct StatsForwarder {
-    tx: mpsc::Sender<StatsEvent>,
-    shutdown_deadline: Option<Instant>,
-    dropped: u64,
-}
-
-impl StatsForwarder {
-    fn new(tx: mpsc::Sender<StatsEvent>) -> Self {
-        Self {
-            tx,
-            shutdown_deadline: None,
-            dropped: 0,
-        }
-    }
-
-    fn arm_shutdown_deadline(&mut self) {
-        self.shutdown_deadline = Some(Instant::now() + SHUTDOWN_STATS_SEND_BUDGET);
-    }
-
-    async fn forward(&mut self, event: StatsEvent) {
-        let id = event.id();
-        let no_room = match self.shutdown_deadline {
-            None => matches!(self.tx.try_send(event), Err(TrySendError::Full(_))),
-            Some(deadline) => timeout_at(deadline, self.tx.send(event)).await.is_err(),
-        };
-        if !no_room {
-            return;
-        }
-        self.dropped += 1;
-        warn!(
-            %id,
-            dropped_total = self.dropped,
-            "stats channel full; dropping lifecycle event"
-        );
     }
 }
 
@@ -414,13 +356,13 @@ async fn run_inner(wiring: RouterWiring) {
     let RouterWiring {
         mut frame_rx,
         mut event_rx,
-        stats_event_tx,
+        stats,
         cancel,
         dedup_ms,
         dedup_window_capacity,
     } = wiring;
 
-    let mut router = Router::new(stats_event_tx, dedup_ms, dedup_window_capacity);
+    let mut router = Router::new(stats, dedup_ms, dedup_window_capacity);
 
     loop {
         tokio::select! {
@@ -459,6 +401,7 @@ mod tests {
     use crate::endpoint::events::{PeerRemovalReason, Routable};
     use crate::endpoint::filters::{Filters, MsgIdRange};
     use crate::mavlink::frame::{NodeId, ParsedHeader, Version};
+    use crate::stats::{self, StatsEvent, StatsInbox};
 
     fn header(sysid: u8, compid: u8, target_system: Option<u8>) -> ParsedHeader {
         ParsedHeader {
@@ -537,24 +480,20 @@ mod tests {
         }
     }
 
-    /// Build a `Router` against an mpsc `StatsEvent` receiver sized large
-    /// enough that every test-emitted event lands without blocking. Tests
-    /// inspect the receiver via [`drain_stats`] after the relevant
-    /// `handle_*` call.
-    fn make_router(
-        dedup_ms: u64,
-        dedup_window_capacity: usize,
-    ) -> (Router, mpsc::Receiver<StatsEvent>) {
-        let (stats_event_tx, stats_event_rx) = mpsc::channel::<StatsEvent>(64);
-        let router = Router::new(stats_event_tx, dedup_ms, dedup_window_capacity);
-        (router, stats_event_rx)
+    /// Build a `Router` against a stats inbox sized large enough that
+    /// every test-emitted event lands without dropping. Tests inspect the
+    /// inbox via [`drain_stats`] after the relevant `handle_*` call.
+    fn make_router(dedup_ms: u64, dedup_window_capacity: usize) -> (Router, StatsInbox) {
+        let (stats_handle, inbox) = stats::channel(64);
+        let router = Router::new(stats_handle, dedup_ms, dedup_window_capacity);
+        (router, inbox)
     }
 
-    /// Pop every currently-queued `StatsEvent` off the receiver; with no
+    /// Pop every currently-queued `StatsEvent` off the inbox; with no
     /// shutdown deadline armed the router only try_sends, so every emission
     /// has landed once `handle_*` returns.
-    fn drain_stats(rx: &mut mpsc::Receiver<StatsEvent>) -> Vec<StatsEvent> {
-        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    fn drain_stats(inbox: &mut StatsInbox) -> Vec<StatsEvent> {
+        std::iter::from_fn(|| inbox.try_recv()).collect()
     }
 
     /// Count `Register` entries in a drained list. Tests that exercise
@@ -605,7 +544,7 @@ mod tests {
 
     #[tokio::test]
     async fn frame_routes_to_other_endpoints() {
-        let (mut router, _stats_rx) = make_router(0, 16);
+        let (mut router, _inbox) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
         let dst = make_endpoint(&alloc, true);
@@ -630,8 +569,8 @@ mod tests {
     async fn full_stats_channel_never_blocks_registration_or_routing() {
         // One slot and no consumer: every event after the first must be
         // dropped, not awaited. A regression hangs, hence the timeouts.
-        let (stats_event_tx, mut stats_rx) = mpsc::channel::<StatsEvent>(1);
-        let mut router = Router::new(stats_event_tx, 0, 16);
+        let (stats_handle, mut inbox) = stats::channel(1);
+        let mut router = Router::new(stats_handle, 0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
         let dst = make_endpoint(&alloc, true);
@@ -645,7 +584,7 @@ mod tests {
             .expect("registration awaited the full stats channel");
         }
         assert_eq!(router.routing.len(), 3);
-        assert_eq!(router.stats.dropped, 2);
+        assert_eq!(router.stats.dropped(), 2);
 
         let body = Bytes::from_static(b"hello");
         router.handle_frame(RouterFrame {
@@ -674,9 +613,9 @@ mod tests {
         assert!(router.routing.is_empty());
         assert_eq!(src.stats.load_state(), EndpointState::Down);
         assert_eq!(extra.stats.load_state(), EndpointState::Down);
-        assert_eq!(router.stats.dropped, 5);
+        assert_eq!(router.stats.dropped(), 5);
 
-        let delivered = drain_stats(&mut stats_rx);
+        let delivered = drain_stats(&mut inbox);
         assert_eq!(delivered.len(), 1);
         assert!(matches!(delivered[0], StatsEvent::Register { id, .. } if id == src.id));
     }
@@ -685,8 +624,8 @@ mod tests {
     async fn shutdown_sweep_waits_for_stats_channel_room() {
         // One slot with a consumer that only runs while the router awaits:
         // every sweep Finalize must still land once the deadline is armed.
-        let (stats_event_tx, mut stats_rx) = mpsc::channel::<StatsEvent>(1);
-        let mut router = Router::new(stats_event_tx, 0, 16);
+        let (stats_handle, mut inbox) = stats::channel(1);
+        let mut router = Router::new(stats_handle, 0, 16);
         let alloc = EndpointIdAllocator::new();
         let endpoints: Vec<EndpointFixture> = (0..5).map(|_| make_endpoint(&alloc, true)).collect();
         for (index, fixture) in endpoints.iter().enumerate() {
@@ -694,11 +633,11 @@ mod tests {
                 .handle_event(endpoint_added(fixture, &format!("ep{index}")))
                 .await;
         }
-        drain_stats(&mut stats_rx);
+        drain_stats(&mut inbox);
 
         let consumer = tokio::spawn(async move {
             let mut finalized = Vec::new();
-            while let Some(event) = stats_rx.recv().await {
+            while let Some(event) = inbox.recv().await {
                 if let StatsEvent::Finalize { id } = event {
                     finalized.push(id);
                 }
@@ -721,7 +660,7 @@ mod tests {
     async fn frame_targeted_skips_destinations_without_learn() {
         // A targeted frame whose target identity has never been learned
         // by dst must not reach dst.
-        let (mut router, _stats_rx) = make_router(0, 16);
+        let (mut router, _inbox) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
         let dst = make_endpoint(&alloc, true);
@@ -738,7 +677,7 @@ mod tests {
 
     #[tokio::test]
     async fn frame_updates_source_learn_entries_counter() {
-        let (mut router, _stats_rx) = make_router(0, 16);
+        let (mut router, _inbox) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
         let dst = make_endpoint(&alloc, true);
@@ -838,7 +777,7 @@ mod tests {
         // Parents register with `routable = None`; the dispatch loop
         // short-circuits at one branch. The parent's TxQueue is held only
         // by the fixture, so it must receive zero frames.
-        let (mut router, _stats_rx) = make_router(0, 16);
+        let (mut router, _inbox) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
         let parent = make_endpoint(&alloc, true);
@@ -866,7 +805,7 @@ mod tests {
 
     #[tokio::test]
     async fn out_filter_blocks_destination_and_increments_drop_counter() {
-        let (mut router, _stats_rx) = make_router(0, 16);
+        let (mut router, _inbox) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
         let dst = make_endpoint(&alloc, true);
@@ -903,7 +842,7 @@ mod tests {
         // After that, a frame from `src` whose `(srcsys, srccomp) = (7, 1)`
         // tickles loop-prevention on plain but the sniffer tap still
         // admits it.
-        let (mut router, _stats_rx) = make_router(0, 16);
+        let (mut router, _inbox) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
         let tap = make_endpoint(&alloc, true);
@@ -963,7 +902,7 @@ mod tests {
         // A frame matching the sniffer's own block_msgid_out still
         // reaches it — sniffer override skips out-filter entirely.
         // out_filter_drops must stay 0.
-        let (mut router, _stats_rx) = make_router(0, 16);
+        let (mut router, _inbox) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
         let tap = make_endpoint(&alloc, true);
@@ -1010,7 +949,7 @@ mod tests {
         // subsequent frame from a *third* endpoint whose source is (7, 1)
         // is loop-blocked at *both* group members (redundant uplinks must
         // not silence each other).
-        let (mut router, _stats_rx) = make_router(0, 16);
+        let (mut router, _inbox) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let lte = make_endpoint(&alloc, true);
         let rfd = make_endpoint(&alloc, true);
@@ -1071,7 +1010,7 @@ mod tests {
         // Group members share *only* the learn-set; filters apply
         // per-member and `out_filter_drops` is credited only to the
         // member that dropped.
-        let (mut router, _stats_rx) = make_router(0, 16);
+        let (mut router, _inbox) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
         let strict = make_endpoint(&alloc, true);
@@ -1124,7 +1063,7 @@ mod tests {
     async fn dedup_disabled_admits_duplicate_frames() {
         // dedup_ms == 0 (default) — duplicate frames are admitted, the
         // dedup_drops counter stays at zero.
-        let (mut router, _stats_rx) = make_router(0, 16);
+        let (mut router, _inbox) = make_router(0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
         let dst = make_endpoint(&alloc, true);
@@ -1148,7 +1087,7 @@ mod tests {
     async fn dedup_suppresses_redundant_uplink_at_router_ingress() {
         // Redundant uplink: the global window must suppress the second
         // copy regardless of which leg it arrived on.
-        let (mut router, _stats_rx) = make_router(500, 16);
+        let (mut router, _inbox) = make_router(500, 16);
         let alloc = EndpointIdAllocator::new();
         let lte = make_endpoint(&alloc, true);
         let rfd = make_endpoint(&alloc, true);
@@ -1186,7 +1125,7 @@ mod tests {
         // Ingress dedup runs before the per-destination decision, so
         // duplicate suppression also hides the second arrival from a
         // sniffer destination.
-        let (mut router, _stats_rx) = make_router(500, 16);
+        let (mut router, _inbox) = make_router(500, 16);
         let alloc = EndpointIdAllocator::new();
         let lte = make_endpoint(&alloc, true);
         let rfd = make_endpoint(&alloc, true);
@@ -1226,7 +1165,7 @@ mod tests {
         // the source's learn-set. The duplicate carries a *different*
         // header on identical bytes — if learn ran first, `learn_entries`
         // would grow to 2.
-        let (mut router, _stats_rx) = make_router(500, 16);
+        let (mut router, _inbox) = make_router(500, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
         let dst = make_endpoint(&alloc, true);
