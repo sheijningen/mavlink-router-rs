@@ -567,9 +567,9 @@ mod tests {
 
     #[tokio::test]
     async fn full_stats_channel_never_blocks_registration_or_routing() {
-        // One slot and no consumer: every event after the first must be
-        // dropped, not awaited. A regression hangs, hence the timeouts.
-        let (stats_handle, mut inbox) = stats::channel(1);
+        // A full stats channel must never make the router await; a regression
+        // hangs, hence the timeouts.
+        let (stats_handle, _inbox) = stats::channel(1);
         let mut router = Router::new(stats_handle, 0, 16);
         let alloc = EndpointIdAllocator::new();
         let src = make_endpoint(&alloc, true);
@@ -584,7 +584,6 @@ mod tests {
             .expect("registration awaited the full stats channel");
         }
         assert_eq!(router.routing.len(), 3);
-        assert_eq!(router.stats.dropped(), 2);
 
         let body = Bytes::from_static(b"hello");
         router.handle_frame(RouterFrame {
@@ -613,28 +612,34 @@ mod tests {
         assert!(router.routing.is_empty());
         assert_eq!(src.stats.load_state(), EndpointState::Down);
         assert_eq!(extra.stats.load_state(), EndpointState::Down);
-        assert_eq!(router.stats.dropped(), 5);
-
-        let delivered = drain_stats(&mut inbox);
-        assert_eq!(delivered.len(), 1);
-        assert!(matches!(delivered[0], StatsEvent::Register { id, .. } if id == src.id));
     }
 
     #[tokio::test]
-    async fn shutdown_sweep_waits_for_stats_channel_room() {
-        // One slot with a consumer that only runs while the router awaits:
-        // every sweep Finalize must still land once the deadline is armed.
+    async fn shutdown_sweep_waits_for_stats_room_once_cancelled() {
+        // One slot and a consumer that starts reading only after cancel: the
+        // sweep must wait for room so every endpoint's Finalize lands.
+        let (frame_tx, frame_rx) = mpsc::channel::<RouterFrame>(1);
+        let (event_tx, event_rx) = mpsc::channel::<EndpointEvent>(8);
         let (stats_handle, mut inbox) = stats::channel(1);
-        let mut router = Router::new(stats_handle, 0, 16);
-        let alloc = EndpointIdAllocator::new();
-        let endpoints: Vec<EndpointFixture> = (0..5).map(|_| make_endpoint(&alloc, true)).collect();
-        for (index, fixture) in endpoints.iter().enumerate() {
-            router
-                .handle_event(endpoint_added(fixture, &format!("ep{index}")))
-                .await;
-        }
-        drain_stats(&mut inbox);
+        let cancel = CancellationToken::new();
+        let router_task = tokio::spawn(run(RouterWiring {
+            frame_rx,
+            event_rx,
+            stats: stats_handle,
+            cancel: cancel.clone(),
+            dedup_ms: 0,
+            dedup_window_capacity: 16,
+        }));
 
+        let alloc = EndpointIdAllocator::new();
+        let endpoints: Vec<EndpointFixture> = (0..3).map(|_| make_endpoint(&alloc, true)).collect();
+        for (index, fixture) in endpoints.iter().enumerate() {
+            event_tx
+                .send(endpoint_added(fixture, &format!("ep{index}")))
+                .await
+                .expect("event");
+        }
+        cancel.cancel();
         let consumer = tokio::spawn(async move {
             let mut finalized = Vec::new();
             while let Some(event) = inbox.recv().await {
@@ -644,10 +649,12 @@ mod tests {
             }
             finalized
         });
-
-        router.stats.arm_shutdown_deadline();
-        router.shutdown_sweep().await;
-        drop(router);
+        timeout(Duration::from_secs(3), router_task)
+            .await
+            .expect("router did not exit")
+            .expect("router panicked");
+        drop(frame_tx);
+        drop(event_tx);
 
         let mut finalized = consumer.await.expect("consumer panicked");
         let mut expected: Vec<EndpointId> = endpoints.iter().map(|fixture| fixture.id).collect();

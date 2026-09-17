@@ -74,11 +74,6 @@ impl StatsHandle {
         self.forward(StatsEvent::Finalize { id }).await;
     }
 
-    #[cfg(test)]
-    pub(crate) fn dropped(&self) -> u64 {
-        self.dropped
-    }
-
     pub(crate) fn arm_shutdown_deadline(&mut self) {
         self.shutdown_deadline = Some(Instant::now() + SHUTDOWN_STATS_SEND_BUDGET);
     }
@@ -129,4 +124,81 @@ pub fn channel(capacity: usize) -> (StatsHandle, StatsInbox) {
         },
         StatsInbox { rx },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::time::timeout;
+
+    use super::*;
+    use crate::endpoint::EndpointIdAllocator;
+
+    fn fresh_stats() -> Arc<EndpointStats> {
+        Arc::new(EndpointStats::default())
+    }
+
+    #[tokio::test]
+    async fn full_channel_drops_instead_of_blocking() {
+        // One slot and no consumer: every event after the first must be
+        // dropped, not awaited. A regression hangs, hence the timeouts.
+        let (mut handle, mut inbox) = channel(1);
+        let alloc = EndpointIdAllocator::new();
+        let first = alloc.alloc();
+        let second = alloc.alloc();
+        for id in [first, second, alloc.alloc()] {
+            timeout(
+                Duration::from_secs(1),
+                handle.register(id, "ep".to_string(), fresh_stats(), true),
+            )
+            .await
+            .expect("register awaited the full channel");
+        }
+        timeout(Duration::from_secs(1), handle.finalize(second))
+            .await
+            .expect("finalize awaited the full channel");
+        assert_eq!(handle.dropped, 3);
+        assert!(matches!(inbox.try_recv(), Some(StatsEvent::Register { id, .. }) if id == first));
+        assert!(inbox.try_recv().is_none());
+    }
+
+    #[tokio::test]
+    async fn armed_deadline_waits_for_channel_room() {
+        // One slot with a consumer that only runs while the handle awaits.
+        let (mut handle, mut inbox) = channel(1);
+        let alloc = EndpointIdAllocator::new();
+        let ids: Vec<EndpointId> = (0..5).map(|_| alloc.alloc()).collect();
+        let consumer = tokio::spawn(async move {
+            let mut finalized = Vec::new();
+            while let Some(StatsEvent::Finalize { id }) = inbox.recv().await {
+                finalized.push(id);
+            }
+            finalized
+        });
+
+        handle.arm_shutdown_deadline();
+        for id in &ids {
+            handle.finalize(*id).await;
+        }
+        drop(handle);
+
+        assert_eq!(consumer.await.expect("consumer panicked"), ids);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn armed_deadline_drops_once_it_passes() {
+        let (mut handle, _inbox) = channel(1);
+        let alloc = EndpointIdAllocator::new();
+        handle
+            .register(alloc.alloc(), "ep".to_string(), fresh_stats(), true)
+            .await;
+
+        handle.arm_shutdown_deadline();
+        timeout(
+            SHUTDOWN_STATS_SEND_BUDGET * 2,
+            handle.finalize(alloc.alloc()),
+        )
+        .await
+        .expect("finalize outlived the shutdown deadline");
+        assert_eq!(handle.dropped, 1);
+    }
 }

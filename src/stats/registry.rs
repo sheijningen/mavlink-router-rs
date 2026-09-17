@@ -76,3 +76,81 @@ pub(super) fn emit_interval_lines(
         enqueue_regular(queue, queue_capacity, line, total_dropped);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::endpoint::EndpointIdAllocator;
+
+    fn register(id: EndpointId, name: &str) -> StatsEvent {
+        StatsEvent::Register {
+            id,
+            name: name.to_string(),
+            stats: Arc::new(EndpointStats::default()),
+            routable: true,
+        }
+    }
+
+    #[test]
+    fn finalize_of_unknown_id_is_a_no_op() {
+        let mut registry = HashMap::new();
+        let mut queue = VecDeque::new();
+        let mut dropped = 0;
+        let id = EndpointIdAllocator::new().alloc();
+        handle_event(
+            &mut registry,
+            &mut queue,
+            8,
+            &mut dropped,
+            true,
+            StatsEvent::Finalize { id },
+        );
+        assert!(queue.is_empty());
+        assert_eq!(dropped, 0);
+    }
+
+    #[test]
+    fn interval_lines_are_regular_and_finalize_lines_synthetic() {
+        let alloc = EndpointIdAllocator::new();
+        let mut registry = HashMap::new();
+        let mut queue = VecDeque::new();
+        let mut dropped = 0;
+        let first = alloc.alloc();
+        let second = alloc.alloc();
+        handle_event(
+            &mut registry,
+            &mut queue,
+            8,
+            &mut dropped,
+            true,
+            register(first, "first"),
+        );
+        handle_event(
+            &mut registry,
+            &mut queue,
+            8,
+            &mut dropped,
+            true,
+            register(second, "second"),
+        );
+        assert!(queue.is_empty());
+
+        emit_interval_lines(&registry, &mut queue, 8, &mut dropped);
+        assert_eq!(queue.len(), 2);
+        assert!(queue.iter().all(|entry| !entry.synthetic));
+
+        handle_event(
+            &mut registry,
+            &mut queue,
+            8,
+            &mut dropped,
+            true,
+            StatsEvent::Finalize { id: first },
+        );
+        assert_eq!(registry.len(), 1);
+        let last = queue.back().expect("finalize line");
+        assert!(last.synthetic);
+        assert_eq!(last.line.endpoint(), "first");
+        assert_eq!(dropped, 0);
+    }
+}
